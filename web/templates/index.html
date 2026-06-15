@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Agent Document Enhancer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=20240115">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 顶部导航栏 -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-brain"></i>
+                    <span>Multi-Agent Document Enhancer</span>
+                </div>
+                <div class="header-actions">
+                    <button id="save-btn" class="btn btn-secondary">
+                        <i class="fas fa-save"></i> 保存文档
+                    </button>
+                    <button id="export-log-btn" class="btn btn-secondary">
+                        <i class="fas fa-download"></i> 导出日志
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- 主体内容区域 -->
+        <div style="display: flex; flex: 1; overflow: hidden;">
+            <!-- 左侧图标导航 -->
+            <nav class="left-nav">
+                <button class="nav-btn active" data-tab="main" title="主界面">
+                    <i class="fas fa-home"></i>
+                </button>
+                <button class="nav-btn" data-tab="models" title="模型配置">
+                    <i class="fas fa-cog"></i>
+                </button>
+                <button class="nav-btn" data-tab="agents" title="Agent配置">
+                    <i class="fas fa-users"></i>
+                </button>
+                <button class="nav-btn" data-tab="search" title="搜索引擎">
+                    <i class="fas fa-search"></i>
+                </button>
+                <button class="nav-btn" data-tab="skills" title="Skills">
+                    <i class="fas fa-magic"></i>
+                </button>
+                <button class="nav-btn" data-tab="settings" title="系统设置">
+                    <i class="fas fa-sliders-h"></i>
+                </button>
+            </nav>
+
+            <!-- 右侧工作区 -->
+            <main class="workspace">
+                
+                <!-- ========== 主界面内容 ========== -->
+                <div class="tab-panel active" id="main-panel">
+                    <!-- 工具栏 -->
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <label class="btn btn-primary btn-sm file-upload-btn">
+                                <i class="fas fa-upload"></i> 上传
+                                <input type="file" id="file-upload" class="file-input" multiple>
+                            </label>
+                            <button id="clear-attachments-btn" class="btn btn-outline-danger btn-sm">
+                                <i class="fas fa-trash"></i> 清空附件
+                            </button>
+                            <div id="attachments-mini" style="display: flex; flex-wrap: wrap; gap: 6px; max-width: 400px;"></div>
+                            <button id="start-btn" class="btn btn-success">
+                                <i class="fas fa-play"></i> 开始处理
+                            </button>
+                            <button id="stop-btn" class="btn btn-danger" disabled>
+                                <i class="fas fa-stop"></i> 停止处理
+                            </button>
+                            <button id="clear-btn" class="btn btn-outline-danger">
+                                <i class="fas fa-trash-alt"></i> 清空
+                            </button>
+                        </div>
+                        <div class="toolbar-right">
+                            <div class="iteration-control">
+                                <label for="iterations">迭代次数:</label>
+                                <input type="number" id="iterations" value="{{ settings.iterations }}" min="1" max="50">
+                            </div>
+                            <div class="status-indicator">
+                                <span class="status-dot" id="status-dot"></span>
+                                <span id="status-text">{{ processing_status }}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 统计信息栏 -->
+                    <div class="stats-bar">
+                        <div class="stat-item">
+                            <div class="stat-icon"><i class="fas fa-redo"></i></div>
+                            <div class="stat-info">
+                                <span class="stat-label">迭代进度</span>
+                                <span class="stat-value" id="stat-iteration">0/{{ settings.iterations }}</span>
+                                <span class="stat-sub" id="iteration-progress">步骤 0/0</span>
+                            </div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-icon"><i class="fas fa-coins"></i></div>
+                            <div class="stat-info">
+                                <span class="stat-label">总Token</span>
+                                <span class="stat-value" id="stat-tokens">0</span>
+                            </div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-icon"><i class="fas fa-search"></i></div>
+                            <div class="stat-info">
+                                <span class="stat-label">搜索次数</span>
+                                <span class="stat-value" id="stat-searches">0</span>
+                            </div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-icon"><i class="fas fa-clock"></i></div>
+                            <div class="stat-info">
+                                <span class="stat-label">运行时长</span>
+                                <span class="stat-value" id="stat-time">00:00:00</span>
+                            </div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-icon"><i class="fas fa-file-word"></i></div>
+                            <div class="stat-info">
+                                <span class="stat-label">字数统计</span>
+                                <span class="stat-value" id="stat-wordcount">0</span>
+                            </div>
+                        </div>
+                        <div class="progress-container">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progress-fill"></div>
+                            </div>
+                            <span class="progress-text" id="progress-text">0%</span>
+                        </div>
+                    </div>
+
+                    <!-- 工作区域 -->
+                    <div class="workspace-content">
+                        <!-- 左半部分：输入指令 -->
+                        <div class="input-section">
+                            <div class="section-header">
+                                <h3><i class="fas fa-terminal"></i> 输入指令</h3>
+                            </div>
+                            <textarea id="input-content" class="content-textarea" placeholder="请输入您的指令或需求，AI将先分析指令内容，然后各代理协作完成任务...">{% if current_document %}{{ current_document }}{% else %}生成一个公积金数据运营的完整方案，可实操，可持续盈利，并能打动投资人。{% endif %}</textarea>
+                        </div>
+
+                        <!-- 右半部分：预览区域 -->
+                        <div class="preview-section" id="preview-section">
+                            <div class="section-header">
+                                <h3><i class="fas fa-file-alt"></i> 文档预览</h3>
+                                <div class="header-actions">
+                                    <div class="view-toggle">
+                                        <button class="toggle-btn active" data-view="markdown">
+                                            <i class="fas fa-code"></i> 源码
+                                        </button>
+                                        <button class="toggle-btn" data-view="preview">
+                                            <i class="fas fa-eye"></i> 预览
+                                        </button>
+                                    </div>
+                                    <button class="maximize-btn" data-target="preview-section" title="最大化">
+                                        <i class="fas fa-expand"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="preview-content" class="preview-content">
+                                {% if current_document %}
+                                <pre class="markdown-source">{{ current_document }}</pre>
+                                {% else %}
+                                <div class="empty-state">
+                                    <i class="fas fa-file-text"></i>
+                                    <p>处理后的文档将在这里显示</p>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 底部面板 -->
+                    <div class="bottom-panel">
+                        <!-- Agent状态 -->
+                        <div class="agent-status-panel" id="agent-status-panel">
+                            <div class="section-header">
+                                <h3><i class="fas fa-chart-line"></i> Agent状态</h3>
+                                <button class="maximize-btn" data-target="agent-status-panel" title="最大化">
+                                    <i class="fas fa-expand"></i>
+                                </button>
+                            </div>
+                            <div class="status-table-wrapper">
+                                <table class="status-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Agent</th>
+                                            <th>状态</th>
+                                            <th>模型</th>
+                                            <th>迭代</th>
+                                            <th>输入Token</th>
+                                            <th>输出Token</th>
+                                            <th>耗时</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="agent-status-body">
+                                        {% for agent in agents %}
+                                        <tr data-id="{{ agent.id }}">
+                                            <td>{{ agent.name }}</td>
+                                            <td><span class="status-badge badge-ready">就绪</span></td>
+                                            <td>-</td>
+                                            <td>0</td>
+                                            <td>0</td>
+                                            <td>0</td>
+                                            <td>0s</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- 日志区域 -->
+                        <div class="log-panel" id="log-panel">
+                            <div class="section-header">
+                                <h3><i class="fas fa-terminal"></i> 处理日志</h3>
+                                <div class="header-actions">
+                                    <div class="log-controls">
+                                        <select id="log-level-filter" class="form-control-sm">
+                                            <option value="ALL">全部</option>
+                                            <option value="DEBUG">DEBUG</option>
+                                            <option value="INFO" selected>INFO</option>
+                                            <option value="WARNING">WARNING</option>
+                                            <option value="ERROR">ERROR</option>
+                                        </select>
+                                        <button id="clear-log-btn" class="btn btn-secondary btn-sm">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                        <button id="model-calls-btn" class="btn btn-info btn-sm" title="查看模型调用信息">
+                                            <i class="fas fa-brain"></i> 模型调用
+                                        </button>
+                                    </div>
+                                    <button class="maximize-btn" data-target="log-panel" title="最大化">
+                                        <i class="fas fa-expand"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="log-content" class="log-content">
+                                {% for log in logs %}
+                                <div class="log-item">{{ log }}</div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== 模型配置内容 ========== -->
+                <div class="tab-panel" id="models-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-server"></i> 模型配置</h2>
+                    </div>
+                    <div class="panel-toolbar">
+                        <button id="add-model-btn" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> 添加模型
+                        </button>
+                    </div>
+                    <div id="models-list" class="config-grid">
+                        {% for model in models %}
+                        <div class="config-card" data-id="{{ model.id }}">
+                            <div class="card-header">
+                                <span class="card-title">{{ model.name }}</span>
+                                <div class="card-actions">
+                                    <button class="action-btn test-btn" title="测试连接">
+                                        <i class="fas fa-plug"></i>
+                                    </button>
+                                    <button class="action-btn edit-btn" title="编辑">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button class="action-btn delete-btn" title="删除">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="badge-row">
+                                    <span class="badge badge-info">{{ model.api_type }}</span>
+                                    <span class="badge badge-default">{{ model.model_name }}</span>
+                                    {% if model.enabled %}
+                                    <span class="badge badge-success">已启用</span>
+                                    {% else %}
+                                    <span class="badge badge-warning">已禁用</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- ========== Agent配置内容 ========== -->
+                <div class="tab-panel" id="agents-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-user-cog"></i> Agent配置</h2>
+                    </div>
+                    <div class="panel-toolbar">
+                        <button id="add-agent-btn" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> 添加Agent
+                        </button>
+                    </div>
+                    <div id="agents-list" class="config-grid">
+                        {% for agent in agents %}
+                        <div class="config-card" data-id="{{ agent.id }}">
+                            <div class="card-header">
+                                <span class="card-title">{{ agent.name }}</span>
+                                <div class="card-actions">
+                                    <button class="action-btn edit-btn" title="编辑">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button class="action-btn delete-btn" title="删除">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <p class="card-desc">{{ agent.role_description[:50] if agent.role_description else '-' }}...</p>
+                                <div class="badge-row">
+                                    {% if agent.enabled %}
+                                    <span class="badge badge-success">已启用</span>
+                                    {% else %}
+                                    <span class="badge badge-warning">已禁用</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- ========== 搜索引擎内容 ========== -->
+                <div class="tab-panel" id="search-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-search"></i> 搜索引擎配置</h2>
+                    </div>
+                    
+                    <!-- 快速搜索区域 -->
+                    <div class="quick-search-box">
+                        <div class="section-header" style="color: white; margin-bottom: 15px;">
+                            <h3 style="color: white;"><i class="fas fa-bolt"></i> 快速搜索</h3>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="quick-search-input" placeholder="输入关键词进行搜索..." class="form-control" style="flex: 1;">
+                            <button id="quick-search-btn" class="btn" style="background: white; color: #667eea; font-weight: 600;">
+                                <i class="fas fa-search"></i> 搜索
+                            </button>
+                            <button id="quick-search-clear-btn" class="btn" style="background: rgba(255,255,255,0.2); color: white;">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                        <div id="quick-search-results" class="quick-search-results" style="margin-top: 15px;"></div>
+                    </div>
+                    
+                    <div class="panel-toolbar" style="margin-top: 20px;">
+                        <button id="add-search-btn" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> 添加搜索引擎
+                        </button>
+                    </div>
+                    <div id="search-list" class="config-grid">
+                        {% for engine in search_engines %}
+                        <div class="config-card" data-id="{{ engine.id }}">
+                            <div class="card-header">
+                                <span class="card-title">{{ engine.name }}</span>
+                                <div class="card-actions">
+                                    <button class="action-btn edit-btn" title="编辑">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button class="action-btn delete-btn" title="删除">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="badge-row">
+                                    <span class="badge badge-info">{{ engine.adapter_type }}</span>
+                                    {% if engine.enabled %}
+                                    <span class="badge badge-success">已启用</span>
+                                    {% else %}
+                                    <span class="badge badge-warning">已禁用</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    
+                    <!-- 搜索测试 -->
+                    <div class="panel-section" style="margin-top: 20px;">
+                        <div class="section-header">
+                            <h3><i class="fas fa-flask"></i> 搜索测试</h3>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="search-query" placeholder="输入搜索关键词..." class="form-control" style="flex: 1;">
+                            <button id="test-search-btn" class="btn btn-primary">
+                                <i class="fas fa-search"></i> 测试搜索
+                            </button>
+                        </div>
+                        <div id="search-results" class="search-results" style="margin-top: 15px;"></div>
+                    </div>
+                </div>
+
+                <!-- ========== Skills配置内容 ========== -->
+                <div class="tab-panel" id="skills-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-magic"></i> Skills配置</h2>
+                    </div>
+                    <div class="panel-toolbar">
+                        <button id="open-skill-config-btn" class="btn btn-primary">
+                            <i class="fas fa-cog"></i> 配置管理
+                        </button>
+                    </div>
+                    <div id="skills-list" class="config-grid"></div>
+                </div>
+
+                <!-- ========== 设置内容 ========== -->
+                <div class="tab-panel" id="settings-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-sliders-h"></i> 系统设置</h2>
+                    </div>
+                    <div class="panel-section">
+                        <div class="section-header">
+                            <h3><i class="fas fa-tools"></i> 运行设置</h3>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>迭代次数</label>
+                                <input type="number" id="iterations-setting" class="form-control" value="{{ settings.iterations }}" min="1" max="10">
+                            </div>
+                        </div>
+                        <div class="form-group checkbox-group">
+                            <label>
+                                <input type="checkbox" id="enable-search-setting" checked>
+                                启用联网搜索
+                            </label>
+                        </div>
+                        <button id="save-settings-btn" class="btn btn-primary" style="margin-top: 15px;">
+                            <i class="fas fa-save"></i> 保存设置
+                        </button>
+                    </div>
+                </div>
+
+            </main>
+        </div>
+    </div>
+
+    <!-- Skill配置模态框 -->
+    <div id="skill-config-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="width: 90%; max-width: 1200px; max-height: 90vh;">
+            <div class="modal-header">
+                <h3><i class="fas fa-magic"></i> Skills配置管理</h3>
+                <button class="modal-close" onclick="closeSkillConfigModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body" style="max-height: calc(90vh - 120px); overflow-y: auto;">
+                <div style="display: flex; gap: 20px; height: 100%;">
+                    <div style="width: 300px; border-right: 1px solid #e2e8f0; padding-right: 20px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <h4>已配置Skills</h4>
+                            <button id="add-new-skill-btn" class="btn btn-primary btn-sm">
+                                <i class="fas fa-plus"></i> 新建
+                            </button>
+                        </div>
+                        <div id="skill-config-list" style="max-height: 500px; overflow-y: auto;"></div>
+                    </div>
+                    <div style="flex: 1; padding-left: 20px;">
+                        <div id="skill-editor-area">
+                            <div style="text-align: center; color: #94a3b8; padding: 50px;">
+                                <i class="fas fa-mouse-pointer" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                <p>点击左侧列表中的Skill进行编辑</p>
+                                <p>或点击"新建"创建新的Skill</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模态框 -->
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">添加模型</h3>
+                <button class="modal-close" id="modal-close">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <form id="modal-form">
+                    <input type="hidden" id="form-id">
+                    
+                    <!-- 通用字段 -->
+                    <div class="form-group">
+                        <label>名称</label>
+                        <input type="text" id="form-name" class="form-control" required>
+                    </div>
+                    
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="form-enabled" checked>
+                            启用
+                        </label>
+                    </div>
+                    
+                    <!-- 模型专用字段 -->
+                    <div class="model-fields" style="display: none;">
+                        <div class="form-group">
+                            <label>API类型</label>
+                            <select id="form-api-type" class="form-control">
+                                <option value="openai">OpenAI</option>
+                                <option value="azure">Azure</option>
+                                <option value="anthropic">Anthropic</option>
+                                <option value="custom">自定义</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>API地址</label>
+                            <input type="text" id="form-api-url" class="form-control" placeholder="https://api.openai.com/v1">
+                        </div>
+                        <div class="form-group">
+                            <label>API密钥</label>
+                            <input type="password" id="form-api-key" class="form-control" placeholder="sk-...">
+                        </div>
+                        <div class="form-group">
+                            <label>模型名称</label>
+                            <input type="text" id="form-model-name" class="form-control" placeholder="gpt-4">
+                        </div>
+                    </div>
+                    
+                    <!-- Agent专用字段 -->
+                    <div class="agent-fields" style="display: none;">
+                        <div class="form-group">
+                            <label>角色描述</label>
+                            <textarea id="form-role-description" class="form-control" rows="6"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>绑定模型</label>
+                            <select id="form-model-id" class="form-control">
+                                {% for model in models %}
+                                <option value="{{ model.id }}">{{ model.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- 搜索引擎专用字段 -->
+                    <div class="search-fields" style="display: none;">
+                        <div class="form-group">
+                            <label>适配器类型</label>
+                            <select id="form-adapter-type" class="form-control">
+                                <option value="tavily">Tavily</option>
+                                <option value="serpapi">SerpAPI</option>
+                                <option value="duckduckgo">DuckDuckGo</option>
+                                <option value="custom">自定义</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>API密钥</label>
+                            <input type="password" id="form-api-key-search" class="form-control" placeholder="API密钥">
+                        </div>
+                        <div class="form-group">
+                            <label>API地址（可选）</label>
+                            <input type="text" id="form-search-api-url" class="form-control" placeholder="自定义API地址">
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="modal-cancel">取消</button>
+                <button type="button" class="btn btn-primary" id="modal-save">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Skill执行弹窗 -->
+    <div id="skill-execute-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="width: 500px; max-width: 90%;">
+            <div class="modal-header">
+                <h3 id="skill-execute-title"><i class="fas fa-play"></i> 执行Skill</h3>
+                <button class="modal-close" onclick="closeSkillExecuteModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body" id="skill-execute-form">
+                <!-- 动态生成的表单内容 -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeSkillExecuteModal()">取消</button>
+                <button type="button" class="btn btn-primary" id="skill-execute-btn" onclick="executeSkillNow()">
+                    <i class="fas fa-play"></i> 执行
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js?v=20240615b"></script>
+    <script>
+        function closeSkillConfigModal() {
+            const modal = document.getElementById('skill-config-modal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        function closeSkillExecuteModal() {
+            const modal = document.getElementById('skill-execute-modal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        let currentExecuteSkillId = null;
+
+        function executeSkillNow() {
+            if (!currentExecuteSkillId) return;
+
+            const form = document.getElementById('skill-execute-form');
+            const params = {};
+
+            // 收集表单数据
+            form.querySelectorAll('input, select, textarea').forEach(input => {
+                if (input.name) {
+                    if (input.type === 'checkbox') {
+                        params[input.name] = input.checked;
+                    } else if (input.type === 'number') {
+                        params[input.name] = parseFloat(input.value) || 0;
+                    } else {
+                        params[input.name] = input.value;
+                    }
+                }
+            });
+
+            // 调用app的执行函数
+            window.app.executeSkill(currentExecuteSkillId, params);
+            closeSkillExecuteModal();
+        }
+        
+        window.onclick = function(event) {
+            const modal = document.getElementById('skill-config-modal');
+            if (event.target === modal) {
+                modal.style.display = 'none';
+            }
+            const execModal = document.getElementById('skill-execute-modal');
+            if (event.target === execModal) {
+                execModal.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
