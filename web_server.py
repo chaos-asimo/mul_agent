@@ -1015,21 +1015,23 @@ async def clear_model_calls():
 
 @app.post("/api/logs/export")
 async def export_logs():
-    """导出日志到文件"""
+    """导出日志到浏览器下载"""
     if not processing_log:
         return {"status": "error", "message": "没有日志可导出"}
     
     try:
+        from fastapi.responses import PlainTextResponse
+        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"logs_export_{timestamp}.txt"
-        filepath = os.path.join("logs", filename)
-        os.makedirs("logs", exist_ok=True)
+        content = "\n".join(processing_log)
         
-        with open(filepath, 'w', encoding='utf-8') as f:
-            for line in processing_log:
-                f.write(line + "\n")
+        headers = {
+            "Content-Disposition": f"attachment; filename=\"{filename}\"",
+            "Content-Type": "text/plain; charset=utf-8"
+        }
         
-        return {"status": "success", "message": f"日志已导出到 {filename}"}
+        return PlainTextResponse(content, headers=headers)
     except Exception as e:
         return {"status": "error", "message": f"导出失败: {str(e)}"}
 

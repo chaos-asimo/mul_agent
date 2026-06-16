@@ -1885,13 +1885,33 @@ class App {
             const response = await fetch(`${this.baseUrl}/api/logs/export`, {
                 method: 'POST'
             });
-            const result = await response.json();
             
-            if (result.status === 'success') {
-                this.addLog(result.message);
-            } else {
-                alert(result.message);
+            if (!response.ok) {
+                const result = await response.json();
+                alert(result.message || '导出失败');
+                return;
             }
+            
+            const blob = await response.blob();
+            const contentDisposition = response.headers.get('Content-Disposition');
+            let filename = 'logs_export.txt';
+            if (contentDisposition) {
+                const match = contentDisposition.match(/filename="?([^"]+)"?/);
+                if (match) {
+                    filename = match[1];
+                }
+            }
+            
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+            
+            this.addLog(`日志已导出: ${filename}`);
         } catch (error) {
             alert(`导出失败: ${error.message}`);
         }
