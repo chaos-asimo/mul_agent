@@ -11,7 +11,7 @@ class Attachment:
     id: str
     filename: str
     filepath: str
-    file_type: str  # 'docx', 'pdf', 'txt'
+    file_type: str  # 'doc', 'docx', 'pdf', 'txt'
     content: str = ""
 
     def __post_init__(self):
@@ -24,6 +24,7 @@ class AttachmentManager:
     """Manages file attachments"""
 
     SUPPORTED_TYPES = {
+        '.doc': 'doc',
         '.docx': 'docx',
         '.pdf': 'pdf',
         '.txt': 'txt'
@@ -49,7 +50,9 @@ class AttachmentManager:
         )
 
         # Extract content based on file type
-        if attachment.file_type == 'docx':
+        if attachment.file_type == 'doc':
+            attachment.content = self._extract_doc(filepath)
+        elif attachment.file_type == 'docx':
             attachment.content = self._extract_docx(filepath)
         elif attachment.file_type == 'pdf':
             attachment.content = self._extract_pdf(filepath)
@@ -60,7 +63,7 @@ class AttachmentManager:
         return attachment
 
     def _extract_docx(self, filepath: str) -> str:
-        """Extract text from Word document"""
+        """Extract text from Word document (docx format)"""
         try:
             from docx import Document
             doc = Document(filepath)
@@ -73,6 +76,39 @@ class AttachmentManager:
             return f"[无法提取Word文档内容，请安装python-docx库] 文件: {filepath}"
         except Exception as e:
             return f"[Word文档提取失败] {str(e)}"
+
+    def _extract_doc(self, filepath: str) -> str:
+        """Extract text from Word document (doc format)"""
+        try:
+            import win32com.client
+            import pythoncom
+            
+            # 初始化 COM
+            pythoncom.CoInitialize()
+            try:
+                word = win32com.client.Dispatch("Word.Application")
+                word.Visible = False
+                
+                # 打开文档
+                doc = word.Documents.Open(os.path.abspath(filepath))
+                content = doc.Content.Text
+                doc.Close(False)
+                word.Quit()
+                
+                return content.strip() if content else ""
+            finally:
+                pythoncom.CoUninitialize()
+        except ImportError:
+            try:
+                # 尝试使用反斜线兼容库
+                from antiword import antiword
+                return antiword.get_text(filepath)
+            except ImportError:
+                return f"[无法提取旧版Word文档(.doc)，请安装pywin32库或使用.docx格式] 文件: {filepath}"
+            except Exception as e:
+                return f"[antiword提取失败] {str(e)}"
+        except Exception as e:
+            return f"[Word文档(.doc)提取失败] {str(e)}"
 
     def _extract_pdf(self, filepath: str) -> str:
         """Extract text from PDF document"""

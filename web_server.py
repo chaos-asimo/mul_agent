@@ -77,6 +77,10 @@ settings = {
 
 }
 
+# 版本号（直接定义在代码中，更新时修改此值）
+app_version = "v1.20260617.154530"
+logger.info(f"App version: {app_version}")
+
 # 初始化控制器
 controller = IterationController(
     agent_manager=agent_manager,
@@ -859,6 +863,11 @@ async def stop_processing():
     processing_status = "stopped"
     controller.stop()
     return {"status": "success", "message": "已停止处理"}
+
+@app.get("/api/version")
+async def get_version_api():
+    """获取应用版本号"""
+    return {"version": app_version}
 
 @app.get("/api/status")
 async def get_status():

@@ -14,6 +14,20 @@ class App {
         this.loadSkills();
         this.loadSkillHistory();
         this.startStatusPolling();
+        this.loadVersion();
+    }
+    
+    async loadVersion() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/version`);
+            const result = await response.json();
+            const versionEl = document.getElementById('version-number');
+            if (versionEl && result.version) {
+                versionEl.textContent = result.version;
+            }
+        } catch (error) {
+            console.error('获取版本号失败:', error);
+        }
     }
 
     setupEventListeners() {
