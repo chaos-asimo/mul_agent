@@ -9,7 +9,7 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, Request, File, UploadFile, Form
+from fastapi import FastAPI, Request, File, UploadFile, Form, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, FileSystemLoader
@@ -74,12 +74,33 @@ settings = {
     "iterations": 1,
     "enable_search": True,
     "max_search_per_iter": 3,
-
 }
 
+# 全局Token统计（累计，只有清空时才重置）
+global_total_prompt_tokens = 0
+global_total_completion_tokens = 0
+global_total_searches = 0
+
 # 版本号（直接定义在代码中，更新时修改此值）
-app_version = "v1.20260617.154530"
+app_version = "v1.20260619.143520"
 logger.info(f"App version: {app_version}")
+
+# 设置模型调用日志回调函数
+def on_model_call_log(log_entry):
+    """模型调用日志回调函数"""
+    logger.info(f"[Token统计] 模型: {log_entry.model_name} | "
+                f"输入: {log_entry.prompt_tokens} tokens | "
+                f"输出: {log_entry.completion_tokens} tokens | "
+                f"耗时: {log_entry.duration:.2f}s | "
+                f"速度: {log_entry.tokens_per_second:.1f} tokens/s")
+
+# 导入并设置回调
+from llm.model_call_logger import model_call_logger
+model_call_logger.set_log_callback(on_model_call_log)
+
+@app.get("/.well-known/appspecific/com.chrome.devtools.json")
+async def chrome_devtools_config():
+    return {}  # 返回空对象，消除Chrome DevTools的404请求
 
 # 初始化控制器
 controller = IterationController(
@@ -918,8 +939,8 @@ async def get_status():
             "current_agent_index": controller.state.current_agent_index,
             "total_agents": total_agents,
             "current_model": controller.state.current_model_name,
-            "total_tokens": controller.state.total_tokens,
-            "search_count": controller.state.search_count,
+            "total_tokens": global_total_prompt_tokens + global_total_completion_tokens,  # 使用全局累计值
+            "search_count": global_total_searches,  # 使用全局累计值
             "elapsed_time": controller.state.elapsed_time,
             "is_running": controller.state.is_running,
             "current_step": current_step,
@@ -933,6 +954,7 @@ async def get_status():
 async def clear_all():
     """清空所有内容"""
     global current_document, processing_status, processing_log, agent_results
+    global global_total_prompt_tokens, global_total_completion_tokens, global_total_searches
     
     # 重置文档
     current_document = ""
@@ -948,6 +970,11 @@ async def clear_all():
     
     # 清空附件
     attachment_manager.clear()
+    
+    # 重置全局Token统计
+    global_total_prompt_tokens = 0
+    global_total_completion_tokens = 0
+    global_total_searches = 0
     
     # 重置控制器状态
     if controller:
@@ -996,6 +1023,339 @@ async def update_settings(new_settings: SettingsUpdate):
 async def get_logs():
     """获取处理日志"""
     return {"logs": processing_log}
+
+@app.post("/api/stream-process")
+async def stream_process(request: ProcessRequest):
+    """流式处理文档，实时返回结果"""
+    from fastapi.responses import StreamingResponse
+    import asyncio
+    
+    global processing_status, current_document
+    
+    processing_status = "running"
+    current_document = request.content
+    
+    async def generate():
+        global processing_status, current_document
+        
+        try:
+            has_configured_model = any(m.api_key for m in model_manager.get_all())
+            if not has_configured_model:
+                yield f"data: {{\"status\": \"error\", \"message\": \"请先配置至少一个模型的API密钥\"}}\n\n"
+                return
+            
+            enabled_agents = agent_manager.get_enabled()
+            if not enabled_agents:
+                yield f"data: {{\"status\": \"error\", \"message\": \"请至少启用一个Agent\"}}\n\n"
+                return
+            
+            controller = IterationController(
+                agent_manager=agent_manager,
+                model_manager=model_manager,
+                log_manager=log_manager,
+                search_manager=search_manager if request.enable_search else None,
+                iterations=request.iterations
+            )
+            
+            yield f"data: {{\"status\": \"started\", \"message\": \"开始处理...\"}}\n\n"
+            
+            for iteration in range(1, request.iterations + 1):
+                if processing_status == "stopped":
+                    yield f"data: {{\"status\": \"stopped\", \"message\": \"用户停止处理\"}}\n\n"
+                    return
+                
+                yield f"data: {{\"status\": \"iteration\", \"message\": \"迭代 {iteration}/{request.iterations} 开始\"}}\n\n"
+                
+                buffer = []
+                buffer_size = 0
+                
+                for event in controller.run_iteration_stream(iteration, current_document):
+                    if processing_status == "stopped":
+                        yield f"data: {{\"status\": \"stopped\", \"message\": \"用户停止处理\"}}\n\n"
+                        return
+                    
+                    if event["type"] == "agent_start":
+                        yield f"data: {{\"status\": \"agent_start\", \"agent\": \"{event['agent_name']}\", \"model\": \"{event['model_name']}\"}}\n\n"
+                    
+                    elif event["type"] == "chunk":
+                        buffer.append(event["content"])
+                        buffer_size += len(event["content"])
+                        
+                        if buffer_size >= 50 or len(buffer) >= 10:
+                            current_document += ''.join(buffer)
+                            yield f"data: {{\"status\": \"chunk\", \"content\": {json.dumps(''.join(buffer))}}}\n\n"
+                            buffer = []
+                            buffer_size = 0
+                            await asyncio.sleep(0.01)
+                    
+                    elif event["type"] == "agent_complete":
+                        if buffer:
+                            current_document += ''.join(buffer)
+                            yield f"data: {{\"status\": \"chunk\", \"content\": {json.dumps(''.join(buffer))}}}\n\n"
+                            buffer = []
+                            buffer_size = 0
+                        current_document = event["content"]
+                        yield f"data: {{\"status\": \"agent_complete\", \"agent\": \"{event['agent_name']}\"}}\n\n"
+                    
+                    elif event["type"] == "error":
+                        yield f"data: {{\"status\": \"error\", \"message\": \"{event['message']}\"}}\n\n"
+                    
+                    elif event["type"] == "iteration_complete":
+                        if buffer:
+                            current_document += ''.join(buffer)
+                            yield f"data: {{\"status\": \"chunk\", \"content\": {json.dumps(''.join(buffer))}}}\n\n"
+                        current_document = event["content"]
+                        break
+            
+            yield f"data: {{\"status\": \"completed\", \"content\": {json.dumps(current_document)}}}\n\n"
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {{\"status\": \"error\", \"message\": \"{str(e)}\"}}\n\n"
+    
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+@app.websocket("/ws/process")
+async def websocket_process(websocket: WebSocket):
+    """WebSocket endpoint for streaming document processing"""
+    global global_total_prompt_tokens, global_total_completion_tokens, global_total_searches
+    
+    await websocket.accept()
+    logger.info("WebSocket connection established")
+    await websocket.send_json({"status": "log", "message": "WebSocket连接已建立"})
+    
+    # 初始化统计变量（使用全局累计值）
+    start_time = None
+    current_iteration = 0
+    total_iterations = 0
+    current_agent_index = 0
+    total_agents = 0
+    
+    async def send_stats():
+        """发送当前统计信息到前端"""
+        elapsed = (datetime.now() - start_time).total_seconds() if start_time else 0
+        hours = int(elapsed // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        seconds = int(elapsed % 60)
+        time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        
+        # 计算步骤进度
+        total_steps = total_iterations * total_agents if total_iterations > 0 and total_agents > 0 else 0
+        if current_iteration > 0 and total_agents > 0:
+            current_step = (current_iteration - 1) * total_agents + current_agent_index + 1
+        else:
+            current_step = 0
+        
+        await websocket.send_json({
+            "status": "stats",
+            "iteration": current_iteration,
+            "total_iterations": total_iterations,
+            "current_step": current_step,
+            "total_steps": total_steps,
+            "total_tokens": global_total_prompt_tokens + global_total_completion_tokens,
+            "prompt_tokens": global_total_prompt_tokens,
+            "completion_tokens": global_total_completion_tokens,
+            "searches": global_total_searches,
+            "elapsed_time": time_str
+        })
+    
+    try:
+        data = await websocket.receive_json()
+        content = data.get("content", "")
+        iterations = data.get("iterations", 1)
+        enable_search = data.get("enable_search", False)
+        total_iterations = iterations
+        
+        # 开始计时
+        start_time = datetime.now()
+        
+        logger.info(f"Received request: iterations={iterations}, enable_search={enable_search}, content_length={len(content)}")
+        await websocket.send_json({"status": "log", "message": f"收到处理请求: 内容长度={len(content)}, 迭代次数={iterations}, 启用搜索={enable_search}"})
+        
+        has_configured_model = any(m.api_key for m in model_manager.get_all())
+        if not has_configured_model:
+            await websocket.send_json({"status": "error", "message": "请先配置至少一个模型的API密钥"})
+            return
+        
+        enabled_agents = agent_manager.get_enabled()
+        if not enabled_agents:
+            await websocket.send_json({"status": "error", "message": "请至少启用一个Agent"})
+            return
+        
+        # 设置Agent总数
+        total_agents = len(enabled_agents)
+        
+        await websocket.send_json({"status": "log", "message": f"已启用 {len(enabled_agents)} 个Agent: {', '.join([a.name for a in enabled_agents])}"})
+        
+        controller = IterationController(
+            agent_manager=agent_manager,
+            model_manager=model_manager,
+            log_manager=log_manager,
+            search_manager=search_manager if enable_search else None,
+            iterations=iterations
+        )
+        
+        await websocket.send_json({"status": "started", "message": "开始处理..."})
+        
+        # Agent索引计数器
+        agent_counter = 0
+        
+        for iteration in range(1, iterations + 1):
+            # 同步更新controller.state（让状态轮询能获取实时数据）
+            controller.state.current_iteration = iteration
+            controller.state.total_iterations = iterations
+            
+            await websocket.send_json({"status": "log", "message": f"=== 迭代 {iteration}/{iterations} 开始 ==="})
+            await websocket.send_json({"status": "iteration", "message": f"迭代 {iteration}/{iterations} 开始"})
+            
+            # 发送统计更新（在迭代开始前发送，此时current_iteration仍是上一次的值）
+            await send_stats()
+            
+            buffer = []
+            buffer_size = 0
+            agent_counter = 0  # 重置Agent计数器
+            
+            for event in controller.run_iteration_stream(iteration, content):
+                if event["type"] == "agent_start":
+                    agent_counter += 1
+                    current_agent_index = agent_counter - 1  # 更新当前Agent索引
+                    
+                    # 同步更新controller.state
+                    controller.state.current_agent_name = event["agent_name"]
+                    controller.state.current_agent_index = current_agent_index
+                    controller.state.current_model_name = event["model_name"]
+                    
+                    await websocket.send_json({"status": "log", "message": f"启动Agent: {event['agent_name']} (使用模型: {event['model_name']})"})
+                    await websocket.send_json({
+                        "status": "agent_start", 
+                        "agent": event["agent_name"], 
+                        "model": event["model_name"],
+                        "iteration": event.get("iteration", 0)
+                    })
+                    
+                    # 发送统计更新
+                    await send_stats()
+                
+                elif event["type"] == "chunk":
+                    buffer.append(event["content"])
+                    buffer_size += len(event["content"])
+                    
+                    if buffer_size >= 50 or len(buffer) >= 10:
+                        content += ''.join(buffer)
+                        await websocket.send_json({"status": "chunk", "content": ''.join(buffer)})
+                        buffer = []
+                        buffer_size = 0
+                        # 每发送一次chunk时也发送统计更新（用于更新运行时长）
+                        await send_stats()
+                        await asyncio.sleep(0.01)
+                
+                elif event["type"] == "agent_complete":
+                    if buffer:
+                        content += ''.join(buffer)
+                        await websocket.send_json({"status": "chunk", "content": ''.join(buffer)})
+                        buffer = []
+                        buffer_size = 0
+                    content = event["content"]
+                    
+                    # 构建详细的Token统计日志
+                    stats = event.get("stats")
+                    if stats:
+                        # 累加Token统计（使用全局变量）
+                        global_total_prompt_tokens += stats.get('prompt_tokens', 0)
+                        global_total_completion_tokens += stats.get('completion_tokens', 0)
+                        
+                        stats_msg = (f"Token统计 - 输入: {stats.get('prompt_tokens', 0)} | "
+                                   f"输出: {stats.get('completion_tokens', 0)} | "
+                                   f"耗时: {stats.get('duration', 0):.2f}s | "
+                                   f"速度: {stats.get('tokens_per_second', 0):.1f} tokens/s")
+                        await websocket.send_json({"status": "log", "message": stats_msg})
+                        
+                        # 发送统计更新
+                        await send_stats()
+                    
+                    await websocket.send_json({"status": "log", "message": f"Agent {event['agent_name']} 完成"})
+                    await websocket.send_json({"status": "agent_complete", "agent": event["agent_name"], "stats": stats})
+                
+                elif event["type"] == "error":
+                    await websocket.send_json({"status": "log", "message": f"错误: {event['message']}"})
+                    await websocket.send_json({"status": "error", "message": event["message"]})
+                    return
+                
+                elif event["type"] == "iteration_complete":
+                    if buffer:
+                        content += ''.join(buffer)
+                        await websocket.send_json({"status": "chunk", "content": ''.join(buffer)})
+                    content = event["content"]
+                    
+                    # 更新当前迭代数（在迭代完成后更新）
+                    current_iteration = iteration
+                    
+                    # 累加搜索次数到全局变量
+                    global_total_searches += controller.state.search_count
+                    
+                    await websocket.send_json({"status": "log", "message": f"=== 迭代 {iteration} 完成 ==="})
+                    
+                    # 发送统计更新（此时current_iteration已更新为当前迭代数）
+                    await send_stats()
+                    break
+            
+            await asyncio.sleep(0.1)
+        
+        await websocket.send_json({"status": "log", "message": "所有迭代完成"})
+        
+        # 发送最终统计
+        await send_stats()
+        
+        await websocket.send_json({"status": "completed", "content": content})
+        
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected")
+        await websocket.send_json({"status": "log", "message": "WebSocket连接已断开"})
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        await websocket.send_json({"status": "log", "message": f"发生错误: {str(e)}"})
+        await websocket.send_json({"status": "error", "message": str(e)})
+
+@app.post("/api/stream-llm")
+async def stream_llm(prompt: str, model_id: str = None):
+    """直接流式调用大模型"""
+    from fastapi.responses import StreamingResponse
+    import asyncio
+    from engine.agent_worker import create_llm_adapter
+    
+    async def generate():
+        try:
+            models = model_manager.get_all()
+            
+            if model_id:
+                model = model_manager.get(model_id)
+            else:
+                configured_models = [m for m in models if m.api_key]
+                if not configured_models:
+                    yield f"data: {{\"status\": \"error\", \"message\": \"请先配置模型\"}}\n\n"
+                    return
+                model = configured_models[0]
+            
+            adapter = create_llm_adapter(model)
+            if not adapter:
+                yield f"data: {{\"status\": \"error\", \"message\": \"无法创建模型适配器\"}}\n\n"
+                return
+            
+            messages = [{"role": "user", "content": prompt}]
+            
+            yield f"data: {{\"status\": \"started\", \"model\": \"{model.name}\"}}\n\n"
+            
+            for chunk in adapter.chat_stream(messages):
+                yield f"data: {{\"status\": \"stream\", \"chunk\": {json.dumps(chunk)}}}\n\n"
+                await asyncio.sleep(0.01)
+            
+            yield f"data: {{\"status\": \"completed\"}}\n\n"
+            
+        except Exception as e:
+            yield f"data: {{\"status\": \"error\", \"message\": \"{str(e)}\"}}\n\n"
+    
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 # ============ 模型调用日志 API ============
 

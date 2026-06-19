@@ -30,6 +30,11 @@ class LLMAdapter(ABC):
         pass
 
     @abstractmethod
+    def chat_stream(self, messages: List[Dict[str, str]], **kwargs):
+        """Send streaming chat request to LLM, yields chunks"""
+        pass
+
+    @abstractmethod
     def count_tokens(self, text: str) -> int:
         """Count tokens in text"""
         pass

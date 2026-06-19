@@ -144,6 +144,65 @@ class AgentWorker:
         
         return f"{change_desc}。由 {self.agent_config.name} Agent 使用 {self.model_config.name} 模型处理。"
 
+    def run_stream(self, user_input: str):
+        """Run the agent with user input in streaming mode - yields chunks"""
+        import json
+        input_content = user_input
+        log_id = None  # 保存日志ID，用于后续获取统计信息
+        stats = None  # 保存 token 统计
+
+        try:
+            messages = self.llm_adapter.create_prompt(
+                system_prompt=self.agent_config.role_description,
+                user_input=user_input,
+                context=[]
+            )
+
+            full_output = ""
+            for chunk in self.llm_adapter.chat_stream(messages):
+                if chunk.startswith("Error:"):
+                    yield {"type": "error", "content": chunk}
+                    return
+                
+                # 检查是否是特殊的统计 chunk
+                if chunk.startswith("{\"__stats__\""):
+                    try:
+                        stats_data = json.loads(chunk)
+                        stats = {
+                            "prompt_tokens": stats_data.get("prompt_tokens", 0),
+                            "completion_tokens": stats_data.get("completion_tokens", 0),
+                            "total_tokens": stats_data.get("total_tokens", 0),
+                            "duration": stats_data.get("duration", 0),
+                            "tokens_per_second": stats_data.get("completion_tokens", 0) / stats_data.get("duration", 1) if stats_data.get("duration", 0) > 0 else 0
+                        }
+                    except:
+                        pass
+                    continue
+                
+                full_output += chunk
+                yield {"type": "chunk", "content": chunk, "agent_name": self.agent_config.name}
+            
+            # 获取最新的模型调用日志统计
+            from llm.model_call_logger import model_call_logger
+            logs = model_call_logger.get_logs(1)
+            if logs and not stats:
+                log_id = logs[0].get("id")
+                stats = {
+                    "prompt_tokens": logs[0].get("prompt_tokens", 0),
+                    "completion_tokens": logs[0].get("completion_tokens", 0),
+                    "total_tokens": logs[0].get("total_tokens", 0),
+                    "duration": logs[0].get("duration", 0),
+                    "tokens_per_second": logs[0].get("tokens_per_second", 0)
+                }
+            
+            if stats:
+                yield {"type": "complete", "content": full_output, "agent_name": self.agent_config.name, "stats": stats}
+            else:
+                yield {"type": "complete", "content": full_output, "agent_name": self.agent_config.name}
+
+        except Exception as e:
+            yield {"type": "error", "content": str(e)}
+
     def _generate_self_evaluation(self, input_content: str, output_content: str) -> str:
         """Generate self-evaluation for the output"""
         eval_prompt = [

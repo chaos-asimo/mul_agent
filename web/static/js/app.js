@@ -1368,25 +1368,28 @@ class App {
                 }
             }
 
-            // 开始主处理流程
-            const response = await fetch(`${this.baseUrl}/api/process`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: finalContent, iterations, enable_search: enableSearch })
-            });
-
-            const result = await response.json();
-            if (result.status === 'success') {
-                this.addLog(result.message);
-                document.getElementById('start-btn').disabled = true;
-                document.getElementById('stop-btn').disabled = false;
-                document.getElementById('status-dot').classList.add('processing');
-                document.getElementById('status-text').textContent = '处理中';
-            } else {
-                alert(result.message);
-            }
+            // 更新状态为处理中
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+            const startBtn = document.getElementById('start-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            statusDot.classList.add('processing');
+            statusText.textContent = '处理中';
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            
+            // 开始主处理流程 - 使用流式API
+            await this.startStreamProcessing(finalContent, iterations, enableSearch);
         } catch (error) {
             this.addLog(`启动失败: ${error.message}`);
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+            const startBtn = document.getElementById('start-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            statusDot.classList.remove('processing');
+            statusText.textContent = '错误';
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
         }
     }
 
@@ -2103,6 +2106,30 @@ class App {
         this.addLog('日志已清空');
     }
 
+    updateStatus(status) {
+        const startBtn = document.getElementById('start-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        
+        if (status === 'completed') {
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusDot.classList.remove('processing');
+            statusText.textContent = '就绪';
+        } else if (status === 'error') {
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusDot.classList.remove('processing');
+            statusText.textContent = '错误';
+        } else if (status === 'processing') {
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            statusDot.classList.add('processing');
+            statusText.textContent = '处理中';
+        }
+    }
+
     toggleMaximize(targetId) {
         const panel = document.getElementById(targetId);
         const btn = document.querySelector(`.maximize-btn[data-target="${targetId}"]`);
@@ -2166,7 +2193,15 @@ class App {
         }
     }
 
-    updatePreview(content) {
+    updatePreview(content, stream = true) {
+        if (stream) {
+            this.streamPreview(content);
+        } else {
+            this._updatePreviewDirect(content);
+        }
+    }
+
+    _updatePreviewDirect(content) {
         const activeView = document.querySelector('.toggle-btn.active').dataset.view;
         
         if (activeView === 'markdown') {
@@ -2176,6 +2211,321 @@ class App {
             document.getElementById('preview-content').innerHTML = 
                 content ? this.markdownToHtml(content) : 
                 '<div class="empty-state"><i class="fas fa-file-text"></i><p>处理后的文档将在这里显示</p></div>';
+        }
+    }
+
+    streamPreview(content) {
+        if (this.streamTimer) {
+            clearInterval(this.streamTimer);
+            this.streamTimer = null;
+        }
+
+        const activeView = document.querySelector('.toggle-btn.active').dataset.view;
+        const previewContent = document.getElementById('preview-content');
+        const isMarkdown = activeView === 'markdown';
+        
+        let index = 0;
+        const totalLength = content.length;
+        
+        const speed = Math.max(5, Math.floor(1000 / totalLength));
+
+        this.streamTimer = setInterval(() => {
+            if (index >= totalLength) {
+                clearInterval(this.streamTimer);
+                this.streamTimer = null;
+                return;
+            }
+
+            const chunkSize = Math.min(10, totalLength - index);
+            const currentContent = content.substring(0, index + chunkSize);
+            
+            if (isMarkdown) {
+                previewContent.innerHTML = `<pre class="markdown-source">${currentContent}</pre>`;
+            } else {
+                previewContent.innerHTML = this.markdownToHtml(currentContent);
+            }
+
+            previewContent.scrollTop = previewContent.scrollHeight;
+            
+            index += chunkSize;
+        }, speed);
+    }
+
+    async startStreamProcessing(content, iterations, enableSearch) {
+        const self = this;
+        try {
+            const startBtn = document.getElementById('start-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+            const inputContent = document.getElementById('input-content');
+            const statWordcount = document.getElementById('stat-wordcount');
+            
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            statusDot.classList.add('processing');
+            statusText.textContent = '处理中';
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/process`;
+            const socket = new WebSocket(wsUrl);
+
+            let accumulatedContent = content;
+            let pendingUpdate = false;
+            let updateTimeout = null;
+            let currentIteration = 0;
+
+            const scheduleUpdate = () => {
+                if (pendingUpdate || updateTimeout) return;
+                pendingUpdate = true;
+                
+                updateTimeout = setTimeout(() => {
+                    pendingUpdate = false;
+                    updateTimeout = null;
+                    
+                    inputContent.value = accumulatedContent;
+                    self._updatePreviewDirect(accumulatedContent);
+                    statWordcount.textContent = accumulatedContent.length;
+                    
+                    // 自动滚动预览区域到底部
+                    const previewContent = document.getElementById('preview-content');
+                    if (previewContent) {
+                        previewContent.scrollTop = previewContent.scrollHeight;
+                    }
+                }, 50);
+            };
+
+            socket.onopen = () => {
+                console.log('WebSocket connected, sending data...');
+                
+                // 重置所有Agent状态为"就绪"
+                const agentRows = document.querySelectorAll('#agent-status-body tr');
+                agentRows.forEach(row => {
+                    const statusBadge = row.querySelector('.status-badge');
+                    if (statusBadge) {
+                        statusBadge.textContent = '就绪';
+                        statusBadge.className = 'status-badge badge-ready';
+                    }
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length >= 7) {
+                        cells[2].textContent = '-';
+                        cells[3].textContent = '0';
+                        cells[4].textContent = '0';
+                        cells[5].textContent = '0';
+                        cells[6].textContent = '-';
+                    }
+                });
+                
+                socket.send(JSON.stringify({
+                    content: content,
+                    iterations: iterations,
+                    enable_search: enableSearch
+                }));
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log('Received WebSocket message:', data);
+                    
+                    // 处理所有类型的日志消息
+                    if (data.status === 'log') {
+                        self.addLog(`📝 ${data.message}`);
+                        return;
+                    }
+                    
+                    if (data.status === 'error') {
+                        self.addLog(`✗ ${data.message}`);
+                        self.updateStatus('error');
+                        socket.close();
+                        return;
+                    }
+                    
+                    if (data.status === 'started') {
+                        self.addLog(`▶ ${data.message}`);
+                        statusDot.classList.add('processing');
+                        statusText.textContent = '处理中';
+                        
+                        // 注意：Token统计是累计的，不应该在任务开始时清零
+                        // 只重置迭代进度和运行时长
+                        const statIteration = document.getElementById('stat-iteration');
+                        const statTime = document.getElementById('stat-time');
+                        if (statIteration) statIteration.textContent = '0/1';
+                        if (statTime) statTime.textContent = '00:00:00';
+                    }
+                    
+                    // 处理统计信息更新
+                    if (data.status === 'stats') {
+                        // 更新迭代进度
+                        const statIteration = document.getElementById('stat-iteration');
+                        if (statIteration) {
+                            statIteration.textContent = `${data.iteration || 0}/${data.total_iterations || 0}`;
+                        }
+                        
+                        // 更新步骤进度（使用current_step和total_steps）
+                        const iterationProgress = document.getElementById('iteration-progress');
+                        if (iterationProgress) {
+                            iterationProgress.textContent = `步骤 ${data.current_step || 0}/${data.total_steps || 0}`;
+                        }
+                        
+                        // 更新进度条
+                        const totalSteps = data.total_steps || 1;
+                        const currentStep = data.current_step || 0;
+                        const progressPercent = totalSteps > 0 ? Math.round((currentStep / totalSteps) * 100) : 0;
+                        const progressFill = document.getElementById('progress-fill');
+                        const progressText = document.getElementById('progress-text');
+                        if (progressFill) {
+                            progressFill.style.width = `${progressPercent}%`;
+                        }
+                        if (progressText) {
+                            progressText.textContent = `${progressPercent}%`;
+                        }
+                        
+                        // 更新总Token
+                        const statTokens = document.getElementById('stat-tokens');
+                        if (statTokens) {
+                            statTokens.textContent = (data.total_tokens || 0).toLocaleString();
+                        }
+                        
+                        // 更新搜索次数
+                        const statSearches = document.getElementById('stat-searches');
+                        if (statSearches) {
+                            statSearches.textContent = data.searches || 0;
+                        }
+                        
+                        // 更新运行时长
+                        const statTime = document.getElementById('stat-time');
+                        if (statTime) {
+                            statTime.textContent = data.elapsed_time || '00:00:00';
+                        }
+                    }
+                    
+                    if (data.status === 'iteration') {
+                        self.addLog(`📌 ${data.message}`);
+                    }
+                    
+                    if (data.status === 'agent_start') {
+                        self.addLog(`⚡ ${data.agent} (${data.model})`);
+                        // 更新当前迭代次数
+                        currentIteration = data.iteration || 0;
+                        // 更新Agent状态表格 - 使用模糊匹配找到对应的Agent行
+                        const agentRows = document.querySelectorAll('#agent-status-body tr');
+                        agentRows.forEach(row => {
+                            const cells = row.querySelectorAll('td');
+                            if (cells.length > 0) {
+                                const cellAgentName = cells[0].textContent.trim();
+                                // 模糊匹配：完全匹配或者名称包含
+                                if (cellAgentName === data.agent || 
+                                    cellAgentName.includes(data.agent) || 
+                                    data.agent.includes(cellAgentName)) {
+                                    const statusBadge = row.querySelector('.status-badge');
+                                    if (statusBadge) {
+                                        statusBadge.textContent = '运行中';
+                                        statusBadge.className = 'status-badge badge-running';
+                                    }
+                                    // cells[0]: Agent名称, cells[1]: 状态, cells[2]: 模型
+                                    if (cells.length >= 3) {
+                                        cells[2].textContent = data.model || '-';
+                                    }
+                                    // cells[3]: 迭代次数
+                                    if (cells.length >= 4) {
+                                        cells[3].textContent = currentIteration;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    
+                    if (data.status === 'chunk' && data.content) {
+                        accumulatedContent += data.content;
+                        scheduleUpdate();
+                    }
+                    
+                    if (data.status === 'agent_complete') {
+                        self.addLog(`✓ ${data.agent} 完成`);
+                        // 更新Agent状态表格 - 使用模糊匹配找到对应的Agent行并填充统计信息
+                        const agentRows = document.querySelectorAll('#agent-status-body tr');
+                        agentRows.forEach(row => {
+                            const cells = row.querySelectorAll('td');
+                            if (cells.length > 0) {
+                                const cellAgentName = cells[0].textContent.trim();
+                                // 模糊匹配：完全匹配或者名称包含
+                                if (cellAgentName === data.agent || 
+                                    cellAgentName.includes(data.agent) || 
+                                    data.agent.includes(cellAgentName)) {
+                                    const statusBadge = row.querySelector('.status-badge');
+                                    if (statusBadge) {
+                                        statusBadge.textContent = '完成';
+                                        statusBadge.className = 'status-badge badge-completed';
+                                    }
+                                    // 更新统计信息列
+                                    // cells[0]: Agent名称, cells[1]: 状态, cells[2]: 模型
+                                    // cells[3]: 迭代, cells[4]: Prompt Tokens, cells[5]: Completion Tokens, cells[6]: 耗时
+                                    if (data.stats) {
+                                        if (cells.length >= 4) cells[3].textContent = currentIteration || 0;
+                                        if (cells.length >= 5) cells[4].textContent = data.stats.prompt_tokens || 0;
+                                        if (cells.length >= 6) cells[5].textContent = data.stats.completion_tokens || 0;
+                                        if (cells.length >= 7) cells[6].textContent = `${(data.stats.duration || 0).toFixed(2)}s`;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    
+                    if (data.status === 'completed' && data.content) {
+                        accumulatedContent = data.content;
+                        inputContent.value = accumulatedContent;
+                        self._updatePreviewDirect(accumulatedContent);
+                        statWordcount.textContent = accumulatedContent.length;
+                        self.addLog('✓ 处理完成');
+                        statusDot.classList.remove('processing');
+                        statusText.textContent = '就绪';
+                        startBtn.disabled = false;
+                        stopBtn.disabled = true;
+                        
+                        // 处理完成后确保滚动到预览底部
+                        const previewContent = document.getElementById('preview-content');
+                        if (previewContent) {
+                            previewContent.scrollTop = previewContent.scrollHeight;
+                        }
+                        
+                        // 将所有Agent状态更新为"完成"
+                        const agentRows = document.querySelectorAll('#agent-status-body tr');
+                        agentRows.forEach(row => {
+                            const statusBadge = row.querySelector('.status-badge');
+                            if (statusBadge && statusBadge.textContent === '运行中') {
+                                statusBadge.textContent = '完成';
+                                statusBadge.className = 'status-badge badge-completed';
+                            }
+                        });
+                        
+                        socket.close();
+                    }
+                } catch (e) {
+                    console.error('解析WebSocket数据失败:', e);
+                }
+            };
+
+            socket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                self.addLog(`✗ WebSocket错误: ${error.message || '未知错误'}`);
+                statusDot.classList.remove('processing');
+                statusText.textContent = '错误';
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+            };
+
+            socket.onclose = (event) => {
+                console.log('WebSocket closed:', event);
+                if (updateTimeout) {
+                    clearTimeout(updateTimeout);
+                }
+            };
+
+        } catch (error) {
+            console.error('Stream processing error:', error);
+            self.addLog(`✗ 流式处理失败: ${error.message}`);
+            self.updateStatus('error');
         }
     }
 

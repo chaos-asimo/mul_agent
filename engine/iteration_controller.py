@@ -62,6 +62,72 @@ class IterationController:
         """Run a single iteration synchronously - used by web server"""
         return self._run_iteration(iteration, document)
 
+    def run_iteration_stream(self, iteration: int, document: str):
+        """Run a single iteration with streaming output - yields chunks from LLM"""
+        enabled_agents = self.agent_manager.get_enabled()
+        current_doc = document
+        max_retries = 3
+
+        search_context = self._perform_search(document, iteration)
+        if search_context:
+            current_doc = f"【搜索参考信息】\n{search_context}\n\n【原始文档】\n{document}"
+
+        for idx, agent_config in enumerate(enabled_agents):
+            if self.state.should_stop:
+                yield {"type": "stop", "message": "用户停止"}
+                return
+
+            model_config = None
+            adapter = None
+            retry_count = 0
+
+            while retry_count < max_retries:
+                model_config = self._get_random_model()
+                if not model_config or not model_config.api_key:
+                    retry_count += 1
+                    continue
+
+                adapter = create_llm_adapter(model_config)
+                if not adapter:
+                    retry_count += 1
+                    continue
+
+                worker = AgentWorker(
+                    agent_config=agent_config,
+                    model_config=model_config,
+                    llm_adapter=adapter
+                )
+
+                yield {"type": "agent_start", "agent_name": agent_config.name, "model_name": model_config.name, "iteration": idx + 1}
+
+                full_output = ""
+                stats = None
+                for chunk in worker.run_stream(current_doc):
+                    if chunk["type"] == "error":
+                        yield {"type": "error", "message": chunk["content"]}
+                        retry_count += 1
+                        break
+                    
+                    if chunk["type"] == "chunk":
+                        full_output += chunk["content"]
+                        yield {"type": "chunk", "content": chunk["content"]}
+                    
+                    if chunk["type"] == "complete":
+                        current_doc = chunk["content"]
+                        # 获取统计信息
+                        if "stats" in chunk:
+                            stats = chunk["stats"]
+                        yield {"type": "agent_complete", "agent_name": agent_config.name, "content": current_doc, "stats": stats}
+                        break
+
+                if chunk.get("type") == "complete":
+                    break
+
+            if retry_count >= max_retries:
+                yield {"type": "error", "message": f"Agent {agent_config.name} 所有模型调用均失败"}
+
+        yield {"type": "iteration_complete", "content": current_doc}
+
     def _get_random_model(self) -> Optional[ModelConfig]:
         """随机选择一个已配置的模型"""
         all_models = self.model_manager.get_all()

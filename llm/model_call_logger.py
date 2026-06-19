@@ -1,7 +1,7 @@
 """模型调用日志管理器"""
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 import json
 import os
 
@@ -18,6 +18,7 @@ class ModelCallLog:
     prompt_tokens: int
     completion_tokens: int
     duration: float  # 调用耗时（秒）
+    tokens_per_second: float = 0.0  # 每秒token输出量
     error: Optional[str] = None
     
     def to_dict(self) -> Dict:
@@ -31,8 +32,21 @@ class ModelCallLog:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "duration": self.duration,
+            "tokens_per_second": self.tokens_per_second,
             "error": self.error
         }
+    
+    def get_summary(self) -> str:
+        """获取日志摘要"""
+        if self.error:
+            return f"[{self.model_name}] 错误: {self.error}"
+        
+        tps = self.tokens_per_second
+        return (f"[{self.model_name}] "
+                f"输入: {self.prompt_tokens} tokens | "
+                f"输出: {self.completion_tokens} tokens | "
+                f"耗时: {self.duration:.2f}s | "
+                f"速度: {tps:.1f} tokens/s")
 
 
 class ModelCallLogger:
@@ -42,8 +56,13 @@ class ModelCallLogger:
         self.log_dir = log_dir
         self.log_file = os.path.join(log_dir, "model_calls.log")
         self.call_logs: List[ModelCallLog] = []
+        self._on_log_callback: Optional[Callable] = None  # 回调函数，用于实时通知
         os.makedirs(log_dir, exist_ok=True)
         self._load_logs()
+    
+    def set_log_callback(self, callback: Callable):
+        """设置日志回调函数，用于实时通知前端"""
+        self._on_log_callback = callback
     
     def _load_logs(self):
         """加载已保存的日志"""
@@ -65,6 +84,7 @@ class ModelCallLogger:
                                     prompt_tokens=data["prompt_tokens"],
                                     completion_tokens=data["completion_tokens"],
                                     duration=data["duration"],
+                                    tokens_per_second=data.get("tokens_per_second", 0.0),
                                     error=data.get("error")
                                 )
                                 self.call_logs.append(log)
@@ -78,6 +98,10 @@ class ModelCallLogger:
                  completion_tokens: int, duration: float, error: Optional[str] = None):
         """记录模型调用"""
         import uuid
+        
+        # 计算每秒token输出量
+        tokens_per_second = completion_tokens / duration if duration > 0 else 0.0
+        
         log_entry = ModelCallLog(
             id=str(uuid.uuid4()),
             timestamp=datetime.now(),
@@ -88,10 +112,24 @@ class ModelCallLogger:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             duration=duration,
+            tokens_per_second=tokens_per_second,
             error=error
         )
         
         self.call_logs.append(log_entry)
+        
+        # 打印详细日志到控制台
+        summary = log_entry.get_summary()
+        print(f"🔵 {summary}")
+        if error:
+            print(f"   ❌ 错误: {error}")
+        
+        # 调用回调函数，通知前端
+        if self._on_log_callback:
+            try:
+                self._on_log_callback(log_entry)
+            except Exception as e:
+                print(f"Callback error: {e}")
         
         # 保存到文件
         try:
