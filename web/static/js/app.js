@@ -2535,95 +2535,132 @@ class App {
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
 
-        // 表格处理 - 先处理表格，避免被其他规则干扰
-        // Markdown表格格式: | 列1 | 列2 | ... | 后跟 |---|---|...|
-        const tableRegex = /(\|[^\n]+\|\n\|[-:| ]+\|\n(?:\|[^\n]+\|\n?)+)/g;
+        // 先提取所有表格，避免被其他规则干扰
+        const tables = [];
+        const tableRegex = /\|[^\n]+\|\n\|[-:| ]+\|\n(\|[^\n]+\|\n?)+/g;
         html = html.replace(tableRegex, (match) => {
-            const lines = match.trim().split('\n');
-            if (lines.length < 2) return match;
-            
-            // 解析表头
-            const headerLine = lines[0];
-            const headers = headerLine.split('|').filter(h => h.trim()).map(h => h.trim());
-            
-            // 解析分隔行（确定对齐方式）
-            const separatorLine = lines[1];
-            const separators = separatorLine.split('|').filter(s => s.trim());
-            const alignments = separators.map(s => {
-                if (s.startsWith(':') && s.endsWith(':')) return 'center';
-                if (s.endsWith(':')) return 'right';
-                return 'left';
-            });
-            
-            // 解析数据行
-            const dataLines = lines.slice(2);
-            const rows = dataLines.map(line => {
-                return line.split('|').filter(c => c.trim()).map(c => c.trim());
-            });
-            
-            // 构建HTML表格
-            let tableHtml = '<table class="markdown-table">\n<thead>\n<tr>\n';
-            headers.forEach((h, i) => {
-                const align = alignments[i] || 'left';
-                tableHtml += `<th style="text-align:${align}">${h}</th>\n`;
-            });
-            tableHtml += '</tr>\n</thead>\n<tbody>\n';
-            
-            rows.forEach(row => {
-                tableHtml += '<tr>\n';
-                row.forEach((cell, i) => {
-                    const align = alignments[i] || 'left';
-                    tableHtml += `<td style="text-align:${align}">${cell}</td>\n`;
-                });
-                tableHtml += '</tr>\n';
-            });
-            tableHtml += '</tbody>\n</table>\n';
-            
-            return tableHtml;
+            const placeholder = `__TABLE_${tables.length}__`;
+            tables.push(match.trim());
+            return placeholder;
         });
 
-        // 标题
-        html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-        html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-        html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+        // 按双换行分割成块
+        const blocks = html.split(/\n\n+/);
+        const result = [];
 
-        // 粗体和斜体
+        blocks.forEach(block => {
+            block = block.trim();
+            if (!block) return;
+
+            // 检查是否包含表格占位符
+            if (block.includes('__TABLE_')) {
+                // 处理包含表格的块
+                const parts = block.split(/(__TABLE_\d+__)/);
+                parts.forEach(part => {
+                    if (part.startsWith('__TABLE_')) {
+                        const idx = parseInt(part.match(/\d+/)[0]);
+                        result.push(this._parseTable(tables[idx]));
+                    } else if (part.trim()) {
+                        result.push(`<p>${this._escapeBlock(part.trim())}</p>`);
+                    }
+                });
+            } else if (block.startsWith('```')) {
+                const match = block.match(/```(\w*)\n([\s\S]*?)```/);
+                if (match) {
+                    result.push(`<pre><code class="language-${match[1]}">${match[2]}</code></pre>`);
+                } else {
+                    result.push(this._escapeBlock(block));
+                }
+            } else if (block.startsWith('>')) {
+                const lines = block.split('\n');
+                const quoted = lines.map(l => l.replace(/^>\s*/, '').trim()).filter(l => l);
+                result.push(`<blockquote>${quoted.join('<br>')}</blockquote>`);
+            } else if (/^---+$/.test(block)) {
+                result.push('<hr>');
+            } else if (/^#+\s/.test(block)) {
+                const match = block.match(/^(#+)\s(.*)/);
+                if (match) {
+                    const level = match[1].length;
+                    const content = match[2];
+                    result.push(`<h${level}>${content}</h${level}>`);
+                } else {
+                    result.push(this._escapeBlock(block));
+                }
+            } else if (/^- /.test(block) || /^\d+\. /.test(block)) {
+                const lines = block.split('\n');
+                const items = lines
+                    .map(l => l.replace(/^- |^\d+\. /, '').trim())
+                    .filter(l => l);
+                if (items.length > 0) {
+                    const listType = /^\d+\. /.test(lines[0]) ? 'ol' : 'ul';
+                    result.push(`<${listType}>` + items.map(item => `<li>${this._escapeInline(item)}</li>`).join('') + `</${listType}>`);
+                } else {
+                    result.push(this._escapeBlock(block));
+                }
+            } else {
+                result.push(`<p>${this._escapeBlock(block)}</p>`);
+            }
+        });
+
+        return result.join('');
+    }
+
+    _parseTable(tableText) {
+        const lines = tableText.split('\n');
+        if (lines.length < 2) return `<p>${this._escapeBlock(tableText)}</p>`;
+
+        const headerLine = lines[0];
+        const headers = headerLine.split('|').filter(h => h.trim()).map(h => h.trim());
+
+        const separatorLine = lines[1];
+        const separators = separatorLine.split('|').filter(s => s.trim());
+        const alignments = separators.map(s => {
+            if (s.startsWith(':') && s.endsWith(':')) return 'center';
+            if (s.endsWith(':')) return 'right';
+            return 'left';
+        });
+
+        const dataLines = lines.slice(2);
+        const rows = dataLines.map(line => {
+            return line.split('|').filter(c => c.trim()).map(c => c.trim());
+        });
+
+        let tableHtml = '<table class="markdown-table"><thead><tr>';
+        headers.forEach((h, i) => {
+            const align = alignments[i] || 'left';
+            tableHtml += `<th style="text-align:${align}">${h}</th>`;
+        });
+        tableHtml += '</tr></thead><tbody>';
+
+        rows.forEach(row => {
+            tableHtml += '<tr>';
+            row.forEach((cell, i) => {
+                const align = alignments[i] || 'left';
+                tableHtml += `<td style="text-align:${align}">${cell}</td>`;
+            });
+            tableHtml += '</tr>';
+        });
+        tableHtml += '</tbody></table>';
+
+        return tableHtml;
+    }
+
+    _escapeBlock(text) {
+        let html = text;
         html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
         html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-
-        // 列表
-        html = html.replace(/^- (.*$)/gim, '<li>$1</li>');
-        html = html.replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>');
-
-        // 代码块
-        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>');
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-        // 链接
         html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-
-        // 引用块
-        html = html.replace(/^> (.*$)/gim, '<blockquote>$1</blockquote>');
-
-        // 水平线
-        html = html.replace(/^---$/gim, '<hr>');
-
-        // 段落处理 - 将连续的非标签内容包装成段落
-        // 先将双换行分隔的内容包装成段落
-        html = html.replace(/\n\n/g, '</p><p>');
-        
-        // 单换行
         html = html.replace(/\n/g, '<br>');
+        return html;
+    }
 
-        // 清理多余的空段落和br
-        html = html.replace(/<p><\/p>/g, '');
-        html = html.replace(/<br><br>/g, '</p><p>');
-
-        // 包装成段落（如果不是表格、标题等）
-        if (!html.startsWith('<table') && !html.startsWith('<h') && !html.startsWith('<ul') && !html.startsWith('<pre') && !html.startsWith('<blockquote')) {
-            html = '<p>' + html + '</p>';
-        }
-
+    _escapeInline(text) {
+        let html = text;
+        html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
         return html;
     }
 }

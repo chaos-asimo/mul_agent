@@ -120,9 +120,9 @@ class ModelCallLogger:
         
         # 打印详细日志到控制台
         summary = log_entry.get_summary()
-        print(f"🔵 {summary}")
+        print(f"[INFO] {summary}")
         if error:
-            print(f"   ❌ 错误: {error}")
+            print(f"   [ERROR] 错误: {error}")
         
         # 调用回调函数，通知前端
         if self._on_log_callback:
