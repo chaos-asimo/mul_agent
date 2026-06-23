@@ -109,7 +109,7 @@
                                 <span class="stat-value" id="stat-tokens">0</span>
                             </div>
                         </div>
-                        <div class="stat-item">
+                        <div class="stat-item" id="stat-search-item" style="cursor: pointer;" title="点击查看搜索日志">
                             <div class="stat-icon"><i class="fas fa-search"></i></div>
                             <div class="stat-info">
                                 <span class="stat-label">搜索次数</span>
@@ -655,7 +655,34 @@
             if (event.target === execModal) {
                 execModal.style.display = 'none';
             }
+            const searchLogModal = document.getElementById('search-log-modal');
+            if (event.target === searchLogModal) {
+                searchLogModal.style.display = 'none';
+            }
         }
     </script>
+
+    <!-- 搜索日志弹窗 -->
+    <div id="search-log-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="width: 90%; max-width: 1000px; max-height: 80vh;">
+            <div class="modal-header">
+                <h3><i class="fas fa-search"></i> 搜索日志</h3>
+                <button class="close-btn" onclick="app.closeSearchLogModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body" style="overflow-y: auto;">
+                <div id="search-log-list">
+                    <div class="empty-state">
+                        <i class="fas fa-search"></i>
+                        <p>暂无搜索记录</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="app.closeSearchLogModal()">关闭</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

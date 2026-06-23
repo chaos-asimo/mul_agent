@@ -128,6 +128,7 @@ class AgentConfigItem(BaseModel):
     role_description: str
     model_id: str
     enabled: bool
+    order: int = 0
 
 class SearchEngineConfigItem(BaseModel):
     id: Optional[str] = None
@@ -152,7 +153,7 @@ class SettingsUpdate(BaseModel):
 async def index(request: Request):
     """主页面"""
     models = [m.to_dict() for m in model_manager.get_all()]
-    agents = [a.to_dict() for a in agent_manager.get_all()]
+    agents = sorted([a.to_dict() for a in agent_manager.get_all()], key=lambda x: x['order'])
     search_engines = [s.to_dict() for s in search_manager.get_all()]
     template = jinja_env.get_template("index.html")
     html_content = template.render({
@@ -251,7 +252,8 @@ async def create_agent(config: AgentConfigItem):
         name=config.name,
         role_description=config.role_description,
         model_id=config.model_id,
-        enabled=config.enabled
+        enabled=config.enabled,
+        order=config.order
     )
     agent_manager.add(agent)
     return {"status": "success", "message": "Agent创建成功"}
@@ -264,7 +266,8 @@ async def update_agent(agent_id: str, config: AgentConfigItem):
         name=config.name,
         role_description=config.role_description,
         model_id=config.model_id,
-        enabled=config.enabled
+        enabled=config.enabled,
+        order=config.order
     )
     agent_manager.update(agent)
     return {"status": "success", "message": "Agent更新成功"}
@@ -941,6 +944,7 @@ async def get_status():
             "current_model": controller.state.current_model_name,
             "total_tokens": global_total_prompt_tokens + global_total_completion_tokens,  # 使用全局累计值
             "search_count": global_total_searches,  # 使用全局累计值
+            "search_logs": controller.state.search_logs if controller else [],
             "elapsed_time": controller.state.elapsed_time,
             "is_running": controller.state.is_running,
             "current_step": current_step,
@@ -985,6 +989,7 @@ async def clear_all():
         controller.state.current_model_name = ""
         controller.state.total_tokens = 0
         controller.state.search_count = 0
+        controller.state.search_logs = []
         controller.state.elapsed_time = 0.0
     
     return {"status": "success", "message": "已清空所有内容"}
@@ -1120,6 +1125,7 @@ async def stream_process(request: ProcessRequest):
 async def websocket_process(websocket: WebSocket):
     """WebSocket endpoint for streaming document processing"""
     global global_total_prompt_tokens, global_total_completion_tokens, global_total_searches
+    global controller, current_document, processing_status, processing_log, agent_results
     
     await websocket.accept()
     logger.info("WebSocket connection established")
@@ -1140,17 +1146,23 @@ async def websocket_process(websocket: WebSocket):
         seconds = int(elapsed % 60)
         time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         
+        # 从controller.state获取状态
+        iter_state = controller.state if controller else None
+        current_iter = iter_state.current_iteration if iter_state else 0
+        total_iter = iter_state.total_iterations if iter_state else 0
+        agent_idx = iter_state.current_agent_index if iter_state else 0
+        
         # 计算步骤进度
-        total_steps = total_iterations * total_agents if total_iterations > 0 and total_agents > 0 else 0
-        if current_iteration > 0 and total_agents > 0:
-            current_step = (current_iteration - 1) * total_agents + current_agent_index + 1
+        total_steps = total_iter * total_agents if total_iter > 0 and total_agents > 0 else 0
+        if current_iter > 0 and total_agents > 0:
+            current_step = (current_iter - 1) * total_agents + agent_idx + 1
         else:
             current_step = 0
         
         await websocket.send_json({
             "status": "stats",
-            "iteration": current_iteration,
-            "total_iterations": total_iterations,
+            "iteration": current_iter,
+            "total_iterations": total_iter,
             "current_step": current_step,
             "total_steps": total_steps,
             "total_tokens": global_total_prompt_tokens + global_total_completion_tokens,
@@ -1188,6 +1200,13 @@ async def websocket_process(websocket: WebSocket):
         
         await websocket.send_json({"status": "log", "message": f"已启用 {len(enabled_agents)} 个Agent: {', '.join([a.name for a in enabled_agents])}"})
         
+        # 重置全局状态
+        current_document = content
+        processing_status = "processing"
+        processing_log = []
+        agent_results = {}
+        
+        # 创建控制器（使用全局变量）
         controller = IterationController(
             agent_manager=agent_manager,
             model_manager=model_manager,
@@ -1303,6 +1322,10 @@ async def websocket_process(websocket: WebSocket):
             await asyncio.sleep(0.1)
         
         await websocket.send_json({"status": "log", "message": "所有迭代完成"})
+        
+        # 更新全局状态为完成
+        processing_status = "completed"
+        current_document = content
         
         # 发送最终统计
         await send_stats()

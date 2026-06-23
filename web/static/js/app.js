@@ -54,6 +54,9 @@ class App {
         document.getElementById('search-list').addEventListener('click', (e) => this.handleSearchAction(e));
         document.getElementById('test-search-btn').addEventListener('click', () => this.testSearch());
         
+        // 搜索日志弹窗
+        document.getElementById('stat-search-item').addEventListener('click', () => this.openSearchLogModal());
+        
         // Skills相关
         document.getElementById('open-skill-config-btn').addEventListener('click', () => this.openSkillConfigModal());
         document.getElementById('add-new-skill-btn').addEventListener('click', () => this.createNewSkill());
@@ -174,9 +177,15 @@ class App {
             return;
         }
 
-        list.innerHTML = agents.map(agent => `
-            <div class="config-card" data-id="${agent.id}">
+        agents.sort((a, b) => a.order - b.order);
+        
+        list.innerHTML = agents.map((agent, index) => `
+            <div class="config-card" data-id="${agent.id}" draggable="true" data-order="${agent.order}">
                 <div class="card-header">
+                    <span class="drag-handle" title="拖拽排序">
+                        <i class="fas fa-grip-vertical"></i>
+                    </span>
+                    <span class="order-badge">#${index + 1}</span>
                     <span class="card-title">${agent.name}</span>
                     <div class="card-actions">
                         <button class="action-btn edit-btn" title="编辑">
@@ -195,6 +204,124 @@ class App {
                 </div>
             </div>
         `).join('');
+
+        this.setupDragSorting();
+    }
+
+    setupDragSorting() {
+        const list = document.getElementById('agents-list');
+        let draggedItem = null;
+        let dragOverItem = null;
+
+        list.addEventListener('dragstart', (e) => {
+            draggedItem = e.target.closest('.config-card');
+            draggedItem.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+        });
+
+        list.addEventListener('dragend', (e) => {
+            draggedItem?.classList.remove('dragging');
+            draggedItem = null;
+            dragOverItem = null;
+        });
+
+        list.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            const target = e.target.closest('.config-card');
+            if (target && target !== draggedItem) {
+                dragOverItem = target;
+                target.classList.add('drag-over');
+            }
+        });
+
+        list.addEventListener('dragleave', (e) => {
+            const target = e.target.closest('.config-card');
+            target?.classList.remove('drag-over');
+        });
+
+        list.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const target = e.target.closest('.config-card');
+            if (target && draggedItem && target !== draggedItem) {
+                target.classList.remove('drag-over');
+                
+                const list = document.getElementById('agents-list');
+                const cards = Array.from(list.querySelectorAll('.config-card'));
+                const draggedIndex = cards.indexOf(draggedItem);
+                const targetIndex = cards.indexOf(target);
+                
+                if (draggedIndex < targetIndex) {
+                    list.insertBefore(draggedItem, target.nextSibling);
+                } else {
+                    list.insertBefore(draggedItem, target);
+                }
+                
+                this.saveAgentOrder();
+            }
+        });
+    }
+
+    async saveAgentOrder() {
+        const list = document.getElementById('agents-list');
+        const cards = list.querySelectorAll('.config-card');
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/agents`);
+            const agents = await response.json();
+            
+            const agentMap = {};
+            agents.forEach(agent => {
+                agentMap[agent.id] = agent;
+            });
+
+            for (let index = 0; index < cards.length; index++) {
+                const card = cards[index];
+                const agentId = card.dataset.id;
+                const agent = agentMap[agentId];
+                
+                if (agent) {
+                    agent.order = index;
+                    
+                    const response = await fetch(`${this.baseUrl}/api/agents/${agentId}`, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(agent)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('保存失败');
+                    }
+                }
+            }
+            
+            this.loadAgents();
+            this.updateAgentStatusOrder();
+        } catch (error) {
+            console.error('保存排序失败:', error);
+            alert('保存排序失败，请重试');
+        }
+    }
+
+    updateAgentStatusOrder() {
+        const configCards = document.querySelectorAll('#agents-list .config-card');
+        const statusBody = document.getElementById('agent-status-body');
+        const statusRows = Array.from(statusBody.querySelectorAll('tr'));
+        
+        const sortedRows = [];
+        configCards.forEach(card => {
+            const agentId = card.dataset.id;
+            const row = statusRows.find(r => r.dataset.id === agentId);
+            if (row) {
+                sortedRows.push(row);
+            }
+        });
+        
+        statusBody.innerHTML = '';
+        sortedRows.forEach(row => {
+            statusBody.appendChild(row);
+        });
     }
 
     async loadModels() {
@@ -1969,10 +2096,10 @@ class App {
                     statusText.textContent = '空闲';
                 }
 
-                // 更新文档内容
-                if (status.current_document) {
+                // 更新文档内容（只在处理中时更新，避免完成后重复刷新）
+                if (status.status === 'processing' && status.current_document) {
                     document.getElementById('input-content').value = status.current_document;
-                    this.updatePreview(status.current_document);
+                    this.updatePreview(status.current_document, false); // 使用非流式更新
                     
                     // 更新字数统计
                     document.getElementById('stat-wordcount').textContent = status.current_document.length;
@@ -2020,8 +2147,8 @@ class App {
                         }
                     }
 
-                    // 更新当前运行的Agent状态
-                    if (status.state.current_agent_id) {
+                    // 更新当前运行的Agent状态（只在处理中时更新）
+                    if (status.status === 'processing' && status.state.current_agent_id) {
                         const agentRow = document.querySelector(`#agent-status-body tr[data-id="${status.state.current_agent_id}"]`);
                         if (agentRow) {
                             const statusBadge = agentRow.querySelector('.status-badge');
@@ -2266,6 +2393,12 @@ class App {
             statusDot.classList.add('processing');
             statusText.textContent = '处理中';
 
+            // 停止状态轮询，使用WebSocket更新
+            if (this.statusInterval) {
+                clearInterval(this.statusInterval);
+                this.statusInterval = null;
+            }
+
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws/process`;
             const socket = new WebSocket(wsUrl);
@@ -2489,13 +2622,16 @@ class App {
                             previewContent.scrollTop = previewContent.scrollHeight;
                         }
                         
-                        // 将所有Agent状态更新为"完成"
+                        // 将所有Agent状态更新为"完成"（确保最后一个Agent也被更新）
                         const agentRows = document.querySelectorAll('#agent-status-body tr');
                         agentRows.forEach(row => {
                             const statusBadge = row.querySelector('.status-badge');
-                            if (statusBadge && statusBadge.textContent === '运行中') {
-                                statusBadge.textContent = '完成';
-                                statusBadge.className = 'status-badge badge-completed';
+                            if (statusBadge) {
+                                const currentStatus = statusBadge.textContent;
+                                if (currentStatus === '运行中' || currentStatus === '就绪') {
+                                    statusBadge.textContent = '完成';
+                                    statusBadge.className = 'status-badge badge-completed';
+                                }
                             }
                         });
                         
@@ -2520,6 +2656,13 @@ class App {
                 if (updateTimeout) {
                     clearTimeout(updateTimeout);
                 }
+                // 清除可能存在的streamTimer
+                if (self.streamTimer) {
+                    clearInterval(self.streamTimer);
+                    self.streamTimer = null;
+                }
+                // 重新启动状态轮询
+                self.startStatusPolling();
             };
 
         } catch (error) {
@@ -2610,7 +2753,7 @@ class App {
         if (lines.length < 2) return `<p>${this._escapeBlock(tableText)}</p>`;
 
         const headerLine = lines[0];
-        const headers = headerLine.split('|').filter(h => h.trim()).map(h => h.trim());
+        const headers = headerLine.split('|').filter(h => h.trim()).map(h => this._escapeInline(h.trim()));
 
         const separatorLine = lines[1];
         const separators = separatorLine.split('|').filter(s => s.trim());
@@ -2622,7 +2765,7 @@ class App {
 
         const dataLines = lines.slice(2);
         const rows = dataLines.map(line => {
-            return line.split('|').filter(c => c.trim()).map(c => c.trim());
+            return line.split('|').filter(c => c.trim()).map(c => this._escapeInline(c.trim()));
         });
 
         let tableHtml = '<table class="markdown-table"><thead><tr>';
@@ -2652,6 +2795,30 @@ class App {
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
         html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
         html = html.replace(/\n/g, '<br>');
+        html = html.replace(/&lt;br&gt;/g, '<br>');
+        html = html.replace(/&lt;br\/&gt;/g, '<br>');
+        html = html.replace(/&lt;p&gt;/g, '');
+        html = html.replace(/&lt;\/p&gt;/g, '<br>');
+        html = html.replace(/&lt;b&gt;/g, '<strong>');
+        html = html.replace(/&lt;\/b&gt;/g, '</strong>');
+        html = html.replace(/&lt;i&gt;/g, '<em>');
+        html = html.replace(/&lt;\/i&gt;/g, '</em>');
+        html = html.replace(/&lt;strong&gt;/g, '<strong>');
+        html = html.replace(/&lt;\/strong&gt;/g, '</strong>');
+        html = html.replace(/&lt;em&gt;/g, '<em>');
+        html = html.replace(/&lt;\/em&gt;/g, '</em>');
+        html = html.replace(/&lt;ul&gt;/g, '<ul>');
+        html = html.replace(/&lt;\/ul&gt;/g, '</ul>');
+        html = html.replace(/&lt;ol&gt;/g, '<ol>');
+        html = html.replace(/&lt;\/ol&gt;/g, '</ol>');
+        html = html.replace(/&lt;li&gt;/g, '<li>');
+        html = html.replace(/&lt;\/li&gt;/g, '</li>');
+        html = html.replace(/&lt;span&gt;/g, '<span>');
+        html = html.replace(/&lt;\/span&gt;/g, '</span>');
+        html = html.replace(/&lt;div&gt;/g, '<div>');
+        html = html.replace(/&lt;\/div&gt;/g, '</div>');
+        html = html.replace(/&lt;hr&gt;/g, '<hr>');
+        html = html.replace(/&lt;br\s*\/&gt;/g, '<br>');
         return html;
     }
 
@@ -2661,7 +2828,76 @@ class App {
         html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
         html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+        html = html.replace(/&lt;br&gt;/g, '<br>');
+        html = html.replace(/&lt;br\/&gt;/g, '<br>');
+        html = html.replace(/&lt;p&gt;/g, '');
+        html = html.replace(/&lt;\/p&gt;/g, '<br>');
         return html;
+    }
+
+    openSearchLogModal() {
+        const modal = document.getElementById('search-log-modal');
+        modal.style.display = 'block';
+        this.loadSearchLogs();
+    }
+
+    closeSearchLogModal() {
+        const modal = document.getElementById('search-log-modal');
+        modal.style.display = 'none';
+    }
+
+    async loadSearchLogs() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/status`);
+            const data = await response.json();
+            
+            const searchLogs = data.state?.search_logs || [];
+            const container = document.getElementById('search-log-list');
+            
+            if (searchLogs.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-search"></i>
+                        <p>暂无搜索记录</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = searchLogs.map((log, index) => `
+                <div class="search-log-item">
+                    <div class="search-log-header">
+                        <span class="search-log-iteration">#${log.iteration}</span>
+                        <span class="search-log-time">${log.timestamp}</span>
+                        <span class="search-log-count">${log.result_count} 条结果</span>
+                        <span class="search-log-duration">${log.elapsed_time}s</span>
+                    </div>
+                    <div class="search-log-query">
+                        <i class="fas fa-search"></i>
+                        <span>${log.query}</span>
+                    </div>
+                    ${log.error ? `
+                        <div class="search-log-error">
+                            <i class="fas fa-exclamation-circle"></i>
+                            <span>${log.error}</span>
+                        </div>
+                    ` : ''}
+                    <div class="search-log-results">
+                        ${log.results.map((result, idx) => `
+                            <div class="search-log-result">
+                                <div class="result-title">
+                                    <span class="result-number">${idx + 1}</span>
+                                    <a href="${result.url}" target="_blank" class="result-link">${result.title}</a>
+                                </div>
+                                ${result.snippet ? `<p class="result-snippet">${result.snippet}</p>` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `).join('');
+        } catch (error) {
+            console.error('加载搜索日志失败:', error);
+        }
     }
 }
 

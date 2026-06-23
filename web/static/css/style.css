@@ -1580,6 +1580,44 @@ body {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 12px;
+    gap: 8px;
+}
+
+.config-card .drag-handle {
+    cursor: grab;
+    color: #94a3b8;
+    padding: 4px;
+    transition: color 0.2s;
+}
+
+.config-card .drag-handle:hover {
+    color: #667eea;
+}
+
+.config-card .drag-handle:active {
+    cursor: grabbing;
+}
+
+.config-card .order-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #94a3b8;
+    background: #f1f5f9;
+    padding: 2px 8px;
+    border-radius: 10px;
+    min-width: 28px;
+    text-align: center;
+}
+
+.config-card.dragging {
+    opacity: 0.5;
+    transform: rotate(2deg);
+    box-shadow: 0 8px 24px rgba(102, 126, 234, 0.3);
+}
+
+.config-card.drag-over {
+    border: 2px dashed #667eea;
+    background: #f0f5ff;
 }
 
 .config-card .card-title {
@@ -1773,4 +1811,131 @@ body {
     bottom: 0;
     background: rgba(0, 0, 0, 0.3);
     z-index: 499;
+}
+
+/* 搜索日志弹窗样式 */
+.search-log-item {
+    background: white;
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 12px;
+    border: 1px solid #e2e8f0;
+}
+
+.search-log-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.search-log-iteration {
+    background: #667eea;
+    color: white;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.search-log-time {
+    color: #94a3b8;
+    font-size: 0.85rem;
+}
+
+.search-log-count {
+    background: #f1f5f9;
+    color: #64748b;
+    padding: 2px 8px;
+    border-radius: 8px;
+    font-size: 0.8rem;
+}
+
+.search-log-duration {
+    color: #667eea;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.search-log-query {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #f8fafc;
+    border-radius: 6px;
+    margin-bottom: 12px;
+    font-size: 0.9rem;
+    color: #1e293b;
+}
+
+.search-log-query i {
+    color: #667eea;
+}
+
+.search-log-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #fef2f2;
+    border-radius: 6px;
+    margin-bottom: 12px;
+    font-size: 0.85rem;
+    color: #dc2626;
+}
+
+.search-log-results {
+    margin-top: 8px;
+}
+
+.search-log-result {
+    padding: 10px 12px;
+    border-left: 3px solid #667eea;
+    margin-bottom: 8px;
+    background: #f8fafc;
+    border-radius: 0 4px 4px 0;
+}
+
+.search-log-result:last-child {
+    margin-bottom: 0;
+}
+
+.result-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.result-number {
+    background: #e2e8f0;
+    color: #64748b;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.result-link {
+    color: #667eea;
+    font-weight: 500;
+    text-decoration: none;
+    font-size: 0.9rem;
+}
+
+.result-link:hover {
+    text-decoration: underline;
+}
+
+.result-snippet {
+    font-size: 0.85rem;
+    color: #64748b;
+    margin: 0;
+    line-height: 1.5;
 }

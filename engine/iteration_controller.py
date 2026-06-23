@@ -28,6 +28,11 @@ class IterationState:
     should_stop: bool = False
     current_document: str = ""
     search_count: int = 0
+    search_logs: List[Dict[str, Any]] = None  # 搜索日志
+    
+    def __post_init__(self):
+        if self.search_logs is None:
+            self.search_logs = []
 
 
 class IterationController:
@@ -98,7 +103,7 @@ class IterationController:
                     llm_adapter=adapter
                 )
 
-                yield {"type": "agent_start", "agent_name": agent_config.name, "model_name": model_config.name, "iteration": idx + 1}
+                yield {"type": "agent_start", "agent_name": agent_config.name, "model_name": model_config.name, "iteration": iteration}
 
                 full_output = ""
                 stats = None
@@ -173,8 +178,19 @@ class IterationController:
             return ""
 
         try:
+            start_time = time.time()
             # 使用搜索管理器进行搜索
             results = self.search_manager.search_sync(query, num_results=3)
+            elapsed_time = time.time() - start_time
+            
+            search_log_entry = {
+                "iteration": iteration,
+                "query": query[:100],
+                "timestamp": time.strftime("%H:%M:%S"),
+                "elapsed_time": round(elapsed_time, 2),
+                "result_count": len(results) if results else 0,
+                "results": []
+            }
             
             if results and len(results) > 0:
                 # 构建搜索上下文
@@ -187,20 +203,41 @@ class IterationController:
                         if result.snippet:
                             context_parts.append(f"   摘要: {result.snippet[:200]}...")
                         context_parts.append("")
+                    
+                    search_log_entry["results"].append({
+                        "title": result.title,
+                        "url": result.url,
+                        "snippet": result.snippet[:200] if result.snippet else ""
+                    })
                 
                 search_context = "\n".join(context_parts)
                 
                 # 更新搜索计数
                 self._update_state(search_count=self.state.search_count + 1)
                 
+                # 记录搜索日志
+                self._update_state(search_logs=self.state.search_logs + [search_log_entry])
+                
                 # 记录日志
                 self._add_log("INFO", f"第 {iteration} 次迭代完成搜索，获取到 {len(results)} 条结果")
                 
                 return search_context
             else:
+                # 记录搜索日志（无结果）
+                self._update_state(search_logs=self.state.search_logs + [search_log_entry])
                 self._add_log("INFO", f"第 {iteration} 次迭代搜索未找到结果")
                 return ""
         except Exception as e:
+            search_log_entry = {
+                "iteration": iteration,
+                "query": query[:100],
+                "timestamp": time.strftime("%H:%M:%S"),
+                "elapsed_time": 0,
+                "result_count": 0,
+                "error": str(e),
+                "results": []
+            }
+            self._update_state(search_logs=self.state.search_logs + [search_log_entry])
             self._add_log("WARNING", f"第 {iteration} 次迭代搜索失败: {str(e)}")
             return ""
 
