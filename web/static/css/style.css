@@ -1555,6 +1555,43 @@ body {
     margin-bottom: 20px;
 }
 
+.divination-input-group {
+    margin-bottom: 15px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.divination-input {
+    flex: 1;
+    min-width: 200px;
+    max-width: 400px;
+    padding: 10px 15px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: border-color 0.3s ease;
+}
+
+.divination-input:focus {
+    outline: none;
+    border-color: #c0392b;
+    box-shadow: 0 0 0 3px rgba(192, 57, 43, 0.1);
+}
+
+.divination-btn {
+    white-space: nowrap;
+}
+
+.divination-hint {
+    font-size: 12px;
+    color: #94a3b8;
+    margin-top: 6px;
+    font-style: italic;
+    width: 100%;
+}
+
 /* 配置卡片网格 */
 .config-grid {
     display: grid;
@@ -1938,4 +1975,599 @@ body {
     color: #64748b;
     margin: 0;
     line-height: 1.5;
+}
+
+/* ============ 周易卜卦样式 ============ */
+
+.yijing-container {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 20px;
+    height: calc(100% - 80px);
+    overflow-y: auto;
+}
+
+.yijing-section {
+    background: white;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.yijing-section .section-header {
+    margin-bottom: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.yijing-section .section-header h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #1e293b;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.section-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-sm {
+    padding: 6px 14px;
+    font-size: 0.85rem;
+}
+
+.ai-solution-loading {
+    width: 100%;
+}
+
+.ai-solution-loading-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-weight: 500;
+}
+
+.ai-solution-loading-header i {
+    font-size: 1.2rem;
+}
+
+.ai-solution-content {
+    padding: 16px;
+    background: #f8fafc;
+    border-radius: 8px;
+}
+    line-height: 1.8;
+    color: #334155;
+}
+
+.ai-solution-content h1,
+.ai-solution-content h2,
+.ai-solution-content h3,
+.ai-solution-content h4 {
+    margin-top: 20px;
+    margin-bottom: 10px;
+    color: #1e293b;
+    font-weight: 600;
+}
+
+.ai-solution-content h1:first-child,
+.ai-solution-content h2:first-child,
+.ai-solution-content h3:first-child {
+    margin-top: 0;
+}
+
+.ai-solution-content p {
+    margin-bottom: 12px;
+    text-indent: 2em;
+}
+
+.ai-solution-content strong {
+    color: #c0392b;
+    font-weight: 600;
+}
+
+.ai-solution-content ul,
+.ai-solution-content ol {
+    margin: 10px 0;
+    padding-left: 2em;
+}
+
+.ai-solution-content li {
+    margin-bottom: 6px;
+}
+
+.coins-container {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+}
+
+.coin-item {
+    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+    border-radius: 12px;
+    padding: 16px 12px;
+    text-align: center;
+    border: 2px solid #e2e8f0;
+    transition: all 0.3s ease;
+}
+
+.coin-item:hover {
+    border-color: #c0392b;
+    box-shadow: 0 4px 12px rgba(192, 57, 43, 0.15);
+}
+
+.coin-step {
+    font-size: 0.75rem;
+    color: #64748b;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.coin-icons {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.coin {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #ffd700 0%, #b8860b 50%, #daa520 100%);
+    border: 2px solid #8b6914;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3), inset 0 1px 2px rgba(255,255,255,0.5);
+    position: relative;
+}
+
+.coin::before {
+    content: '';
+    position: absolute;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.3), transparent 60%);
+}
+
+.coin-back {
+    font-size: 14px;
+    font-weight: bold;
+    color: #5c4033;
+    text-shadow: 0 1px 0 rgba(255,255,255,0.5);
+    z-index: 1;
+}
+
+.coin-back::before {
+    content: '背';
+}
+
+.coin-face {
+    font-size: 14px;
+    font-weight: bold;
+    color: #5c4033;
+    text-shadow: 0 1px 0 rgba(255,255,255,0.5);
+    z-index: 1;
+}
+
+.coin-face::before {
+    content: '字';
+}
+
+.coin-result {
+    font-size: 0.8rem;
+    color: #334155;
+    font-weight: 500;
+    margin-bottom: 4px;
+}
+
+.coin-value {
+    font-size: 0.75rem;
+    color: #64748b;
+    margin-bottom: 8px;
+}
+
+.yao-display {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+}
+
+.yao-display.yang {
+    color: #c0392b;
+}
+
+.yao-display.yin {
+    color: #3b82f6;
+}
+
+.yao-display.change {
+    animation: pulse 1.5s infinite;
+}
+
+.yao-display .change-mark {
+    font-size: 0.65rem;
+    background: #c0392b;
+    color: white;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+.hexagram-container {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.hexagram-layout {
+    display: flex;
+    gap: 30px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.hexagram-left {
+    min-width: 250px;
+    max-width: 320px;
+}
+
+.hexagram-right {
+    flex: 1;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.hexagram-card-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.hexagram-card {
+    text-align: center;
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border-radius: 12px;
+    padding: 20px;
+    min-width: 180px;
+    max-width: 220px;
+    border: 2px solid #f59e0b;
+}
+
+.hexagram-changed-card {
+    background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+    border-color: #3b82f6;
+}
+
+.hexagram-change-arrow-horizontal {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    color: #94a3b8;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0 10px;
+}
+
+.hexagram-change-arrow-horizontal i {
+    font-size: 1.2rem;
+    margin-top: 4px;
+}
+
+.hexagram-title {
+    font-size: 0.85rem;
+    color: #64748b;
+    font-weight: 600;
+    margin-bottom: 12px;
+}
+
+.hexagram-yao-display {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    position: relative;
+}
+
+.hex-upper-label,
+.hex-lower-label {
+    font-size: 0.7rem;
+    color: #92400e;
+    font-weight: 600;
+}
+
+.hexagram-changed-card .hex-upper-label,
+.hexagram-changed-card .hex-lower-label {
+    color: #1e40af;
+}
+
+.hex-yao-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 20px;
+    background: rgba(255, 255, 255, 0.5);
+    border-radius: 8px;
+}
+
+.hex-yao-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 22px;
+}
+
+.hex-yao-symbol {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: 4px;
+    line-height: 1;
+}
+
+.hex-yao-row.yang .hex-yao-symbol {
+    color: #c0392b;
+}
+
+.hex-yao-row.yin .hex-yao-symbol {
+    color: #3b82f6;
+}
+
+.hex-yao-row.change .hex-yao-symbol {
+    animation: pulse 1.5s infinite;
+}
+
+.hexagram-name {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #1e293b;
+    margin-bottom: 6px;
+}
+
+.hexagram-desc {
+    font-size: 0.8rem;
+    color: #475569;
+    line-height: 1.5;
+}
+
+.hexagram-yao-list {
+    background: #f8fafc;
+    border-radius: 12px;
+    padding: 20px;
+    height: 100%;
+}
+
+.yao-list-title {
+    font-size: 0.85rem;
+    color: #64748b;
+    font-weight: 600;
+    margin-bottom: 12px;
+}
+
+.yao-list-items {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 8px;
+}
+
+.yao-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: white;
+    border-radius: 8px;
+    border-left: 4px solid #e2e8f0;
+    transition: all 0.2s ease;
+}
+
+.yao-item:hover {
+    background: #f1f5f9;
+}
+
+.yao-item.yang {
+    border-left-color: #c0392b;
+}
+
+.yao-item.yin {
+    border-left-color: #3b82f6;
+}
+
+.yao-item.change {
+    background: #fef3c7;
+}
+
+.yao-name {
+    font-size: 0.85rem;
+    color: #64748b;
+    width: 40px;
+}
+
+.yao-symbol {
+    font-size: 1.2rem;
+    font-weight: 700;
+    width: 50px;
+}
+
+.yao-item.yang .yao-symbol {
+    color: #c0392b;
+}
+
+.yao-item.yin .yao-symbol {
+    color: #3b82f6;
+}
+
+.yao-type {
+    font-size: 0.8rem;
+    color: #94a3b8;
+    flex: 1;
+}
+
+.yao-change {
+    font-size: 0.7rem;
+    background: #c0392b;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.solution-row {
+    display: flex;
+    gap: 20px;
+    height: 500px;
+}
+
+.solution-left {
+    flex: 1;
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border-radius: 12px;
+    border: 2px solid #f59e0b;
+    padding: 15px;
+    overflow-y: auto;
+}
+
+.solution-right {
+    flex: 1;
+    background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
+    border-radius: 12px;
+    border: 2px solid #6366f1;
+    padding: 15px;
+    overflow-y: auto;
+}
+
+.ai-solution-footer {
+    margin-top: 20px;
+    padding-top: 15px;
+    border-top: 1px solid #ddd;
+    font-size: 0.85rem;
+}
+
+.ai-model-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #666;
+    margin-bottom: 10px;
+}
+
+.ai-model-info i {
+    color: #6366f1;
+}
+
+.ai-prompt-details {
+    margin-top: 10px;
+}
+
+.ai-prompt-details summary {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #6366f1;
+    font-weight: 500;
+    padding: 8px 12px;
+    background: #f0f0ff;
+    border-radius: 6px;
+    transition: background 0.2s;
+}
+
+.ai-prompt-details summary:hover {
+    background: #e0e0ff;
+}
+
+.ai-prompt-text {
+    margin-top: 10px;
+    padding: 12px;
+    background: #f8f9fa;
+    border-radius: 8px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid #e9ecef;
+}
+
+.yijing-solution .solution-container {
+    max-height: none;
+    height: 100%;
+    overflow: visible;
+}
+
+.solution-content {
+    line-height: 1.8;
+    font-size: 0.9rem;
+}
+
+.solution-content-item {
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    border-left: 4px solid #f59e0b;
+}
+
+.solution-label {
+    font-weight: 600;
+    color: #92400e;
+    margin-right: 8px;
+}
+
+.solution-value {
+    color: #78350f;
+    font-weight: 500;
+}
+
+.solution-section {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #c0392b;
+    margin-top: 16px;
+    margin-bottom: 8px;
+}
+
+.solution-section:first-child {
+    margin-top: 0;
+}
+
+.solution-line {
+    color: #334155;
+    text-indent: 2em;
+    margin-bottom: 4px;
+}
+
+.solution-line:first-of-type {
+    text-indent: 0;
 }

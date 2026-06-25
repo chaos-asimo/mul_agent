@@ -97,6 +97,11 @@ class App {
         // 模型调用日志
         document.getElementById('model-calls-btn').addEventListener('click', () => this.showModelCallsDialog());
 
+        // 卜卦相关
+        document.getElementById('start-divination-btn').addEventListener('click', () => this.startDivination());
+        document.getElementById('reset-divination-btn').addEventListener('click', () => this.resetDivination());
+        document.getElementById('ai-explain-btn').addEventListener('click', () => this.startAiExplain());
+
         // 预览切换
         document.querySelectorAll('.toggle-btn').forEach(btn => {
             btn.addEventListener('click', (e) => this.switchPreview(e.target.dataset.view));
@@ -2897,6 +2902,411 @@ class App {
             `).join('');
         } catch (error) {
             console.error('加载搜索日志失败:', error);
+        }
+    }
+
+    async startDivination() {
+        const startBtn = document.getElementById('start-divination-btn');
+        const resetBtn = document.getElementById('reset-divination-btn');
+        const divinationContent = document.getElementById('divination-content');
+        const coinsContainer = document.getElementById('coins-container');
+        const hexagramContainer = document.getElementById('hexagram-container');
+        const solutionContainer = document.getElementById('solution-container');
+
+        startBtn.disabled = true;
+        startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 摇卦中...';
+
+        coinsContainer.innerHTML = '';
+        hexagramContainer.innerHTML = '';
+        solutionContainer.innerHTML = '';
+
+        const content = divinationContent.value.trim();
+
+        try {
+            const url = content 
+                ? `${this.baseUrl}/api/yijing/shake?content=${encodeURIComponent(content)}`
+                : `${this.baseUrl}/api/yijing/shake`;
+            const response = await fetch(url);
+            const result = await response.json();
+
+            if (result.status !== 'success') {
+                alert('摇卦失败: ' + result.message);
+                return;
+            }
+
+            const data = result.data;
+
+            for (let i = 0; i < data.yao_results.length; i++) {
+                const yao = data.yao_results[i];
+                await this.renderCoinResult(yao, i + 1, coinsContainer);
+                await new Promise(r => setTimeout(r, 600));
+            }
+
+            await new Promise(r => setTimeout(r, 500));
+            this.renderHexagramResult(data, hexagramContainer);
+            this.renderSolution(data, solutionContainer);
+
+            this.currentDivinationData = data;
+            const aiExplainBtn = document.getElementById('ai-explain-btn');
+            if (aiExplainBtn) {
+                aiExplainBtn.disabled = false;
+            }
+
+            resetBtn.disabled = false;
+            startBtn.innerHTML = '<i class="fas fa-play"></i> 开始摇卦';
+        } catch (error) {
+            console.error('摇卦失败:', error);
+            alert('摇卦失败: ' + error.message);
+            startBtn.innerHTML = '<i class="fas fa-play"></i> 开始摇卦';
+            startBtn.disabled = false;
+        }
+    }
+
+    renderCoinResult(yao, step, container) {
+        return new Promise(resolve => {
+            const coinItem = document.createElement('div');
+            coinItem.className = 'coin-item';
+            
+            let coinHtml = '';
+            if (yao.coin_result === '三背') {
+                coinHtml = '<div class="coin"><div class="coin-back"></div></div><div class="coin"><div class="coin-back"></div></div><div class="coin"><div class="coin-back"></div></div>';
+            } else if (yao.coin_result === '两背一字') {
+                coinHtml = '<div class="coin"><div class="coin-back"></div></div><div class="coin"><div class="coin-back"></div></div><div class="coin"><div class="coin-face"></div></div>';
+            } else if (yao.coin_result === '两字一背') {
+                coinHtml = '<div class="coin"><div class="coin-back"></div></div><div class="coin"><div class="coin-face"></div></div><div class="coin"><div class="coin-face"></div></div>';
+            } else if (yao.coin_result === '三字') {
+                coinHtml = '<div class="coin"><div class="coin-face"></div></div><div class="coin"><div class="coin-face"></div></div><div class="coin"><div class="coin-face"></div></div>';
+            }
+            
+            coinItem.innerHTML = `
+                <div class="coin-step">第${step}次</div>
+                <div class="coin-icons">${coinHtml}</div>
+                <div class="coin-result">${yao.coin_result}</div>
+                <div class="coin-value">${yao.value} · ${yao.type}</div>
+                <div class="yao-display ${yao.is_yang ? 'yang' : 'yin'} ${yao.is_change ? 'change' : ''}">
+                    ${yao.is_yang ? '—' : '--'}
+                    ${yao.is_change ? '<span class="change-mark">变</span>' : ''}
+                </div>
+            `;
+            
+            coinItem.style.opacity = '0';
+            coinItem.style.transform = 'translateY(20px)';
+            container.appendChild(coinItem);
+            
+            requestAnimationFrame(() => {
+                coinItem.style.transition = 'all 0.5s ease';
+                coinItem.style.opacity = '1';
+                coinItem.style.transform = 'translateY(0)';
+            });
+            
+            setTimeout(resolve, 500);
+        });
+    }
+
+    renderHexagramResult(data, container) {
+        const original = data.original_hexagram;
+        const changed = data.changed_hexagram;
+        const yaoResults = data.yao_results;
+
+        const renderHexagramYao = (yaoList, isChanged) => {
+            let yaoHtml = '';
+            for (let i = 5; i >= 0; i--) {
+                const yao = yaoList[i];
+                const yaoClass = yao.is_yang ? 'yang' : 'yin';
+                const changeClass = isChanged && yao.is_change ? 'change' : '';
+                const symbol = yao.is_yang ? '—' : '--';
+                yaoHtml += `
+                    <div class="hex-yao-row ${yaoClass} ${changeClass}">
+                        <span class="hex-yao-symbol">${symbol}</span>
+                    </div>
+                `;
+            }
+            return yaoHtml;
+        };
+
+        let html = `
+            <div class="hexagram-layout">
+                <div class="hexagram-left">
+                    <div class="hexagram-yao-list">
+                        <div class="yao-list-title">六爻排列（自下而上）</div>
+                        <div class="yao-list-items">
+        `;
+
+        yaoResults.forEach(yao => {
+            const yaoClass = yao.is_yang ? 'yang' : 'yin';
+            const changeClass = yao.is_change ? 'change' : '';
+            html += `
+                <div class="yao-item ${yaoClass} ${changeClass}">
+                    <span class="yao-name">${yao.name}</span>
+                    <span class="yao-symbol">${yao.is_yang ? '—' : '--'}</span>
+                    <span class="yao-type">${yao.type}(${yao.value})</span>
+                    ${yao.is_change ? '<span class="yao-change">变</span>' : ''}
+                </div>
+            `;
+        });
+
+        html += `
+                        </div>
+                    </div>
+                </div>
+                <div class="hexagram-right">
+                    <div class="hexagram-card hexagram-original-card">
+                        <div class="hexagram-title">本卦 · ${original.full_name}</div>
+                        <div class="hexagram-yao-display">
+                            <div class="hex-upper-label">上卦</div>
+                            <div class="hex-yao-stack">
+                                ${renderHexagramYao(yaoResults, false)}
+                            </div>
+                            <div class="hex-lower-label">下卦</div>
+                        </div>
+                        <div class="hexagram-name">第${original.number}卦</div>
+                        <div class="hexagram-desc">${original.description}</div>
+                    </div>
+        `;
+
+        if (changed) {
+            html += `
+                <div class="hexagram-change-arrow-horizontal">
+                    <span>变</span>
+                    <i class="fas fa-arrow-right"></i>
+                </div>
+                <div class="hexagram-card hexagram-changed-card">
+                    <div class="hexagram-title">之卦 · ${changed.full_name}</div>
+                    <div class="hexagram-yao-display">
+                        <div class="hex-upper-label">上卦</div>
+                        <div class="hex-yao-stack">
+                            ${renderHexagramYao(yaoResults.map((y, i) => {
+                                return { is_yang: y.is_change ? !y.is_yang : y.is_yang, is_change: y.is_change };
+                            }), true)}
+                        </div>
+                        <div class="hex-lower-label">下卦</div>
+                    </div>
+                    <div class="hexagram-name">第${changed.number}卦</div>
+                    <div class="hexagram-desc">${changed.description}</div>
+                </div>
+            `;
+        }
+
+        html += `
+                </div>
+            </div>
+        `;
+
+        container.innerHTML = html;
+    }
+
+    renderSolution(data, container) {
+        const lines = data.solution_text.split('\n');
+        let html = '<div class="solution-content">';
+        
+        if (data.content) {
+            html += `<div class="solution-content-item"><span class="solution-label">占卜内容：</span><span class="solution-value">${data.content}</span></div>`;
+            html += '<div class="solution-line">&nbsp;</div>';
+        }
+        
+        lines.forEach(line => {
+            if (line.startsWith('【')) {
+                html += `<div class="solution-section">${line}</div>`;
+            } else if (line.trim()) {
+                html += `<div class="solution-line">${line}</div>`;
+            } else {
+                html += '<div class="solution-line">&nbsp;</div>';
+            }
+        });
+        
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    resetDivination() {
+        const startBtn = document.getElementById('start-divination-btn');
+        const resetBtn = document.getElementById('reset-divination-btn');
+        const aiExplainBtn = document.getElementById('ai-explain-btn');
+        const divinationContent = document.getElementById('divination-content');
+        const coinsContainer = document.getElementById('coins-container');
+        const hexagramContainer = document.getElementById('hexagram-container');
+        const solutionContainer = document.getElementById('solution-container');
+        const aiSolutionContainer = document.getElementById('ai-solution-container');
+
+        if (this.aiExplainEventSource) {
+            this.aiExplainEventSource.close();
+            this.aiExplainEventSource = null;
+        }
+
+        startBtn.disabled = false;
+        aiExplainBtn.disabled = true;
+
+        divinationContent.value = '';
+
+        coinsContainer.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-coins" style="font-size: 48px; margin-bottom: 15px;"></i>
+                <p>点击上方按钮开始摇卦</p>
+                <p style="font-size: 12px; color: #94a3b8;">将依次进行六次铜钱投掷</p>
+            </div>
+        `;
+        
+        hexagramContainer.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-book-open" style="font-size: 48px; margin-bottom: 15px;"></i>
+                <p>摇卦后显示卦象结果</p>
+            </div>
+        `;
+        
+        solutionContainer.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-scroll" style="font-size: 48px; margin-bottom: 15px;"></i>
+                <p>摇卦后显示解卦内容</p>
+            </div>
+        `;
+
+        aiSolutionContainer.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-robot" style="font-size: 48px; margin-bottom: 15px;"></i>
+                <p>点击"AI深度解卦"获取AI解卦</p>
+            </div>
+        `;
+
+        this.currentDivinationData = null;
+    }
+
+    startAiExplain() {
+        const aiExplainBtn = document.getElementById('ai-explain-btn');
+        const aiSolutionContainer = document.getElementById('ai-solution-container');
+
+        if (!this.currentDivinationData) {
+            alert('请先摇卦');
+            return;
+        }
+
+        const data = this.currentDivinationData;
+        const content = document.getElementById('divination-content').value || '';
+
+        aiExplainBtn.disabled = true;
+        aiExplainBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> AI解卦中...';
+
+        aiSolutionContainer.innerHTML = `
+            <div class="ai-solution-loading">
+                <div class="ai-solution-loading-header">
+                    <i class="fas fa-robot"></i>
+                    <span>AI正在解卦中，请稍候...</span>
+                </div>
+                <div class="ai-solution-content" id="ai-solution-content"></div>
+            </div>
+        `;
+
+        const requestBody = {
+            content: content,
+            original: data.original_hexagram || {},
+            changed: data.changed_hexagram || null,
+            yao_results: data.yao_results,
+            change_count: data.change_count,
+            change_yao_positions: data.change_yao_positions || []
+        };
+
+        this.startAiExplainFetch(requestBody, aiExplainBtn, aiSolutionContainer);
+    }
+
+    async startAiExplainFetch(requestBody, aiExplainBtn, solutionContainer) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/yijing/ai-explain`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(requestBody)
+            });
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let fullContent = '';
+            let modelName = '';
+            let promptText = '';
+
+            solutionContainer.innerHTML = `
+                <div class="ai-solution-loading">
+                    <div class="ai-solution-loading-header">
+                        <i class="fas fa-robot"></i>
+                        <span>AI正在解卦中，请稍候...</span>
+                    </div>
+                    <div class="ai-solution-content" id="ai-solution-content"></div>
+                </div>
+            `;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const jsonStr = line.slice(6);
+                        try {
+                            const result = JSON.parse(jsonStr);
+                            if (result.status === 'started') {
+                                modelName = result.model || '';
+                                promptText = result.prompt || '';
+                            } else if (result.status === 'stream') {
+                                fullContent += result.chunk;
+                                const contentEl = document.getElementById('ai-solution-content');
+                                if (contentEl) {
+                                    contentEl.innerHTML = this.markdownToHtml(fullContent);
+                                    const rightContainer = solutionContainer.parentElement;
+                                    if (rightContainer) {
+                                        rightContainer.scrollTop = rightContainer.scrollHeight;
+                                    }
+                                }
+                            } else if (result.status === 'completed') {
+                                modelName = result.model || modelName;
+                                promptText = result.prompt || promptText;
+                                aiExplainBtn.disabled = false;
+                                aiExplainBtn.innerHTML = '<i class="fas fa-robot"></i> AI 深度解卦';
+                                
+                                const loadingHeader = document.querySelector('.ai-solution-loading-header');
+                                if (loadingHeader) {
+                                    loadingHeader.style.display = 'none';
+                                }
+                                
+                                const contentEl = document.getElementById('ai-solution-content');
+                                if (contentEl) {
+                                    const footer = `
+                                        <div class="ai-solution-footer">
+                                            <div class="ai-model-info">
+                                                <i class="fas fa-cpu"></i>
+                                                <span>模型：${modelName}</span>
+                                            </div>
+                                            <details class="ai-prompt-details">
+                                                <summary><i class="fas fa-file-alt"></i> 查看提示词</summary>
+                                                <pre class="ai-prompt-text">${this.escapeHtml(promptText)}</pre>
+                                            </details>
+                                        </div>
+                                    `;
+                                    contentEl.innerHTML = this.markdownToHtml(fullContent) + footer;
+                                    const rightContainer = solutionContainer.parentElement;
+                                    if (rightContainer) {
+                                        rightContainer.scrollTop = rightContainer.scrollHeight;
+                                    }
+                                }
+                            } else if (result.status === 'error') {
+                                alert('AI解卦失败: ' + result.message);
+                                aiExplainBtn.disabled = false;
+                                aiExplainBtn.innerHTML = '<i class="fas fa-robot"></i> AI 深度解卦';
+                            }
+                        } catch (e) {
+                            console.warn('解析SSE数据失败:', e);
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('AI解卦失败:', error);
+            alert('AI解卦失败: ' + error.message);
+            aiExplainBtn.disabled = false;
+            aiExplainBtn.innerHTML = '<i class="fas fa-robot"></i> AI 深度解卦';
         }
     }
 }

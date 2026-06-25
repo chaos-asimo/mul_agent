@@ -37,6 +37,9 @@
                 <button class="nav-btn active" data-tab="main" title="主界面">
                     <i class="fas fa-home"></i>
                 </button>
+                <button class="nav-btn" data-tab="yijing" title="周易卜卦">
+                    <i class="fas fa-coins"></i>
+                </button>
                 <button class="nav-btn" data-tab="models" title="模型配置">
                     <i class="fas fa-cog"></i>
                 </button>
@@ -446,6 +449,79 @@
                         <button id="save-settings-btn" class="btn btn-primary" style="margin-top: 15px;">
                             <i class="fas fa-save"></i> 保存设置
                         </button>
+                    </div>
+                </div>
+
+                <!-- ========== 周易卜卦内容 ========== -->
+                <div class="tab-panel" id="yijing-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-coins"></i> 周易卜卦</h2>
+                        <div class="divination-input-group">
+                            <input type="text" id="divination-content" class="form-control divination-input" placeholder="请输入占卜内容..." />
+                            <button id="start-divination-btn" class="btn btn-primary divination-btn" style="background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%);">
+                                <i class="fas fa-play"></i> 开始摇卦
+                            </button>
+                            <button id="reset-divination-btn" class="btn btn-primary divination-btn" style="background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%);">
+                                <i class="fas fa-redo"></i> 重新摇卦
+                            </button>
+                            <div class="divination-hint">摒除杂念，集中注意力默想自己所求之事，然后点击"开始摇卦"，即可生成卦象。</div>
+                        </div>
+                    </div>
+
+                    <div class="yijing-container">
+                        <div class="yijing-section yijing-coins">
+                            <div class="section-header">
+                                <h3><i class="fas fa-circle"></i> 摇卦过程</h3>
+                            </div>
+                            <div id="coins-container" class="coins-container">
+                                <div class="empty-state">
+                                    <i class="fas fa-coins" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                    <p>点击上方按钮开始摇卦</p>
+                                    <p style="font-size: 12px; color: #94a3b8;">将依次进行六次铜钱投掷</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="yijing-section yijing-result">
+                            <div class="section-header">
+                                <h3><i class="fas fa-book-open"></i> 卦象结果</h3>
+                            </div>
+                            <div id="hexagram-container" class="hexagram-container">
+                                <div class="empty-state">
+                                    <i class="fas fa-book-open" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                    <p>摇卦后显示卦象结果</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="yijing-section yijing-solution">
+                            <div class="section-header">
+                                <h3><i class="fas fa-scroll"></i> 解卦参考</h3>
+                                <div class="section-actions">
+                                    <button id="ai-explain-btn" class="btn btn-primary btn-sm" disabled style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                                        <i class="fas fa-robot"></i> AI 深度解卦
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="solution-row">
+                                <div class="solution-left">
+                                    <div id="solution-container" class="solution-container">
+                                        <div class="empty-state">
+                                            <i class="fas fa-scroll" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                            <p>摇卦后显示解卦内容</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="solution-right">
+                                    <div id="ai-solution-container" class="solution-container">
+                                        <div class="empty-state">
+                                            <i class="fas fa-robot" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                            <p>点击"AI深度解卦"获取AI解卦</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
