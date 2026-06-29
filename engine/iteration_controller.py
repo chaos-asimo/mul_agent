@@ -67,9 +67,13 @@ class IterationController:
         """Run a single iteration synchronously - used by web server"""
         return self._run_iteration(iteration, document)
 
-    def run_iteration_stream(self, iteration: int, document: str):
+    def run_iteration_stream(self, iteration: int, document: str, agent_ids: Optional[List[str]] = None):
         """Run a single iteration with streaming output - yields chunks from LLM"""
-        enabled_agents = self.agent_manager.get_enabled()
+        if agent_ids:
+            agents = [self.agent_manager.get(agent_id) for agent_id in agent_ids if self.agent_manager.get(agent_id)]
+        else:
+            agents = self.agent_manager.get_enabled()
+        
         current_doc = document
         max_retries = 3
 
@@ -77,7 +81,7 @@ class IterationController:
         if search_context:
             current_doc = f"【搜索参考信息】\n{search_context}\n\n【原始文档】\n{document}"
 
-        for idx, agent_config in enumerate(enabled_agents):
+        for idx, agent_config in enumerate(agents):
             if self.state.should_stop:
                 yield {"type": "stop", "message": "用户停止"}
                 return

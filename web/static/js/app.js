@@ -15,6 +15,7 @@ class App {
         this.loadSkillHistory();
         this.startStatusPolling();
         this.loadVersion();
+        this.initAIChat();
     }
     
     async loadVersion() {
@@ -84,6 +85,7 @@ class App {
         document.getElementById('start-btn').addEventListener('click', () => this.startProcessing());
         document.getElementById('stop-btn').addEventListener('click', () => this.stopProcessing());
         document.getElementById('clear-btn').addEventListener('click', () => this.clearAll());
+        document.getElementById('processing-select-agents-btn').addEventListener('click', () => this.openProcessingAgentSelectDialog());
 
         // 保存文档
         document.getElementById('save-btn').addEventListener('click', () => this.saveDocument());
@@ -1978,6 +1980,7 @@ class App {
                 // 重置Agent状态表格
                 const agentRows = document.querySelectorAll('#agent-status-body tr');
                 agentRows.forEach(row => {
+                    row.style.display = '';
                     const badge = row.querySelector('.status-badge');
                     if (badge) {
                         badge.textContent = '就绪';
@@ -2436,9 +2439,28 @@ class App {
             socket.onopen = () => {
                 console.log('WebSocket connected, sending data...');
                 
-                // 重置所有Agent状态为"就绪"
-                const agentRows = document.querySelectorAll('#agent-status-body tr');
+                const agentTableBody = document.getElementById('agent-status-body');
+                const agentRows = Array.from(document.querySelectorAll('#agent-status-body tr'));
+                
+                if (self.processingAgentIds.length > 0 && agentTableBody) {
+                    agentRows.sort((a, b) => {
+                        const idA = a.dataset.id;
+                        const idB = b.dataset.id;
+                        const idxA = self.processingAgentIds.indexOf(idA);
+                        const idxB = self.processingAgentIds.indexOf(idB);
+                        return idxA - idxB;
+                    });
+                    
+                    agentRows.forEach(row => {
+                        agentTableBody.appendChild(row);
+                    });
+                }
+                
                 agentRows.forEach(row => {
+                    const agentId = row.dataset.id;
+                    const shouldShow = !self.processingAgentIds.length || self.processingAgentIds.includes(agentId);
+                    row.style.display = shouldShow ? '' : 'none';
+                    
                     const statusBadge = row.querySelector('.status-badge');
                     if (statusBadge) {
                         statusBadge.textContent = '就绪';
@@ -2457,7 +2479,8 @@ class App {
                 socket.send(JSON.stringify({
                     content: content,
                     iterations: iterations,
-                    enable_search: enableSearch
+                    enable_search: enableSearch,
+                    agent_ids: this.processingAgentIds
                 }));
             };
 
@@ -2620,6 +2643,16 @@ class App {
                         statusText.textContent = '就绪';
                         startBtn.disabled = false;
                         stopBtn.disabled = true;
+                        
+                        // 处理完成后更新进度条到100%
+                        const progressFill = document.getElementById('progress-fill');
+                        const progressText = document.getElementById('progress-text');
+                        if (progressFill) {
+                            progressFill.style.width = '100%';
+                        }
+                        if (progressText) {
+                            progressText.textContent = '100%';
+                        }
                         
                         // 处理完成后确保滚动到预览底部
                         const previewContent = document.getElementById('preview-content');
@@ -3308,6 +3341,751 @@ class App {
             aiExplainBtn.disabled = false;
             aiExplainBtn.innerHTML = '<i class="fas fa-robot"></i> AI 深度解卦';
         }
+    }
+
+    // ============ AI聊天功能 ============
+    aiChatRoles = [];
+    aiChatMessages = [];
+    aiChatEventSource = null;
+    
+    // ============ 文档处理功能 ============
+    processingAgentIds = [];
+    
+    aiChatRoleAvatars = {
+        "编辑": "✏️",
+        "审核": "🔍",
+        "扩展": "📚",
+        "润色": "✨"
+    };
+    aiChatAvatarColors = [
+        "#ef4444", "#f97316", "#f59e0b", "#eab308",
+        "#84cc16", "#22c55e", "#10b981", "#14b8a6",
+        "#06b6d4", "#0ea5e9", "#3b82f6", "#6366f1",
+        "#8b5cf6", "#a855f7", "#d946ef", "#ec4899"
+    ];
+
+    initAIChat() {
+        const selectBtn = document.getElementById('ai-chat-select-agents-btn');
+        const startBtn = document.getElementById('ai-chat-start-btn');
+        
+        if (selectBtn) {
+            selectBtn.addEventListener('click', () => this.openAgentSelectDialog());
+        }
+        
+        if (startBtn) {
+            startBtn.addEventListener('click', () => this.toggleAIChat());
+        }
+        
+        this.loadAIChatRoles();
+    }
+
+    async loadAIChatRoles() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/ai-chat/roles`);
+            const result = await response.json();
+            if (result.status === 'success') {
+                this.aiChatRoles = result.data;
+                this.renderAIChatRoles();
+            }
+        } catch (error) {
+            console.error('加载角色失败:', error);
+        }
+    }
+
+    async openAgentSelectDialog() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/ai-chat/agents?refresh=true`);
+            const result = await response.json();
+            if (result.status !== 'success') {
+                alert('获取agent列表失败');
+                return;
+            }
+
+            const agents = result.data;
+            const existingIds = this.aiChatRoles.map(r => r.agent_id);
+            
+            let html = '<div style="max-height: 400px; overflow-y: auto;">';
+            agents.forEach(agent => {
+                const isSelected = existingIds.includes(agent.id);
+                html += `
+                    <label style="display: flex; align-items: center; padding: 10px; border-bottom: 1px solid #eee; cursor: pointer;">
+                        <input type="checkbox" ${isSelected ? 'checked' : ''} value="${agent.id}">
+                        <div style="margin-left: 10px;">
+                            <div style="font-weight: 600;">${agent.name}</div>
+                            <div style="font-size: 12px; color: #666;">${agent.role_description.substring(0, 50)}...</div>
+                        </div>
+                    </label>
+                `;
+            });
+            html += '</div>';
+
+            const dialog = document.createElement('div');
+            dialog.className = 'modal';
+            dialog.style.display = 'block';
+            dialog.innerHTML = `
+                <div class="modal-content" style="width: 500px;">
+                    <div class="modal-header">
+                        <h3><i class="fas fa-users"></i> 选择角色</h3>
+                        <button class="modal-close" onclick="this.closest('.modal').remove()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        ${html}
+                        <div style="margin-top: 15px;">
+                            <button id="ai-chat-confirm-select" class="btn btn-primary" style="width: 100%;">
+                                <i class="fas fa-check"></i> 确认选择
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(dialog);
+            
+            dialog.querySelector('#ai-chat-confirm-select').addEventListener('click', async () => {
+                const checkboxes = dialog.querySelectorAll('input[type="checkbox"]');
+                const selectedIds = Array.from(checkboxes).filter(c => c.checked).map(c => c.value);
+                
+                // Remove roles that are unchecked
+                for (const role of this.aiChatRoles) {
+                    if (!selectedIds.includes(role.agent_id)) {
+                        await this.removeAIChatRole(role.agent_id);
+                    }
+                }
+                
+                // Add roles that are newly checked
+                for (const agentId of selectedIds) {
+                    if (!existingIds.includes(agentId)) {
+                        await this.addAIChatRole(agentId);
+                    }
+                }
+                
+                dialog.remove();
+            });
+            
+            dialog.querySelector('.modal-close').addEventListener('click', () => dialog.remove());
+        } catch (error) {
+            console.error('打开角色选择对话框失败:', error);
+        }
+    }
+    
+    async openProcessingAgentSelectDialog() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/ai-chat/agents?refresh=true`);
+            const result = await response.json();
+            if (result.status !== 'success') {
+                alert('获取agent列表失败');
+                return;
+            }
+
+            const agents = result.data;
+            const existingIds = [...this.processingAgentIds];
+            
+            let html = '<div style="max-height: 400px; overflow-y: auto;">';
+            agents.forEach(agent => {
+                const isSelected = existingIds.includes(agent.id);
+                html += `
+                    <label style="display: flex; align-items: center; padding: 10px; border-bottom: 1px solid #eee; cursor: pointer;">
+                        <input type="checkbox" ${isSelected ? 'checked' : ''} value="${agent.id}" data-name="${agent.name}">
+                        <div style="margin-left: 10px;">
+                            <div style="font-weight: 600;">${agent.name}</div>
+                            <div style="font-size: 12px; color: #666;">${agent.role_description.substring(0, 50)}...</div>
+                        </div>
+                    </label>
+                `;
+            });
+            html += '</div>';
+
+            const dialog = document.createElement('div');
+            dialog.className = 'modal';
+            dialog.style.display = 'block';
+            dialog.innerHTML = `
+                <div class="modal-content" style="width: 500px;">
+                    <div class="modal-header">
+                        <h3><i class="fas fa-users"></i> 选择处理角色</h3>
+                        <button class="modal-close" onclick="this.closest('.modal').remove()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <p style="color: #666; margin-bottom: 15px; font-size: 13px;">选择用于文档处理的Agent（可多选），未选择时使用所有已启用的Agent。</p>
+                        ${html}
+                        <div style="margin-top: 15px;">
+                            <button id="processing-confirm-select" class="btn btn-primary" style="width: 100%;">
+                                <i class="fas fa-check"></i> 确认选择
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(dialog);
+            
+            const selectionOrder = [...existingIds];
+            
+            dialog.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+                checkbox.addEventListener('change', () => {
+                    const agentId = checkbox.value;
+                    if (checkbox.checked) {
+                        if (!selectionOrder.includes(agentId)) {
+                            selectionOrder.push(agentId);
+                        }
+                    } else {
+                        const index = selectionOrder.indexOf(agentId);
+                        if (index > -1) {
+                            selectionOrder.splice(index, 1);
+                        }
+                    }
+                });
+            });
+            
+            dialog.querySelector('#processing-confirm-select').addEventListener('click', () => {
+                this.processingAgentIds = selectionOrder;
+                
+                const selectBtn = document.getElementById('processing-select-agents-btn');
+                if (selectBtn && selectionOrder.length > 0) {
+                    const selectedNames = selectionOrder.map(id => {
+                        const agent = agents.find(a => a.id === id);
+                        return agent ? agent.name : id;
+                    }).join('、');
+                    selectBtn.innerHTML = `<i class="fas fa-users"></i> 角色选择 (${selectedNames})`;
+                } else if (selectBtn) {
+                    selectBtn.innerHTML = '<i class="fas fa-users"></i> 角色选择';
+                }
+                
+                dialog.remove();
+            });
+            
+            dialog.querySelector('.modal-close').addEventListener('click', () => dialog.remove());
+        } catch (error) {
+            console.error('打开处理角色选择对话框失败:', error);
+        }
+    }
+
+    async addAIChatRole(agentId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/ai-chat/add-role`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_id: agentId })
+            });
+            const result = await response.json();
+            if (result.status === 'success') {
+                this.aiChatRoles.push(result.data);
+                this.renderAIChatRoles();
+            } else {
+                alert(result.message);
+            }
+        } catch (error) {
+            console.error('添加角色失败:', error);
+        }
+    }
+
+    async removeAIChatRole(agentId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/ai-chat/remove-role`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_id: agentId })
+            });
+            const result = await response.json();
+            if (result.status === 'success') {
+                this.aiChatRoles = this.aiChatRoles.filter(r => r.agent_id !== agentId);
+                this.renderAIChatRoles();
+            }
+        } catch (error) {
+            console.error('移除角色失败:', error);
+        }
+    }
+
+    renderAIChatRoles() {
+        const roleList = document.getElementById('ai-chat-role-list');
+        if (!roleList) return;
+
+        if (this.aiChatRoles.length === 0) {
+            roleList.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-users" style="font-size: 32px; margin-bottom: 10px;"></i>
+                    <p>点击"角色选择"添加角色</p>
+                </div>
+            `;
+            return;
+        }
+
+        let html = '';
+        this.aiChatRoles.forEach((role, index) => {
+            const avatar = this.aiChatRoleAvatars[role.name] || this.getRandomAvatar();
+            const color = this.aiChatAvatarColors[index % this.aiChatAvatarColors.length];
+            html += `
+                <div class="ai-chat-role-card">
+                    <button class="remove-btn" onclick="window.app.removeAIChatRole('${role.agent_id}')">
+                        <i class="fas fa-times"></i>
+                    </button>
+                    <div class="ai-chat-role-header">
+                        <div class="ai-chat-role-avatar" style="background: ${color};">${avatar}</div>
+                        <div class="ai-chat-role-info">
+                            <div class="ai-chat-role-name">${role.name}</div>
+                            <div class="ai-chat-role-model">${role.model_name}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+
+        roleList.innerHTML = html;
+    }
+
+    getRandomAvatar() {
+        const avatars = ['👤', '🧑', '👨', '👩', '🧔', '👩‍🦰', '👨‍🦱', '🧑‍🦳'];
+        return avatars[Math.floor(Math.random() * avatars.length)];
+    }
+
+    async toggleAIChat() {
+        const startBtn = document.getElementById('ai-chat-start-btn');
+        
+        if (startBtn.innerHTML.includes('启动聊天')) {
+            await this.startAIChat();
+        } else {
+            await this.stopAIChat();
+        }
+    }
+
+    async startAIChat() {
+        if (this.aiChatRoles.length < 2) {
+            alert('请至少添加2个角色才能开始聊天');
+            return;
+        }
+
+        const dialog = document.createElement('div');
+        dialog.className = 'modal';
+        dialog.style.display = 'block';
+        dialog.innerHTML = `
+            <div class="modal-content" style="width: 450px;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-comments"></i> 开始聊天</h3>
+                    <button class="modal-close" onclick="this.closest('.modal').remove()">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 8px; font-weight: 600;">聊天主题</label>
+                        <input type="text" id="ai-chat-theme-input" 
+                               placeholder="请输入聊天主题，或留空由AI自动生成"
+                               style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                    </div>
+                    <div style="display: flex; gap: 10px; margin-top: 20px;">
+                        <button id="ai-chat-generate-theme-btn" class="btn btn-secondary" style="flex: 1;">
+                            <i class="fas fa-magic"></i> AI生成主题
+                        </button>
+                        <button id="ai-chat-confirm-start-btn" class="btn btn-primary" style="flex: 1;">
+                            <i class="fas fa-play"></i> 开始聊天
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(dialog);
+        
+        const themeInput = dialog.querySelector('#ai-chat-theme-input');
+        themeInput.focus();
+        
+        dialog.querySelector('#ai-chat-generate-theme-btn').addEventListener('click', async () => {
+            const btn = dialog.querySelector('#ai-chat-generate-theme-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 生成中...';
+            
+            try {
+                const response = await fetch(`${this.baseUrl}/api/ai-chat/generate-theme`);
+                const result = await response.json();
+                if (result.status === 'success') {
+                    themeInput.value = result.data.theme;
+                }
+            } catch (error) {
+                console.error('生成主题失败:', error);
+                themeInput.value = '讨论人工智能对未来的影响';
+            }
+            
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-magic"></i> AI生成主题';
+        });
+        
+        dialog.querySelector('#ai-chat-confirm-start-btn').addEventListener('click', async () => {
+            let theme = themeInput.value.trim();
+            
+            if (!theme) {
+                try {
+                    const response = await fetch(`${this.baseUrl}/api/ai-chat/generate-theme`);
+                    const result = await response.json();
+                    if (result.status === 'success') {
+                        theme = result.data.theme;
+                    }
+                } catch (error) {
+                    console.error('生成主题失败:', error);
+                    theme = '讨论人工智能对未来的影响';
+                }
+            }
+            
+            dialog.remove();
+            await this._startAIChatWithTheme(theme);
+        });
+        
+        dialog.querySelector('.modal-close').addEventListener('click', () => dialog.remove());
+    }
+    
+    async _startAIChatWithTheme(theme) {
+        try {
+            this.aiChatMessages = [];
+            this.renderAIChatMessages();
+            this.updateAIChatStats();
+            
+            const startBtn = document.getElementById('ai-chat-start-btn');
+            startBtn.innerHTML = '<i class="fas fa-stop"></i> 停止聊天';
+            startBtn.classList.remove('btn-success');
+            startBtn.classList.add('btn-danger');
+            
+            this.connectAIChatEvents(theme);
+        } catch (error) {
+            console.error('启动聊天失败:', error);
+            alert('启动聊天失败: ' + error.message);
+        }
+    }
+
+    async stopAIChat() {
+        try {
+            this.sendAIChatAction('stop');
+            
+            const startBtn = document.getElementById('ai-chat-start-btn');
+            startBtn.innerHTML = '<i class="fas fa-play"></i> 启动聊天';
+            startBtn.classList.remove('btn-danger');
+            startBtn.classList.add('btn-success');
+            
+            if (this.aiChatWebSocket) {
+                this.aiChatWebSocket.close();
+                this.aiChatWebSocket = null;
+            }
+            
+            this.removeTypingIndicator();
+        } catch (error) {
+            console.error('停止聊天失败:', error);
+        }
+    }
+
+    connectAIChatEvents(theme = null) {
+        if (this.aiChatWebSocket) {
+            this.aiChatWebSocket.close();
+        }
+
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        this.aiChatWebSocket = new WebSocket(`${wsProtocol}//${window.location.host}/ws/ai-chat`);
+        
+        this.aiChatWebSocket.onopen = () => {
+            console.log('AI Chat WebSocket connected');
+            if (theme) {
+                this.sendAIChatAction('start', { theme: theme });
+            }
+        };
+        
+        this.aiChatWebSocket.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                
+                if (data.status === 'connected') {
+                    console.log('WebSocket connected:', data.message);
+                } else if (data.status === 'started') {
+                    this.renderAIChatTheme(data.theme);
+                } else if (data.status === 'stopped') {
+                    this.stopAIChat();
+                } else if (data.status === 'error') {
+                    alert(data.message);
+                } else if (data.event === 'theme') {
+                    this.renderAIChatTheme(data.data.theme);
+                } else if (data.event === 'typing') {
+                    this.showTypingIndicator(data.data.role_name);
+                } else if (data.event === 'message_chunk') {
+                    this.removeTypingIndicator();
+                    this.updateStreamingMessage(data.data.role_name, data.data.chunk, data.data.full_content);
+                } else if (data.event === 'message') {
+                    this.finalizeStreamingMessage(data.data);
+                } else if (data.event === 'stopped') {
+                    this.stopAIChat();
+                }
+            } catch (e) {
+                console.error('解析AI聊天事件失败:', e);
+            }
+        };
+
+        this.aiChatWebSocket.onerror = (error) => {
+            console.error('AI Chat WebSocket error:', error);
+            if (this.aiChatWebSocket) {
+                this.aiChatWebSocket.close();
+                this.aiChatWebSocket = null;
+            }
+        };
+
+        this.aiChatWebSocket.onclose = () => {
+            console.log('AI Chat WebSocket disconnected');
+            this.aiChatWebSocket = null;
+        };
+    }
+
+    sendAIChatAction(action, data = {}) {
+        if (this.aiChatWebSocket && this.aiChatWebSocket.readyState === WebSocket.OPEN) {
+            this.aiChatWebSocket.send(JSON.stringify({ action, ...data }));
+        }
+    }
+
+    renderAIChatTheme(theme) {
+        const messagesContainer = document.getElementById('ai-chat-messages');
+        if (!messagesContainer) return;
+        
+        messagesContainer.innerHTML = `
+            <div class="ai-chat-theme-info">
+                <i class="fas fa-lightbulb"></i> 聊天主题：${theme}
+            </div>
+        `;
+    }
+
+    showTypingIndicator(roleName) {
+        const messagesContainer = document.getElementById('ai-chat-messages');
+        if (!messagesContainer) return;
+        
+        this.removeTypingIndicator();
+        
+        const role = this.aiChatRoles.find(r => r.name === roleName);
+        const avatar = role ? this.aiChatRoleAvatars[role.name] || this.getRandomAvatar() : '👤';
+        const colorIndex = this.aiChatRoles.findIndex(r => r.name === roleName);
+        const color = this.aiChatAvatarColors[colorIndex % this.aiChatAvatarColors.length];
+        
+        const typingDiv = document.createElement('div');
+        typingDiv.className = 'ai-chat-message ai-chat-typing-indicator';
+        typingDiv.innerHTML = `
+            <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
+            <div class="ai-chat-message-content">
+                <div class="ai-chat-message-name">${roleName}</div>
+                <div class="ai-chat-typing">
+                    <span>正在输入</span>
+                    <div class="ai-chat-typing-dot"></div>
+                    <div class="ai-chat-typing-dot"></div>
+                    <div class="ai-chat-typing-dot"></div>
+                </div>
+            </div>
+        `;
+        
+        messagesContainer.appendChild(typingDiv);
+        this.scrollAIChatToBottom();
+    }
+
+    removeTypingIndicator() {
+        const indicator = document.querySelector('.ai-chat-typing-indicator');
+        if (indicator) {
+            indicator.remove();
+        }
+    }
+
+    updateStreamingMessage(roleName, chunk, fullContent) {
+        const messagesContainer = document.getElementById('ai-chat-messages');
+        if (!messagesContainer) return;
+
+        let streamingMsg = messagesContainer.querySelector('.ai-chat-message.streaming');
+        
+        if (!streamingMsg) {
+            const role = this.aiChatRoles.find(r => r.name === roleName);
+            const avatar = role ? this.aiChatRoleAvatars[role.name] || this.getRandomAvatar() : '👤';
+            const colorIndex = this.aiChatRoles.findIndex(r => r.name === roleName);
+            const color = this.aiChatAvatarColors[colorIndex % this.aiChatAvatarColors.length];
+            
+            streamingMsg = document.createElement('div');
+            streamingMsg.className = 'ai-chat-message streaming';
+            streamingMsg.innerHTML = `
+                <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
+                <div class="ai-chat-message-content">
+                    <div class="ai-chat-message-name">${roleName}</div>
+                    <div class="ai-chat-message-text">${this.escapeHtml(fullContent)}</div>
+                </div>
+            `;
+            
+            messagesContainer.appendChild(streamingMsg);
+        } else {
+            const textElement = streamingMsg.querySelector('.ai-chat-message-text');
+            if (textElement) {
+                textElement.innerHTML = this.escapeHtml(fullContent);
+            }
+        }
+        
+        this.scrollAIChatToBottom();
+    }
+
+    finalizeStreamingMessage(messageData) {
+        const messagesContainer = document.getElementById('ai-chat-messages');
+        if (!messagesContainer) return;
+
+        const streamingMsg = messagesContainer.querySelector('.ai-chat-message.streaming');
+        if (streamingMsg) {
+            streamingMsg.classList.remove('streaming');
+            
+            // 在消息末尾添加字数标注和序号
+            const textElement = streamingMsg.querySelector('.ai-chat-message-text');
+            if (textElement) {
+                const content = messageData.content;
+                const charCount = messageData.char_count;
+                const messageIndex = messageData.message_index || (this.aiChatMessages.length + 1);
+                
+                // 处理强调文字：**粗体** 和 [[彩色]]
+                const formattedContent = this.formatAIChatContent(content);
+                
+                textElement.innerHTML = formattedContent + 
+                    `<span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>`;
+            }
+        }
+        
+        const existingIndex = this.aiChatMessages.findIndex(m => m.role_name === messageData.role_name && m.content === messageData.content);
+        if (existingIndex === -1) {
+            this.aiChatMessages.push(messageData);
+        }
+        
+        // 更新总统计
+        this.updateAIChatStats();
+    }
+    
+    updateAIChatStats() {
+        const totalMessagesEl = document.getElementById('ai-chat-total-messages');
+        const totalCharsEl = document.getElementById('ai-chat-total-chars');
+        
+        if (totalMessagesEl) {
+            totalMessagesEl.textContent = this.aiChatMessages.length;
+        }
+        
+        if (totalCharsEl) {
+            const totalChars = this.aiChatMessages.reduce((sum, msg) => {
+                return sum + (msg.char_count || msg.content.length);
+            }, 0);
+            totalCharsEl.textContent = totalChars;
+        }
+    }
+    
+    formatAIChatContent(content) {
+        let formatted = this.escapeHtml(content);
+        
+        // 处理粗体强调：**文字** -> <strong>文字</strong>
+        formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        
+        // 处理彩色强调：[[文字]] -> <span style="color: #ef4444; font-weight: bold;">文字</span>
+        formatted = formatted.replace(/\[\[(.*?)\]\]/g, '<span style="color: #ef4444; font-weight: bold;">$1</span>');
+        
+        return formatted;
+    }
+
+    renderAIChatMessages() {
+        const messagesContainer = document.getElementById('ai-chat-messages');
+        if (!messagesContainer) return;
+
+        if (this.aiChatMessages.length === 0) {
+            messagesContainer.innerHTML = '';
+            return;
+        }
+
+        const existingMessages = messagesContainer.querySelectorAll('.ai-chat-message');
+        const startIndex = existingMessages.length;
+
+        if (startIndex === 0) {
+            let html = '';
+            this.aiChatMessages.forEach((msg, index) => {
+                const role = this.aiChatRoles.find(r => r.name === msg.role_name);
+                const avatar = role ? this.aiChatRoleAvatars[role.name] || this.getRandomAvatar() : '👤';
+                const colorIndex = this.aiChatRoles.findIndex(r => r.name === msg.role_name);
+                const color = this.aiChatAvatarColors[colorIndex % this.aiChatAvatarColors.length];
+                
+                const colorClass = this.getIntelligentColorClass(msg.content);
+                
+                // 添加字数标注和序号
+                const charCount = msg.char_count || msg.content.length;
+                const messageIndex = msg.message_index || (index + 1);
+                const charCountHtml = `<span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>`;
+                
+                // 处理强调文字
+                const formattedContent = this.formatAIChatContent(msg.content);
+                
+                html += `
+                    <div class="ai-chat-message">
+                        <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
+                        <div class="ai-chat-message-content">
+                            <div class="ai-chat-message-name">${msg.role_name}</div>
+                            <div class="ai-chat-message-text ${colorClass}">${formattedContent}${charCountHtml}</div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            const themeInfo = messagesContainer.querySelector('.ai-chat-theme-info');
+            if (themeInfo) {
+                messagesContainer.innerHTML = themeInfo.outerHTML + html;
+            } else {
+                messagesContainer.innerHTML = html;
+            }
+        } else {
+            const fragment = document.createDocumentFragment();
+            
+            for (let i = startIndex; i < this.aiChatMessages.length; i++) {
+                const msg = this.aiChatMessages[i];
+                const role = this.aiChatRoles.find(r => r.name === msg.role_name);
+                const avatar = role ? this.aiChatRoleAvatars[role.name] || this.getRandomAvatar() : '👤';
+                const colorIndex = this.aiChatRoles.findIndex(r => r.name === msg.role_name);
+                const color = this.aiChatAvatarColors[colorIndex % this.aiChatAvatarColors.length];
+                
+                const colorClass = this.getIntelligentColorClass(msg.content);
+                
+                // 添加字数标注和序号
+                const charCount = msg.char_count || msg.content.length;
+                const messageIndex = msg.message_index || (i + 1);
+                const charCountHtml = `<span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>`;
+                
+                // 处理强调文字
+                const formattedContent = this.formatAIChatContent(msg.content);
+                
+                const msgDiv = document.createElement('div');
+                msgDiv.className = 'ai-chat-message';
+                msgDiv.innerHTML = `
+                    <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
+                    <div class="ai-chat-message-content">
+                        <div class="ai-chat-message-name">${msg.role_name}</div>
+                        <div class="ai-chat-message-text ${colorClass}">${formattedContent}${charCountHtml}</div>
+                    </div>
+                `;
+                
+                fragment.appendChild(msgDiv);
+            }
+            
+            messagesContainer.appendChild(fragment);
+        }
+        
+        this.scrollAIChatToBottom();
+    }
+
+    getIntelligentColorClass(content) {
+        if (content.includes('错误') || content.includes('失败') || content.includes('问题')) {
+            return 'intelligent-color danger';
+        } else if (content.includes('成功') || content.includes('完成') || content.includes('好的')) {
+            return 'intelligent-color success';
+        } else if (content.includes('注意') || content.includes('警告') || content.includes('提醒')) {
+            return 'intelligent-color warning';
+        }
+        return '';
+    }
+
+    scrollAIChatToBottom() {
+        const messagesContainer = document.getElementById('ai-chat-messages');
+        if (messagesContainer) {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.appendChild(document.createTextNode(text));
+        return div.innerHTML;
     }
 }
 

@@ -40,6 +40,9 @@
                 <button class="nav-btn" data-tab="yijing" title="周易卜卦">
                     <i class="fas fa-coins"></i>
                 </button>
+                <button class="nav-btn" data-tab="ai-chat" title="AI聊天">
+                    <i class="fas fa-comments"></i>
+                </button>
                 <button class="nav-btn" data-tab="models" title="模型配置">
                     <i class="fas fa-cog"></i>
                 </button>
@@ -73,6 +76,9 @@
                                 <i class="fas fa-trash"></i> 清空附件
                             </button>
                             <div id="attachments-mini" style="display: flex; flex-wrap: wrap; gap: 6px; max-width: 400px;"></div>
+                            <button id="processing-select-agents-btn" class="btn btn-primary btn-sm">
+                                <i class="fas fa-users"></i> 角色选择
+                            </button>
                             <button id="start-btn" class="btn btn-success">
                                 <i class="fas fa-play"></i> 开始处理
                             </button>
@@ -525,6 +531,49 @@
                     </div>
                 </div>
 
+                <!-- ========== AI聊天内容 ========== -->
+                <div class="tab-panel" id="ai-chat-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-comments"></i> AI聊天</h2>
+                    </div>
+                    <div class="ai-chat-container">
+                        <div class="ai-chat-sidebar">
+                            <div class="ai-chat-sidebar-header">
+                                <button id="ai-chat-select-agents-btn" class="btn btn-primary btn-sm">
+                                    <i class="fas fa-user-plus"></i> 角色选择
+                                </button>
+                                <button id="ai-chat-start-btn" class="btn btn-success btn-sm">
+                                    <i class="fas fa-play"></i> 启动聊天
+                                </button>
+                            </div>
+                            <div id="ai-chat-role-list" class="ai-chat-role-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-users" style="font-size: 32px; margin-bottom: 10px;"></i>
+                                    <p>点击"角色选择"添加角色</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="ai-chat-main">
+                            <div class="ai-chat-stats">
+                                <div class="ai-chat-stats-item">
+                                    <i class="fas fa-comments"></i>
+                                    <span>消息: <strong id="ai-chat-total-messages">0</strong> 条</span>
+                                </div>
+                                <div class="ai-chat-stats-item">
+                                    <i class="fas fa-font"></i>
+                                    <span>总字数: <strong id="ai-chat-total-chars">0</strong> 字</span>
+                                </div>
+                            </div>
+                            <div id="ai-chat-messages" class="ai-chat-messages">
+                                <div class="empty-state">
+                                    <i class="fas fa-comments" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                    <p>添加角色后点击"启动聊天"开始对话</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
             </main>
         </div>
     </div>
@@ -680,7 +729,7 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20240615b"></script>
+    <script src="/static/js/app.js?v=20260629i"></script>
     <script>
         function closeSkillConfigModal() {
             const modal = document.getElementById('skill-config-modal');

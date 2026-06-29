@@ -70,6 +70,7 @@ current_document = ""
 processing_status = "idle"
 processing_log = []
 agent_results = {}  # 存储每个Agent的执行结果
+selected_agent_count = 0  # 当前选择的Agent数量
 settings = {
     "iterations": 1,
     "enable_search": True,
@@ -142,6 +143,7 @@ class ProcessRequest(BaseModel):
     content: str
     iterations: int = 10
     enable_search: bool = True
+    agent_ids: List[str] = []
 
 class SettingsUpdate(BaseModel):
     iterations: int
@@ -911,7 +913,7 @@ async def get_status():
                 break
     
     # 计算精确进度
-    total_agents = len(enabled_agents)
+    total_agents = selected_agent_count if selected_agent_count > 0 else len(enabled_agents)
     total_steps = controller.state.total_iterations * total_agents
     
     # 确保current_iteration不为负数
@@ -1049,10 +1051,16 @@ async def stream_process(request: ProcessRequest):
                 yield f"data: {{\"status\": \"error\", \"message\": \"请先配置至少一个模型的API密钥\"}}\n\n"
                 return
             
-            enabled_agents = agent_manager.get_enabled()
-            if not enabled_agents:
-                yield f"data: {{\"status\": \"error\", \"message\": \"请至少启用一个Agent\"}}\n\n"
-                return
+            if request.agent_ids:
+                selected_agents = [agent_manager.get(agent_id) for agent_id in request.agent_ids if agent_manager.get(agent_id)]
+                if not selected_agents:
+                    yield f"data: {{\"status\": \"error\", \"message\": \"选择的Agent不存在\"}}\n\n"
+                    return
+            else:
+                selected_agents = agent_manager.get_enabled()
+                if not selected_agents:
+                    yield f"data: {{\"status\": \"error\", \"message\": \"请至少启用一个Agent\"}}\n\n"
+                    return
             
             controller = IterationController(
                 agent_manager=agent_manager,
@@ -1063,6 +1071,7 @@ async def stream_process(request: ProcessRequest):
             )
             
             yield f"data: {{\"status\": \"started\", \"message\": \"开始处理...\"}}\n\n"
+            yield f"data: {{\"status\": \"log\", \"message\": \"已选择 {len(selected_agents)} 个Agent: {', '.join([a.name for a in selected_agents])}\"}}\n\n"
             
             for iteration in range(1, request.iterations + 1):
                 if processing_status == "stopped":
@@ -1074,7 +1083,7 @@ async def stream_process(request: ProcessRequest):
                 buffer = []
                 buffer_size = 0
                 
-                for event in controller.run_iteration_stream(iteration, current_document):
+                for event in controller.run_iteration_stream(iteration, current_document, request.agent_ids):
                     if processing_status == "stopped":
                         yield f"data: {{\"status\": \"stopped\", \"message\": \"用户停止处理\"}}\n\n"
                         return
@@ -1126,6 +1135,7 @@ async def websocket_process(websocket: WebSocket):
     """WebSocket endpoint for streaming document processing"""
     global global_total_prompt_tokens, global_total_completion_tokens, global_total_searches
     global controller, current_document, processing_status, processing_log, agent_results
+    global selected_agent_count
     
     await websocket.accept()
     logger.info("WebSocket connection established")
@@ -1152,10 +1162,11 @@ async def websocket_process(websocket: WebSocket):
         total_iter = iter_state.total_iterations if iter_state else 0
         agent_idx = iter_state.current_agent_index if iter_state else 0
         
-        # 计算步骤进度
-        total_steps = total_iter * total_agents if total_iter > 0 and total_agents > 0 else 0
-        if current_iter > 0 and total_agents > 0:
-            current_step = (current_iter - 1) * total_agents + agent_idx + 1
+        # 计算步骤进度（使用total_agents确保正确性）
+        selected_agent_count = total_agents
+        total_steps = total_iter * selected_agent_count if total_iter > 0 and selected_agent_count > 0 else 0
+        if current_iter > 0 and selected_agent_count > 0:
+            current_step = (current_iter - 1) * selected_agent_count + agent_idx + 1
         else:
             current_step = 0
         
@@ -1177,12 +1188,13 @@ async def websocket_process(websocket: WebSocket):
         content = data.get("content", "")
         iterations = data.get("iterations", 1)
         enable_search = data.get("enable_search", False)
+        agent_ids = data.get("agent_ids", [])
         total_iterations = iterations
         
         # 开始计时
         start_time = datetime.now()
         
-        logger.info(f"Received request: iterations={iterations}, enable_search={enable_search}, content_length={len(content)}")
+        logger.info(f"Received request: iterations={iterations}, enable_search={enable_search}, content_length={len(content)}, agent_ids={agent_ids}")
         await websocket.send_json({"status": "log", "message": f"收到处理请求: 内容长度={len(content)}, 迭代次数={iterations}, 启用搜索={enable_search}"})
         
         has_configured_model = any(m.api_key for m in model_manager.get_all())
@@ -1190,15 +1202,22 @@ async def websocket_process(websocket: WebSocket):
             await websocket.send_json({"status": "error", "message": "请先配置至少一个模型的API密钥"})
             return
         
-        enabled_agents = agent_manager.get_enabled()
-        if not enabled_agents:
-            await websocket.send_json({"status": "error", "message": "请至少启用一个Agent"})
-            return
+        if agent_ids:
+            selected_agents = [agent_manager.get(agent_id) for agent_id in agent_ids if agent_manager.get(agent_id)]
+            if not selected_agents:
+                await websocket.send_json({"status": "error", "message": "选择的Agent不存在"})
+                return
+        else:
+            selected_agents = agent_manager.get_enabled()
+            if not selected_agents:
+                await websocket.send_json({"status": "error", "message": "请至少启用一个Agent"})
+                return
         
         # 设置Agent总数
-        total_agents = len(enabled_agents)
+        total_agents = len(selected_agents)
+        selected_agent_count = total_agents  # 更新全局变量
         
-        await websocket.send_json({"status": "log", "message": f"已启用 {len(enabled_agents)} 个Agent: {', '.join([a.name for a in enabled_agents])}"})
+        await websocket.send_json({"status": "log", "message": f"已选择 {len(selected_agents)} 个Agent: {', '.join([a.name for a in selected_agents])}"})
         
         # 重置全局状态
         current_document = content
@@ -1235,7 +1254,7 @@ async def websocket_process(websocket: WebSocket):
             buffer_size = 0
             agent_counter = 0  # 重置Agent计数器
             
-            for event in controller.run_iteration_stream(iteration, content):
+            for event in controller.run_iteration_stream(iteration, content, agent_ids):
                 if event["type"] == "agent_start":
                     agent_counter += 1
                     current_agent_index = agent_counter - 1  # 更新当前Agent索引
@@ -1339,6 +1358,51 @@ async def websocket_process(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
         await websocket.send_json({"status": "log", "message": f"发生错误: {str(e)}"})
         await websocket.send_json({"status": "error", "message": str(e)})
+
+
+@app.websocket("/ws/ai-chat")
+async def websocket_ai_chat(websocket: WebSocket):
+    """WebSocket endpoint for AI chat streaming"""
+    await websocket.accept()
+    logger.info("AI Chat WebSocket connection established")
+    
+    try:
+        from ai_chat_manager import ai_chat_manager
+        ai_chat_manager.add_websocket(websocket)
+        
+        await websocket.send_json({"status": "connected", "message": "WebSocket连接已建立"})
+        
+        while True:
+            data = await websocket.receive_json()
+            if data.get("action") == "start":
+                theme = data.get("theme", "")
+                success = await ai_chat_manager.start_chat(theme)
+                if success:
+                    await websocket.send_json({"status": "started", "theme": ai_chat_manager.current_theme})
+                else:
+                    await websocket.send_json({"status": "error", "message": "启动聊天失败，请确保至少添加2个角色"})
+            elif data.get("action") == "stop":
+                await ai_chat_manager.stop_chat()
+                await websocket.send_json({"status": "stopped", "message": "聊天已停止"})
+            elif data.get("action") == "get_status":
+                status = ai_chat_manager.get_status()
+                await websocket.send_json({"status": "status", "data": status})
+            elif data.get("action") == "get_messages":
+                messages = ai_chat_manager.get_messages()
+                await websocket.send_json({"status": "messages", "data": messages})
+            elif data.get("action") == "get_roles":
+                roles = ai_chat_manager.get_roles()
+                await websocket.send_json({"status": "roles", "data": roles})
+    
+    except WebSocketDisconnect:
+        logger.info("AI Chat WebSocket disconnected")
+        from ai_chat_manager import ai_chat_manager
+        ai_chat_manager.remove_websocket(websocket)
+    except Exception as e:
+        logger.error(f"AI Chat WebSocket error: {e}")
+        from ai_chat_manager import ai_chat_manager
+        ai_chat_manager.remove_websocket(websocket)
+
 
 @app.post("/api/stream-llm")
 async def stream_llm(prompt: str, model_id: str = None):
@@ -1625,6 +1689,173 @@ async def yijing_ai_explain_stream(data: str):
         change_count=request_data.get("change_count", 0),
         change_yao_positions=request_data.get("change_yao_positions", [])
     )
+
+# ============ AI聊天 API ============
+@app.get("/api/ai-chat/agents")
+async def ai_chat_get_agents(refresh: bool = False):
+    """获取可用的agent列表"""
+    try:
+        from ai_chat_manager import ai_chat_manager
+        if refresh:
+            ai_chat_manager.refresh_agents()
+        agents = ai_chat_manager.get_available_agents()
+        return {"status": "success", "data": agents}
+    except Exception as e:
+        logger.error(f"AI chat get agents error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/ai-chat/models")
+async def ai_chat_get_models():
+    """获取可用的模型列表"""
+    try:
+        from ai_chat_manager import ai_chat_manager
+        models = ai_chat_manager.get_available_models()
+        return {"status": "success", "data": models}
+    except Exception as e:
+        logger.error(f"AI chat get models error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/ai-chat/add-role")
+async def ai_chat_add_role(request: Request):
+    """添加角色到聊天列表"""
+    try:
+        request_data = await request.json()
+        agent_id = request_data.get("agent_id")
+        from ai_chat_manager import ai_chat_manager
+        role = ai_chat_manager.add_role(agent_id)
+        if role:
+            return {"status": "success", "data": role.to_dict()}
+        else:
+            return {"status": "error", "message": "添加角色失败"}
+    except Exception as e:
+        logger.error(f"AI chat add role error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/ai-chat/remove-role")
+async def ai_chat_remove_role(request: Request):
+    """从聊天列表移除角色"""
+    try:
+        request_data = await request.json()
+        agent_id = request_data.get("agent_id")
+        from ai_chat_manager import ai_chat_manager
+        success = ai_chat_manager.remove_role(agent_id)
+        return {"status": "success" if success else "error", "data": {"agent_id": agent_id}}
+    except Exception as e:
+        logger.error(f"AI chat remove role error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/ai-chat/roles")
+async def ai_chat_get_roles():
+    """获取当前角色列表"""
+    try:
+        from ai_chat_manager import ai_chat_manager
+        roles = ai_chat_manager.get_roles()
+        return {"status": "success", "data": roles}
+    except Exception as e:
+        logger.error(f"AI chat get roles error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/ai-chat/messages")
+async def ai_chat_get_messages():
+    """获取聊天消息"""
+    try:
+        from ai_chat_manager import ai_chat_manager
+        messages = ai_chat_manager.get_messages()
+        return {"status": "success", "data": messages}
+    except Exception as e:
+        logger.error(f"AI chat get messages error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/ai-chat/start")
+async def ai_chat_start(request: Request):
+    """启动聊天"""
+    try:
+        request_data = await request.json()
+        theme = request_data.get("theme", "")
+        from ai_chat_manager import ai_chat_manager
+        success = await ai_chat_manager.start_chat(theme)
+        if success:
+            return {"status": "success", "data": {"theme": ai_chat_manager.current_theme}}
+        else:
+            return {"status": "error", "message": "启动聊天失败，请确保至少添加2个角色"}
+    except Exception as e:
+        logger.error(f"AI chat start error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/ai-chat/stop")
+async def ai_chat_stop():
+    """停止聊天"""
+    try:
+        from ai_chat_manager import ai_chat_manager
+        await ai_chat_manager.stop_chat()
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"AI chat stop error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/ai-chat/status")
+async def ai_chat_status():
+    """获取聊天状态"""
+    try:
+        from ai_chat_manager import ai_chat_manager
+        status = ai_chat_manager.get_status()
+        return {"status": "success", "data": status}
+    except Exception as e:
+        logger.error(f"AI chat status error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/ai-chat/generate-theme")
+async def ai_chat_generate_theme():
+    """生成随机聊天主题"""
+    try:
+        from ai_chat_manager import ai_chat_manager
+        theme = await ai_chat_manager.generate_theme()
+        return {"status": "success", "data": {"theme": theme}}
+    except Exception as e:
+        logger.error(f"AI chat generate theme error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/ai-chat/events")
+async def ai_chat_events(request: Request):
+    """SSE事件流，实时推送聊天消息"""
+    import asyncio as sse_asyncio
+    from fastapi.responses import StreamingResponse
+    from ai_chat_manager import ai_chat_manager
+    
+    event_queue = sse_asyncio.Queue()
+    
+    async def callback(event_type, data):
+        await event_queue.put({"event": event_type, "data": data})
+    
+    ai_chat_manager.add_callback(callback)
+    
+    async def event_generator():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                
+                try:
+                    event_data = await sse_asyncio.wait_for(event_queue.get(), timeout=0.5)
+                    message = f"data: {json.dumps(event_data)}\n\n"
+                    yield message
+                except sse_asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        finally:
+            ai_chat_manager.remove_callback(callback)
+    
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 if __name__ == "__main__":
     import uvicorn
