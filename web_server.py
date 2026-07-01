@@ -52,6 +52,7 @@ jinja_env = Environment(
     cache_size=0
 )
 app.mount("/static", StaticFiles(directory="web/static"), name="static")
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # 全局管理器
 logger.info("Initializing managers...")
@@ -118,6 +119,7 @@ class ModelConfigItem(BaseModel):
     id: Optional[str] = None
     name: str
     api_type: str
+    model_type: str = "text"
     api_url: str
     api_key: str
     model_name: str
@@ -184,6 +186,7 @@ async def create_model(config: ModelConfigItem):
         model = ModelConfig(
             name=config.name,
             api_type=config.api_type,
+            model_type=config.model_type,
             api_url=config.api_url,
             api_key=config.api_key,
             model_name=config.model_name,
@@ -204,6 +207,7 @@ async def update_model(model_id: str, config: ModelConfigItem):
         id=model_id,
         name=config.name,
         api_type=config.api_type,
+        model_type=config.model_type,
         api_url=config.api_url,
         api_key=config.api_key,
         model_name=config.model_name,
@@ -226,17 +230,31 @@ async def test_model(model_id: str):
         return {"status": "error", "message": "模型不存在"}
     
     try:
-        adapter = create_llm_adapter(model)
-        if not adapter:
-            return {"status": "error", "message": "无法创建适配器"}
-        
-        test_messages = [{"role": "user", "content": "Hi, please respond with 'OK' if you can read this."}]
-        response = adapter.chat(test_messages, max_tokens=10)
-        
-        if response.content and "OK" in response.content:
-            return {"status": "success", "message": "连接成功"}
+        if model.model_type == "image":
+            from engine.agent_worker import create_image_adapter
+            adapter = create_image_adapter(model)
+            if not adapter:
+                return {"status": "error", "message": "无法创建文生图适配器"}
+            
+            test_prompt = "A beautiful landscape with mountains and river, digital art style"
+            response = adapter.generate(test_prompt, n=1, size="256x256")
+            
+            if response.success:
+                return {"status": "success", "message": "连接成功", "image_url": response.image_url}
+            else:
+                return {"status": "error", "message": f"测试失败: {response.error}"}
         else:
-            return {"status": "error", "message": f"响应异常: {response.content}"}
+            adapter = create_llm_adapter(model)
+            if not adapter:
+                return {"status": "error", "message": "无法创建适配器"}
+            
+            test_messages = [{"role": "user", "content": "Hi, please respond with 'OK' if you can read this."}]
+            response = adapter.chat(test_messages, max_tokens=10)
+            
+            if response.content and "OK" in response.content:
+                return {"status": "success", "message": "连接成功"}
+            else:
+                return {"status": "error", "message": f"响应异常: {response.content}"}
     except Exception as e:
         return {"status": "error", "message": f"连接失败: {str(e)}"}
 
@@ -1443,6 +1461,66 @@ async def stream_llm(prompt: str, model_id: str = None):
             yield f"data: {{\"status\": \"error\", \"message\": \"{str(e)}\"}}\n\n"
     
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+# ============ 文生图 API ============
+
+class ImageGenerateRequest(BaseModel):
+    prompt: str
+    model_id: Optional[str] = None
+    n: int = 1
+    size: str = "1024x1024"
+    negative_prompt: str = ""
+
+@app.post("/api/image-generate")
+async def generate_image(request: ImageGenerateRequest):
+    """文生图API"""
+    try:
+        models = model_manager.get_all()
+        
+        if request.model_id:
+            model = model_manager.get(request.model_id)
+        else:
+            image_models = [m for m in models if m.api_key and m.enabled and m.model_type == "image"]
+            if not image_models:
+                return {"status": "error", "message": "请先配置至少一个文生图模型"}
+            model = image_models[0]
+        
+        if model.model_type != "image":
+            return {"status": "error", "message": "选择的模型不是文生图模型"}
+        
+        from engine.agent_worker import create_image_adapter
+        adapter = create_image_adapter(model)
+        if not adapter:
+            return {"status": "error", "message": "无法创建文生图适配器"}
+        
+        response = adapter.generate(
+            prompt=request.prompt,
+            n=request.n,
+            size=request.size,
+            negative_prompt=request.negative_prompt
+        )
+        
+        if response.success:
+            return {
+                "status": "success",
+                "model": model.name,
+                "image_url": response.image_url,
+                "image_data": response.image_data.decode('utf-8') if response.image_data else None
+            }
+        else:
+            return {"status": "error", "message": f"生成失败: {response.error}"}
+            
+    except Exception as e:
+        logger.error(f"Image generation error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": f"生成失败: {str(e)}"}
+
+@app.get("/api/image-models")
+async def get_image_models():
+    """获取所有文生图模型"""
+    image_models = [m.to_dict() for m in model_manager.get_all() if m.model_type == "image"]
+    return image_models
 
 # ============ 模型调用日志 API ============
 

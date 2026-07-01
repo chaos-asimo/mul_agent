@@ -13,6 +13,7 @@ class ModelManager:
             id="default_openai",
             name="OpenAI GPT-4",
             api_type="openai",
+            model_type="text",
             api_url="https://api.openai.com/v1",
             api_key="",
             model_name="gpt-4"
@@ -20,7 +21,8 @@ class ModelManager:
         ModelConfig(
             id="default_claude",
             name="Claude 3",
-            api_type="claude",
+            api_type="anthropic",
+            model_type="text",
             api_url="https://api.anthropic.com/v1",
             api_key="",
             model_name="claude-3-opus-20240229"
@@ -29,9 +31,28 @@ class ModelManager:
             id="default_deepseek",
             name="DeepSeek Chat",
             api_type="deepseek",
+            model_type="text",
             api_url="https://api.deepseek.com/v1",
             api_key="",
             model_name="deepseek-chat"
+        ),
+        ModelConfig(
+            id="default_dalle",
+            name="DALL-E 3",
+            api_type="dall-e",
+            model_type="image",
+            api_url="https://api.openai.com/v1",
+            api_key="",
+            model_name="dall-e-3"
+        ),
+        ModelConfig(
+            id="default_sd",
+            name="Stable Diffusion",
+            api_type="stable-diffusion",
+            model_type="image",
+            api_url="https://api.stability.ai/v2beta",
+            api_key="",
+            model_name="sd3-medium"
         ),
     ]
 

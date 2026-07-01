@@ -2788,6 +2788,34 @@ body {
     color: #ef4444;
 }
 
+.ai-chat-image-container {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin-bottom: 8px;
+    width: 100%;
+}
+
+.ai-chat-image {
+    max-width: 100%;
+    max-height: 400px;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    object-fit: contain;
+}
+
+.ai-chat-image-prompt {
+    font-size: 12px;
+    color: #64748b;
+    text-align: left;
+    width: 100%;
+    line-height: 1.5;
+    word-wrap: break-word;
+    word-break: break-word;
+    white-space: normal;
+}
+
 .ai-chat-typing {
     display: flex;
     align-items: center;

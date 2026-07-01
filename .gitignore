@@ -63,3 +63,9 @@ node_modules/
 # Environment variables
 .env
 .env.local
+
+# Uploaded files
+uploads/
+
+# Trae IDE
+.trae/

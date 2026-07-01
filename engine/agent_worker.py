@@ -4,7 +4,10 @@ from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass, field
 
 from llm.adapter_base import LLMAdapter, LLMResponse
+from llm.image_adapter import ImageAdapter, ImageResponse
 from llm import OpenAIAdapter, ClaudeAdapter, DeepSeekAdapter
+from llm.dalle_adapter import DALLEAdapter
+from llm.sd_adapter import StableDiffusionAdapter
 from agents.agent_config import AgentConfig
 from models.model_config import ModelConfig
 
@@ -248,3 +251,28 @@ def create_llm_adapter(model_config: ModelConfig) -> Optional[LLMAdapter]:
             api_url=model_config.api_url
         )
     return None
+
+
+def create_image_adapter(model_config: ModelConfig) -> Optional[ImageAdapter]:
+    """Factory function to create image generation adapter based on model config"""
+    if model_config.api_type == "dall-e" or model_config.api_type == "openai":
+        return DALLEAdapter(
+            api_key=model_config.api_key,
+            api_url=model_config.api_url,
+            model_name=model_config.model_name
+        )
+    elif model_config.api_type == "stable-diffusion":
+        return StableDiffusionAdapter(
+            api_key=model_config.api_key,
+            api_url=model_config.api_url,
+            model_name=model_config.model_name
+        )
+    return None
+
+
+def create_adapter(model_config: ModelConfig):
+    """Factory function to create adapter based on model config (generic)"""
+    if model_config.model_type == "image":
+        return create_image_adapter(model_config)
+    else:
+        return create_llm_adapter(model_config)

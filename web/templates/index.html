@@ -641,11 +641,21 @@
                     <!-- 模型专用字段 -->
                     <div class="model-fields" style="display: none;">
                         <div class="form-group">
+                            <label>模型类型</label>
+                            <select id="form-model-type" class="form-control">
+                                <option value="text">文本模型</option>
+                                <option value="image">文生图模型</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
                             <label>API类型</label>
                             <select id="form-api-type" class="form-control">
                                 <option value="openai">OpenAI</option>
                                 <option value="azure">Azure</option>
                                 <option value="anthropic">Anthropic</option>
+                                <option value="deepseek">DeepSeek</option>
+                                <option value="dall-e">DALL-E</option>
+                                <option value="stable-diffusion">Stable Diffusion</option>
                                 <option value="custom">自定义</option>
                             </select>
                         </div>

@@ -1005,6 +1005,7 @@ class App {
         // 填充表单
         document.getElementById('form-id').value = model?.id || '';
         document.getElementById('form-name').value = model?.name || '';
+        document.getElementById('form-model-type').value = model?.model_type || 'text';
         document.getElementById('form-api-type').value = model?.api_type || 'openai';
         document.getElementById('form-api-url').value = model?.api_url || '';
         document.getElementById('form-api-key').value = model?.api_key || '';
@@ -1072,6 +1073,7 @@ class App {
 
         if (this.currentModalType === 'model') {
             data.api_type = document.getElementById('form-api-type').value;
+            data.model_type = document.getElementById('form-model-type').value;
             data.api_url = document.getElementById('form-api-url').value;
             data.api_key = document.getElementById('form-api-key').value;
             data.model_name = document.getElementById('form-model-name').value;
@@ -3926,19 +3928,57 @@ class App {
         if (streamingMsg) {
             streamingMsg.classList.remove('streaming');
             
-            // 在消息末尾添加字数标注和序号
             const textElement = streamingMsg.querySelector('.ai-chat-message-text');
             if (textElement) {
                 const content = messageData.content;
                 const charCount = messageData.char_count;
                 const messageIndex = messageData.message_index || (this.aiChatMessages.length + 1);
                 
-                // 处理强调文字：**粗体** 和 [[彩色]]
-                const formattedContent = this.formatAIChatContent(content);
-                
-                textElement.innerHTML = formattedContent + 
-                    `<span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>`;
+                if (messageData.is_image && (messageData.image_url || messageData.image_data)) {
+                    const imageSrc = messageData.image_url || `data:image/png;base64,${messageData.image_data}`;
+                    const prompt = messageData.image_prompt || content;
+                    
+                    textElement.innerHTML = `
+                        <div class="ai-chat-image-container">
+                            <img src="${imageSrc}" alt="生成的图片" class="ai-chat-image" loading="lazy">
+                            <div class="ai-chat-image-prompt">提示词: ${this.escapeHtml(prompt)}</div>
+                        </div>
+                        <span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>
+                    `;
+                } else {
+                    const formattedContent = this.formatAIChatContent(content);
+                    textElement.innerHTML = formattedContent + 
+                        `<span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>`;
+                }
             }
+        } else if (messageData.is_image && (messageData.image_url || messageData.image_data)) {
+            const role = this.aiChatRoles.find(r => r.name === messageData.role_name);
+            const avatar = role ? this.aiChatRoleAvatars[role.name] || this.getRandomAvatar() : '👤';
+            const colorIndex = this.aiChatRoles.findIndex(r => r.name === messageData.role_name);
+            const color = this.aiChatAvatarColors[colorIndex % this.aiChatAvatarColors.length];
+            
+            const imageSrc = messageData.image_url || `data:image/png;base64,${messageData.image_data}`;
+            const prompt = messageData.image_prompt || messageData.content;
+            const charCount = messageData.char_count;
+            const messageIndex = messageData.message_index || (this.aiChatMessages.length + 1);
+            
+            const imageMsg = document.createElement('div');
+            imageMsg.className = 'ai-chat-message';
+            imageMsg.innerHTML = `
+                <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
+                <div class="ai-chat-message-content">
+                    <div class="ai-chat-message-name">${messageData.role_name}</div>
+                    <div class="ai-chat-message-text">
+                        <div class="ai-chat-image-container">
+                            <img src="${imageSrc}" alt="生成的图片" class="ai-chat-image" loading="lazy">
+                            <div class="ai-chat-image-prompt">提示词: ${this.escapeHtml(prompt)}</div>
+                        </div>
+                        <span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>
+                    </div>
+                </div>
+            `;
+            messagesContainer.appendChild(imageMsg);
+            this.scrollAIChatToBottom();
         }
         
         const existingIndex = this.aiChatMessages.findIndex(m => m.role_name === messageData.role_name && m.content === messageData.content);

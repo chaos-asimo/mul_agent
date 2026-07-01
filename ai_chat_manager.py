@@ -5,18 +5,19 @@ from typing import List, Dict, Optional
 from agents import AgentManager
 from models import ModelManager
 from search import SearchManager
-from engine.agent_worker import create_llm_adapter
+from engine.agent_worker import create_llm_adapter, create_image_adapter
 
 
 class ChatRole:
     """A role in the chat with bound model"""
     
-    def __init__(self, agent_id: str, name: str, role_description: str, model_id: str, model_name: str):
+    def __init__(self, agent_id: str, name: str, role_description: str, model_id: str, model_name: str, model_type: str = "text"):
         self.agent_id = agent_id
         self.name = name
         self.role_description = role_description
         self.model_id = model_id
         self.model_name = model_name
+        self.model_type = model_type
         self.adapter = None
     
     def to_dict(self) -> Dict:
@@ -25,7 +26,8 @@ class ChatRole:
             "name": self.name,
             "role_description": self.role_description,
             "model_id": self.model_id,
-            "model_name": self.model_name
+            "model_name": self.model_name,
+            "model_type": self.model_type
         }
 
 
@@ -134,7 +136,8 @@ class AIChatManager:
             name=agent.name,
             role_description=agent.role_description,
             model_id=model_data["id"],
-            model_name=model_data["name"]
+            model_name=model_data["name"],
+            model_type=model_data.get("model_type", "text")
         )
         self.roles.append(role)
         return role
@@ -176,6 +179,36 @@ class AIChatManager:
         async for chunk in self.generate_response_stream(role, context, theme, search_info):
             full_response += chunk
         return full_response
+    
+    async def generate_image_response(self, role: ChatRole, context: str, theme: str) -> Dict:
+        """Generate an image response from a role with image model"""
+        if not role.adapter:
+            model = self.model_manager.get(role.model_id)
+            if model:
+                role.adapter = create_image_adapter(model)
+        
+        if not role.adapter:
+            return {"success": False, "error": "无法连接到文生图模型"}
+        
+        image_prompt = f"{theme}"
+        if context:
+            image_prompt += f", based on: {context[:200]}"
+        
+        try:
+            response = role.adapter.generate(image_prompt, size="1024x1024")
+            
+            if response.success:
+                return {
+                    "success": True,
+                    "image_url": response.image_url,
+                    "image_data": response.image_data.decode('utf-8') if response.image_data else None,
+                    "prompt": image_prompt
+                }
+            else:
+                return {"success": False, "error": response.error}
+                
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     async def generate_response_stream(self, role: ChatRole, context: str, theme: str, search_info: str = ""):
         """Generate a streaming response from a role, yields chunks"""
@@ -286,30 +319,59 @@ class AIChatManager:
                 if not context:
                     context = f"聊天开始，主题：{theme}"
                 
-                search_info = ""
-                if round_count % 3 == 0:
-                    search_info = await self.search_for_info(f"{theme} {context[:100]}")
-                
-                full_response = ""
-                async for chunk in self.generate_response_stream(role, context, theme, search_info):
-                    if not self.is_chatting:
-                        break
-                    full_response += chunk
-                    await self.notify("message_chunk", {
-                        "role_name": role.name,
-                        "chunk": chunk,
-                        "full_content": full_response
-                    })
-                
-                import time
-                message = ChatMessage(role.name, full_response, time.time())
-                self.messages.append(message)
-                
-                # 发送消息时包含字数统计和序号
-                message_data = message.to_dict()
-                message_data["char_count"] = len(full_response)
-                message_data["message_index"] = message_index
-                await self.notify("message", message_data)
+                if role.model_type == "image":
+                    image_result = await self.generate_image_response(role, context, theme)
+                    
+                    import time
+                    if image_result["success"]:
+                        image_url = image_result.get("image_url", "")
+                        image_data = image_result.get("image_data", "")
+                        prompt = image_result.get("prompt", "")
+                        
+                        message = ChatMessage(role.name, f"[图片]: {prompt}", time.time())
+                        self.messages.append(message)
+                        
+                        message_data = message.to_dict()
+                        message_data["char_count"] = len(prompt)
+                        message_data["message_index"] = message_index
+                        message_data["is_image"] = True
+                        message_data["image_url"] = image_url
+                        message_data["image_data"] = image_data
+                        message_data["image_prompt"] = prompt
+                        await self.notify("message", message_data)
+                    else:
+                        error_msg = f"图片生成失败: {image_result.get('error', '未知错误')}"
+                        message = ChatMessage(role.name, error_msg, time.time())
+                        self.messages.append(message)
+                        
+                        message_data = message.to_dict()
+                        message_data["char_count"] = len(error_msg)
+                        message_data["message_index"] = message_index
+                        await self.notify("message", message_data)
+                else:
+                    search_info = ""
+                    if round_count % 3 == 0:
+                        search_info = await self.search_for_info(f"{theme} {context[:100]}")
+                    
+                    full_response = ""
+                    async for chunk in self.generate_response_stream(role, context, theme, search_info):
+                        if not self.is_chatting:
+                            break
+                        full_response += chunk
+                        await self.notify("message_chunk", {
+                            "role_name": role.name,
+                            "chunk": chunk,
+                            "full_content": full_response
+                        })
+                    
+                    import time
+                    message = ChatMessage(role.name, full_response, time.time())
+                    self.messages.append(message)
+                    
+                    message_data = message.to_dict()
+                    message_data["char_count"] = len(full_response)
+                    message_data["message_index"] = message_index
+                    await self.notify("message", message_data)
                 
                 await asyncio.sleep(1)
             
