@@ -2755,6 +2755,15 @@ body {
     font-size: 13px;
     color: #475569;
     margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ai-chat-message-time {
+    font-weight: 400;
+    font-size: 11px;
+    color: #94a3b8;
 }
 
 .ai-chat-message-text {
@@ -2766,6 +2775,10 @@ body {
     color: #334155;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
     max-width: 80%;
+}
+
+.ai-chat-message-text:has(.ai-chat-image-container) {
+    max-width: 100%;
 }
 
 .ai-chat-message-text:has(:global(.emoji)) {

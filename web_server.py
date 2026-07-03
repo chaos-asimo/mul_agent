@@ -84,7 +84,7 @@ global_total_completion_tokens = 0
 global_total_searches = 0
 
 # 版本号（直接定义在代码中，更新时修改此值）
-app_version = "v1.20260619.143520"
+app_version = "v1.20260701.100000"
 logger.info(f"App version: {app_version}")
 
 # 设置模型调用日志回调函数

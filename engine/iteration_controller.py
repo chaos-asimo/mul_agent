@@ -89,12 +89,29 @@ class IterationController:
             model_config = None
             adapter = None
             retry_count = 0
+            tried_models = set()  # 记录已尝试的模型ID
 
             while retry_count < max_retries:
-                model_config = self._get_random_model()
-                if not model_config or not model_config.api_key:
+                # 重新随机选择模型（排除已尝试的）
+                all_models = self.model_manager.get_all()
+                available_models = [
+                    m for m in all_models 
+                    if m.api_key and m.model_type != "image" and m.id not in tried_models
+                ]
+                
+                # 如果所有模型都尝试过了，重新随机选择
+                if not available_models:
+                    available_models = [
+                        m for m in all_models 
+                        if m.api_key and m.model_type != "image"
+                    ]
+                
+                if not available_models:
                     retry_count += 1
                     continue
+                
+                model_config = random.choice(available_models)
+                tried_models.add(model_config.id)
 
                 adapter = create_llm_adapter(model_config)
                 if not adapter:
@@ -138,10 +155,10 @@ class IterationController:
         yield {"type": "iteration_complete", "content": current_doc}
 
     def _get_random_model(self) -> Optional[ModelConfig]:
-        """随机选择一个已配置的模型"""
+        """随机选择一个已配置的文本模型（排除文生图模型）"""
         all_models = self.model_manager.get_all()
-        # 只选择有API密钥的模型
-        configured_models = [m for m in all_models if m.api_key]
+        # 只选择有API密钥且是文本模型的
+        configured_models = [m for m in all_models if m.api_key and m.model_type != "image"]
         if not configured_models:
             return None
         return random.choice(configured_models)
@@ -261,18 +278,34 @@ class IterationController:
             if self.state.should_stop:
                 break
 
-            # 每个agent随机选择一个模型，失败时重试
+            # 每个agent随机选择一个模型，失败时重试并换其他模型
             model_config = None
             adapter = None
             retry_count = 0
             last_error = ""
+            tried_models = set()  # 记录已尝试的模型ID
 
             while retry_count < max_retries:
-                # 重新随机选择模型
-                model_config = self._get_random_model()
-                if not model_config or not model_config.api_key:
+                # 重新随机选择模型（排除已尝试的）
+                all_models = self.model_manager.get_all()
+                available_models = [
+                    m for m in all_models 
+                    if m.api_key and m.model_type != "image" and m.id not in tried_models
+                ]
+                
+                # 如果所有模型都尝试过了，重新随机选择
+                if not available_models:
+                    available_models = [
+                        m for m in all_models 
+                        if m.api_key and m.model_type != "image"
+                    ]
+                
+                if not available_models:
                     retry_count += 1
                     continue
+                
+                model_config = random.choice(available_models)
+                tried_models.add(model_config.id)
 
                 adapter = create_llm_adapter(model_config)
                 if not adapter:

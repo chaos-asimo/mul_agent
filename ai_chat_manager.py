@@ -180,7 +180,7 @@ class AIChatManager:
             full_response += chunk
         return full_response
     
-    async def generate_image_response(self, role: ChatRole, context: str, theme: str) -> Dict:
+    async def generate_image_response(self, role: ChatRole, last_message: str, theme: str) -> Dict:
         """Generate an image response from a role with image model"""
         if not role.adapter:
             model = self.model_manager.get(role.model_id)
@@ -190,9 +190,8 @@ class AIChatManager:
         if not role.adapter:
             return {"success": False, "error": "无法连接到文生图模型"}
         
-        image_prompt = f"{theme}"
-        if context:
-            image_prompt += f", based on: {context[:200]}"
+        # 使用上一个角色的发言作为提示词
+        image_prompt = last_message if last_message else theme
         
         try:
             response = role.adapter.generate(image_prompt, size="1024x1024")
@@ -320,7 +319,12 @@ class AIChatManager:
                     context = f"聊天开始，主题：{theme}"
                 
                 if role.model_type == "image":
-                    image_result = await self.generate_image_response(role, context, theme)
+                    # 获取上一个角色的发言作为提示词
+                    last_message = ""
+                    if self.messages:
+                        last_message = self.messages[-1].content
+                    
+                    image_result = await self.generate_image_response(role, last_message, theme)
                     
                     import time
                     if image_result["success"]:

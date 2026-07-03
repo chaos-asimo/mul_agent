@@ -3928,6 +3928,14 @@ class App {
         if (streamingMsg) {
             streamingMsg.classList.remove('streaming');
             
+            const nameElement = streamingMsg.querySelector('.ai-chat-message-name');
+            if (nameElement && messageData.timestamp) {
+                const timestamp = this.formatTimestamp(messageData.timestamp);
+                if (!nameElement.querySelector('.ai-chat-message-time')) {
+                    nameElement.innerHTML = `${messageData.role_name}<span class="ai-chat-message-time">${timestamp}</span>`;
+                }
+            }
+            
             const textElement = streamingMsg.querySelector('.ai-chat-message-text');
             if (textElement) {
                 const content = messageData.content;
@@ -3961,13 +3969,14 @@ class App {
             const prompt = messageData.image_prompt || messageData.content;
             const charCount = messageData.char_count;
             const messageIndex = messageData.message_index || (this.aiChatMessages.length + 1);
+            const timestamp = messageData.timestamp ? this.formatTimestamp(messageData.timestamp) : '';
             
             const imageMsg = document.createElement('div');
             imageMsg.className = 'ai-chat-message';
             imageMsg.innerHTML = `
                 <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
                 <div class="ai-chat-message-content">
-                    <div class="ai-chat-message-name">${messageData.role_name}</div>
+                    <div class="ai-chat-message-name">${messageData.role_name}${timestamp ? `<span class="ai-chat-message-time">${timestamp}</span>` : ''}</div>
                     <div class="ai-chat-message-text">
                         <div class="ai-chat-image-container">
                             <img src="${imageSrc}" alt="生成的图片" class="ai-chat-image" loading="lazy">
@@ -4045,6 +4054,9 @@ class App {
                 const messageIndex = msg.message_index || (index + 1);
                 const charCountHtml = `<span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>`;
                 
+                // 添加时间
+                const timestamp = msg.timestamp ? this.formatTimestamp(msg.timestamp) : '';
+                
                 // 处理强调文字
                 const formattedContent = this.formatAIChatContent(msg.content);
                 
@@ -4052,7 +4064,7 @@ class App {
                     <div class="ai-chat-message">
                         <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
                         <div class="ai-chat-message-content">
-                            <div class="ai-chat-message-name">${msg.role_name}</div>
+                            <div class="ai-chat-message-name">${msg.role_name}${timestamp ? `<span class="ai-chat-message-time">${timestamp}</span>` : ''}</div>
                             <div class="ai-chat-message-text ${colorClass}">${formattedContent}${charCountHtml}</div>
                         </div>
                     </div>
@@ -4082,6 +4094,9 @@ class App {
                 const messageIndex = msg.message_index || (i + 1);
                 const charCountHtml = `<span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>`;
                 
+                // 添加时间
+                const timestamp = msg.timestamp ? this.formatTimestamp(msg.timestamp) : '';
+                
                 // 处理强调文字
                 const formattedContent = this.formatAIChatContent(msg.content);
                 
@@ -4090,7 +4105,7 @@ class App {
                 msgDiv.innerHTML = `
                     <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
                     <div class="ai-chat-message-content">
-                        <div class="ai-chat-message-name">${msg.role_name}</div>
+                        <div class="ai-chat-message-name">${msg.role_name}${timestamp ? `<span class="ai-chat-message-time">${timestamp}</span>` : ''}</div>
                         <div class="ai-chat-message-text ${colorClass}">${formattedContent}${charCountHtml}</div>
                     </div>
                 `;
@@ -4126,6 +4141,18 @@ class App {
         const div = document.createElement('div');
         div.appendChild(document.createTextNode(text));
         return div.innerHTML;
+    }
+    
+    formatTimestamp(timestamp) {
+        if (!timestamp) return '';
+        const date = new Date(timestamp * 1000);
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
     }
 }
 
