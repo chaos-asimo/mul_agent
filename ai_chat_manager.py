@@ -1,11 +1,24 @@
 """AI Chat Manager for multi-agent conversation"""
 import asyncio
+import json
+import os
+import uuid
+import time
 import random
+import logging
+from queue import Queue, Empty
 from typing import List, Dict, Optional
 from agents import AgentManager
 from models import ModelManager
 from search import SearchManager
 from engine.agent_worker import create_llm_adapter, create_image_adapter
+
+logger = logging.getLogger(__name__)
+
+
+# 历史记录存储路径
+BASE_DIR = os.path.dirname(__file__)
+HISTORY_DIR = os.path.abspath(os.path.join(BASE_DIR, "data", "ai_chat_history"))
 
 
 class ChatRole:
@@ -34,16 +47,24 @@ class ChatRole:
 class ChatMessage:
     """A chat message from a role"""
     
-    def __init__(self, role_name: str, content: str, timestamp: float):
+    def __init__(self, role_name: str, content: str, timestamp: float, is_image: bool = False, image_url: str = "", image_data: str = "", image_prompt: str = ""):
         self.role_name = role_name
         self.content = content
         self.timestamp = timestamp
+        self.is_image = is_image
+        self.image_url = image_url
+        self.image_data = image_data
+        self.image_prompt = image_prompt
     
     def to_dict(self) -> Dict:
         return {
             "role_name": self.role_name,
             "content": self.content,
-            "timestamp": self.timestamp
+            "timestamp": self.timestamp,
+            "is_image": self.is_image,
+            "image_url": self.image_url,
+            "image_data": self.image_data,
+            "image_prompt": self.image_prompt
         }
 
 
@@ -162,6 +183,85 @@ class AIChatManager:
         """Get all messages"""
         return [m.to_dict() for m in self.messages]
     
+    def save_current_chat(self) -> Optional[str]:
+        """保存当前聊天记录到文件"""
+        # 确保目录存在
+        os.makedirs(HISTORY_DIR, exist_ok=True)
+        
+        if not self.messages or not self.current_theme:
+            logger.warning(f"跳过保存：messages={len(self.messages) if self.messages else 0}, theme={bool(self.current_theme)}")
+            return None
+        
+        session_id = str(uuid.uuid4())[:8]
+        chat_record = {
+            "session_id": session_id,
+            "theme": self.current_theme,
+            "roles": [r.to_dict() for r in self.roles],
+            "messages": [m.to_dict() for m in self.messages],
+            "message_count": len(self.messages),
+            "timestamp": time.time(),
+            "date": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        filename = f"{session_id}.json"
+        filepath = os.path.join(HISTORY_DIR, filename)
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(chat_record, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"聊天记录已保存: {session_id}, {len(self.messages)}条消息, 主题: {self.current_theme}")
+        return session_id
+    
+    def get_history_list(self, limit: int = 50) -> List[Dict]:
+        """获取聊天记录列表（只返回摘要信息）"""
+        history = []
+        # 确保目录存在
+        os.makedirs(HISTORY_DIR, exist_ok=True)
+        
+        if not os.path.exists(HISTORY_DIR):
+            return history
+        
+        files = sorted(os.listdir(HISTORY_DIR), key=lambda x: os.path.getmtime(os.path.join(HISTORY_DIR, x)), reverse=True)
+        
+        for filename in files[:limit]:
+            if not filename.endswith(".json"):
+                continue
+            try:
+                filepath = os.path.join(HISTORY_DIR, filename)
+                with open(filepath, "r", encoding="utf-8") as f:
+                    record = json.load(f)
+                history.append({
+                    "session_id": record["session_id"],
+                    "theme": record["theme"],
+                    "date": record["date"],
+                    "message_count": record["message_count"],
+                    "role_names": [r["name"] for r in record["roles"][:5]]  # 只取前5个角色
+                })
+            except Exception as e:
+                logger.error(f"读取历史记录失败: {e}")
+        
+        return history
+    
+    def get_history_detail(self, session_id: str) -> Optional[Dict]:
+        """获取单个聊天的详细信息"""
+        filepath = os.path.join(HISTORY_DIR, f"{session_id}.json")
+        if not os.path.exists(filepath):
+            return None
+        
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"读取聊天记录详情失败: {e}")
+            return None
+    
+    def delete_history(self, session_id: str) -> bool:
+        """删除某条聊天记录"""
+        filepath = os.path.join(HISTORY_DIR, f"{session_id}.json")
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            return True
+        return False
+    
     async def search_for_info(self, query: str) -> str:
         """Search for information online"""
         try:
@@ -240,15 +340,18 @@ class AIChatManager:
         
         user_prompt = "请针对以上对话进行回应。"
         
+        messages = None
         try:
             messages = role.adapter.create_prompt(system_prompt, user_prompt, [])
-            
-            full_content = ""
-            import asyncio as gen_asyncio
-            from queue import Queue
-            
-            chunk_queue = Queue()
-            
+        except Exception as e:
+            yield f"发言失败：{str(e)[:50]}"
+            return
+        
+        full_content = ""
+        chunk_queue = Queue()
+        worker_started = False
+        
+        try:
             def stream_worker():
                 try:
                     for chunk in role.adapter.chat_stream(messages):
@@ -257,24 +360,36 @@ class AIChatManager:
                         chunk_queue.put(chunk)
                 except Exception as e:
                     chunk_queue.put(f"Error: {str(e)}")
-                chunk_queue.put(None)
+                finally:
+                    chunk_queue.put(None)
             
-            gen_asyncio.get_event_loop().run_in_executor(None, stream_worker)
+            asyncio.get_event_loop().run_in_executor(None, stream_worker)
+            worker_started = True
             
             while True:
                 try:
-                    chunk = await gen_asyncio.get_event_loop().run_in_executor(None, chunk_queue.get, True, 0.1)
+                    chunk = await asyncio.get_event_loop().run_in_executor(None, chunk_queue.get, True, 0.1)
                     if chunk is None:
                         break
                     if chunk.startswith("Error:"):
                         yield chunk
                         return
                     full_content += chunk
-                    # 不在流式输出过程中截断，让大模型自然完成
                     yield chunk
-                except:
+                except asyncio.TimeoutError:
                     continue
-            
+                except Empty:
+                    continue
+                except asyncio.CancelledError:
+                    chunk_queue.put(None)
+                    raise
+                except GeneratorExit:
+                    chunk_queue.put(None)
+                    return
+        
+        except GeneratorExit:
+            chunk_queue.put(None)
+            return
         except Exception as e:
             yield f"发言失败：{str(e)[:50]}"
     
@@ -302,87 +417,128 @@ class AIChatManager:
         round_count = 0
         max_rounds = 20
         message_index = 0
+        last_active_time = asyncio.get_event_loop().time()
         
-        while self.is_chatting and round_count < max_rounds:
-            for role in self.roles:
+        try:
+            while self.is_chatting and round_count < max_rounds:
+                for role in self.roles:
+                    if not self.is_chatting:
+                        break
+                    
+                    message_index += 1
+                    
+                    await self.notify("typing", {"role_name": role.name})
+                    last_active_time = asyncio.get_event_loop().time()
+                    
+                    recent_messages = self.messages[-self.MAX_CONTEXT_MESSAGES:]
+                    context = "\n".join([f"{m.role_name}: {m.content}" for m in recent_messages])
+                    
+                    if not context:
+                        context = f"聊天开始，主题：{theme}"
+                    
+                    if role.model_type == "image":
+                        # 获取上一个角色的发言作为提示词
+                        last_message = ""
+                        if self.messages:
+                            last_message = self.messages[-1].content
+                        
+                        image_result = await self.generate_image_response(role, last_message, theme)
+                        
+                        import time
+                        if image_result["success"]:
+                            image_url = image_result.get("image_url", "")
+                            image_data = image_result.get("image_data", "")
+                            prompt = image_result.get("prompt", "")
+                            
+                            message = ChatMessage(
+                                role.name, 
+                                f"[图片]: {prompt}", 
+                                time.time(),
+                                is_image=True,
+                                image_url=image_url,
+                                image_data=image_data,
+                                image_prompt=prompt
+                            )
+                            self.messages.append(message)
+                            
+                            message_data = message.to_dict()
+                            message_data["char_count"] = len(prompt)
+                            message_data["message_index"] = message_index
+                            await self.notify("message", message_data)
+                            last_active_time = asyncio.get_event_loop().time()
+                        else:
+                            error_msg = f"图片生成失败: {image_result.get('error', '未知错误')}"
+                            message = ChatMessage(role.name, error_msg, time.time())
+                            self.messages.append(message)
+                            
+                            message_data = message.to_dict()
+                            message_data["char_count"] = len(error_msg)
+                            message_data["message_index"] = message_index
+                            await self.notify("message", message_data)
+                            last_active_time = asyncio.get_event_loop().time()
+                    else:
+                        search_info = ""
+                        if round_count % 3 == 0:
+                            search_info = await self.search_for_info(f"{theme} {context[:100]}")
+                        
+                        full_response = ""
+                        async for chunk in self.generate_response_stream(role, context, theme, search_info):
+                            if not self.is_chatting:
+                                break
+                            full_response += chunk
+                            await self.notify("message_chunk", {
+                                "role_name": role.name,
+                                "chunk": chunk,
+                                "full_content": full_response
+                            })
+                        
+                        import time
+                        message = ChatMessage(role.name, full_response, time.time())
+                        self.messages.append(message)
+                        
+                        message_data = message.to_dict()
+                        message_data["char_count"] = len(full_response)
+                        message_data["message_index"] = message_index
+                        await self.notify("message", message_data)
+                    
+                    await asyncio.sleep(1)
+                
+                round_count += 1
+                
+                # 每轮结束后检查是否需要停止并保存
                 if not self.is_chatting:
+                    logger.info(f"聊天停止信号，开始保存: {len(self.messages)}条消息")
+                    self.save_current_chat()
                     break
                 
-                message_index += 1
-                
-                await self.notify("typing", {"role_name": role.name})
-                
-                recent_messages = self.messages[-self.MAX_CONTEXT_MESSAGES:]
-                context = "\n".join([f"{m.role_name}: {m.content}" for m in recent_messages])
-                
-                if not context:
-                    context = f"聊天开始，主题：{theme}"
-                
-                if role.model_type == "image":
-                    # 获取上一个角色的发言作为提示词
-                    last_message = ""
-                    if self.messages:
-                        last_message = self.messages[-1].content
-                    
-                    image_result = await self.generate_image_response(role, last_message, theme)
-                    
-                    import time
-                    if image_result["success"]:
-                        image_url = image_result.get("image_url", "")
-                        image_data = image_result.get("image_data", "")
-                        prompt = image_result.get("prompt", "")
-                        
-                        message = ChatMessage(role.name, f"[图片]: {prompt}", time.time())
-                        self.messages.append(message)
-                        
-                        message_data = message.to_dict()
-                        message_data["char_count"] = len(prompt)
-                        message_data["message_index"] = message_index
-                        message_data["is_image"] = True
-                        message_data["image_url"] = image_url
-                        message_data["image_data"] = image_data
-                        message_data["image_prompt"] = prompt
-                        await self.notify("message", message_data)
-                    else:
-                        error_msg = f"图片生成失败: {image_result.get('error', '未知错误')}"
-                        message = ChatMessage(role.name, error_msg, time.time())
-                        self.messages.append(message)
-                        
-                        message_data = message.to_dict()
-                        message_data["char_count"] = len(error_msg)
-                        message_data["message_index"] = message_index
-                        await self.notify("message", message_data)
+                # 检测WebSocket是否已断开（超过10秒没有活跃连接）
+                if len(self.websockets) == 0 and asyncio.get_event_loop().time() - last_active_time > 10:
+                    logger.warning("WebSocket已断开，自动停止聊天并保存记录")
+                    self.is_chatting = False
+                    self.save_current_chat()
+                    break
+        except asyncio.CancelledError:
+            logger.info("聊天任务被取消")
+        except Exception as e:
+            logger.error(f"聊天循环异常: {e}")
+        finally:
+            try:
+                self.is_chatting = False
+                # 聊天结束时自动保存聊天记录
+                logger.info(f"聊天结束，保存记录: {len(self.messages)}条消息, 主题: {self.current_theme}")
+                session_id = self.save_current_chat()
+                if session_id:
+                    logger.info(f"保存成功: session_id={session_id}")
                 else:
-                    search_info = ""
-                    if round_count % 3 == 0:
-                        search_info = await self.search_for_info(f"{theme} {context[:100]}")
-                    
-                    full_response = ""
-                    async for chunk in self.generate_response_stream(role, context, theme, search_info):
-                        if not self.is_chatting:
-                            break
-                        full_response += chunk
-                        await self.notify("message_chunk", {
-                            "role_name": role.name,
-                            "chunk": chunk,
-                            "full_content": full_response
-                        })
-                    
-                    import time
-                    message = ChatMessage(role.name, full_response, time.time())
-                    self.messages.append(message)
-                    
-                    message_data = message.to_dict()
-                    message_data["char_count"] = len(full_response)
-                    message_data["message_index"] = message_index
-                    await self.notify("message", message_data)
-                
-                await asyncio.sleep(1)
-            
-            round_count += 1
-        
-        self.is_chatting = False
-        await self.notify("stopped", {})
+                    logger.warning("保存失败或跳过")
+            except Exception as e:
+                logger.error(f"聊天结束时处理异常: {e}", exc_info=True)
+            finally:
+                # 在外部finally中发送stopped通知
+                try:
+                    await self.notify("stopped", {})
+                except:
+                    pass
     
     async def start_chat(self, theme: Optional[str] = None):
         """Start the chat session"""
@@ -404,11 +560,14 @@ class AIChatManager:
         """Stop the chat session"""
         self.is_chatting = False
         if self.chat_task:
+            self.chat_task.cancel()
+            # 简单等待任务结束，最多3秒
             try:
-                self.chat_task.cancel()
-            except:
+                await asyncio.wait_for(self.chat_task, timeout=3.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
-            self.chat_task = None
+            finally:
+                self.chat_task = None
     
     def get_status(self) -> Dict:
         """Get current chat status"""

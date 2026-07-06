@@ -63,6 +63,11 @@ class App {
         document.getElementById('add-new-skill-btn').addEventListener('click', () => this.createNewSkill());
         document.getElementById('skills-list').addEventListener('click', (e) => this.handleSkillAction(e));
         
+        // 视频模型相关
+        document.getElementById('generate-video-btn').addEventListener('click', () => this.generateVideo());
+        document.getElementById('clear-video-btn').addEventListener('click', () => this.clearVideoForm());
+        document.getElementById('optimize-prompt-btn').addEventListener('click', () => this.optimizePrompt());
+        
         // 快速搜索相关
         document.getElementById('quick-search-btn').addEventListener('click', () => this.quickSearch());
         document.getElementById('quick-search-clear-btn').addEventListener('click', () => this.clearQuickSearch());
@@ -164,6 +169,11 @@ class App {
         // 如果切换到Skills面板，加载Skills列表
         if (tabName === 'skills') {
             this.loadSkills();
+        }
+        
+        // 如果切换到视频模型面板，加载视频模型列表
+        if (tabName === 'video-models') {
+            this.loadVideoModels();
         }
     }
 
@@ -2339,6 +2349,13 @@ class App {
     }
 
     _updatePreviewDirect(content) {
+        // 默认切换到"预览"视图
+        const previewBtn = document.querySelector('[data-view="preview"]');
+        if (previewBtn && !previewBtn.classList.contains('active')) {
+            previewBtn.classList.add('active');
+            document.querySelector('[data-view="markdown"]').classList.remove('active');
+        }
+        
         const activeView = document.querySelector('.toggle-btn.active').dataset.view;
         
         if (activeView === 'markdown') {
@@ -3369,6 +3386,7 @@ class App {
     initAIChat() {
         const selectBtn = document.getElementById('ai-chat-select-agents-btn');
         const startBtn = document.getElementById('ai-chat-start-btn');
+        const historyBtn = document.getElementById('ai-chat-history-btn');
         
         if (selectBtn) {
             selectBtn.addEventListener('click', () => this.openAgentSelectDialog());
@@ -3378,7 +3396,173 @@ class App {
             startBtn.addEventListener('click', () => this.toggleAIChat());
         }
         
+        if (historyBtn) {
+            historyBtn.addEventListener('click', () => this.openHistoryModal());
+        }
+        
         this.loadAIChatRoles();
+    }
+    
+    // ========== AI聊天历史记录功能 ==========
+    
+    openHistoryModal() {
+        document.getElementById('ai-chat-history-modal').style.display = 'flex';
+        this.currentHistorySessionId = null;
+        this.showHistoryList();
+    }
+    
+    showHistoryList() {
+        document.getElementById('history-list-view').style.display = 'block';
+        document.getElementById('history-detail-view').style.display = 'none';
+        this.loadHistoryList();
+    }
+    
+    async loadHistoryList() {
+        const searchInput = document.getElementById('history-search');
+        const keyword = searchInput ? searchInput.value.trim().toLowerCase() : '';
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/ai-chat/history?limit=100`);
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                let history = result.data;
+                
+                // 过滤
+                if (keyword) {
+                    history = history.filter(h => h.theme.toLowerCase().includes(keyword));
+                }
+                
+                const listEl = document.getElementById('history-list');
+                
+                if (history.length === 0) {
+                    listEl.innerHTML = `
+                        <div class="empty-state">
+                            <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                            <p>${keyword ? '没有找到匹配的聊天记录' : '暂无聊天记录'}</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                listEl.innerHTML = history.map(item => `
+                    <div class="history-item" onclick="window.app.showHistoryDetail('${item.session_id}')" style="
+                        padding: 12px;
+                        margin-bottom: 8px;
+                        background: white;
+                        border-radius: 6px;
+                        border: 1px solid #e2e8f0;
+                        cursor: pointer;
+                        transition: all 0.2s;
+                    " onmouseover="this.style.borderColor='#3b82f6';this.style.boxShadow='0 2px 8px rgba(59,130,246,0.1)'" 
+                       onmouseout="this.style.borderColor='#e2e8f0';this.style.boxShadow='none'">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1; min-width: 0;">
+                                <div style="font-weight: 600; color: #1e293b; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                    ${this.escapeHtml(item.theme)}
+                                </div>
+                                <div style="font-size: 12px; color: #64748b;">
+                                    ${item.date} · ${item.message_count} 条消息 · ${item.role_names.join(', ')}
+                                </div>
+                            </div>
+                            <div style="margin-left: 10px;">
+                                <i class="fas fa-chevron-right" style="color: #94a3b8;"></i>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+        } catch (error) {
+            console.error('加载历史记录失败:', error);
+        }
+    }
+    
+    async showHistoryDetail(sessionId) {
+        this.currentHistorySessionId = sessionId;
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/ai-chat/history/${sessionId}`);
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                const detail = result.data;
+                document.getElementById('history-list-view').style.display = 'none';
+                document.getElementById('history-detail-view').style.display = 'block';
+                
+                const contentEl = document.getElementById('history-detail-content');
+                contentEl.innerHTML = `
+                    <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #e2e8f0;">
+                        <h4 style="margin: 0 0 8px 0; color: #1e293b;">${this.escapeHtml(detail.theme)}</h4>
+                        <div style="font-size: 13px; color: #64748b;">
+                            ${detail.date} · ${detail.message_count} 条消息
+                        </div>
+                    </div>
+                    ${detail.messages.map(msg => {
+                        const time = msg.timestamp ? new Date(msg.timestamp * 1000).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'}) : '';
+                        const isImage = msg.is_image;
+                        const imgHtml = isImage && msg.image_url ? `<img src="${msg.image_url}" style="max-width: 100%; max-height: 300px; border-radius: 6px; margin-top: 5px; cursor: pointer;" onclick="window.aiChatOpenImage('${msg.image_url.replace(/'/g, "\\'")}')">` : '';
+                        return `
+                            <div style="margin-bottom: 12px; padding: 10px; background: white; border-radius: 6px;">
+                                <div style="font-weight: 600; color: #3b82f6; margin-bottom: 4px;">
+                                    ${this.escapeHtml(msg.role_name)} <span style="font-weight: normal; color: #94a3b8; font-size: 12px;">${time}</span>
+                                </div>
+                                <div style="color: #334155; line-height: 1.6; word-wrap: break-word;">${this.escapeHtml(msg.content)}</div>
+                                ${imgHtml}
+                            </div>
+                        `;
+                    }).join('')}
+                `;
+            }
+        } catch (error) {
+            console.error('加载历史记录详情失败:', error);
+            alert('加载失败: ' + error.message);
+        }
+    }
+    
+    async deleteCurrentHistory() {
+        if (!this.currentHistorySessionId) return;
+        
+        if (!confirm('确定要删除这条聊天记录吗？')) return;
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/ai-chat/history/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: this.currentHistorySessionId })
+            });
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                alert('删除成功');
+                this.showHistoryList();
+            } else {
+                alert('删除失败: ' + result.message);
+            }
+        } catch (error) {
+            console.error('删除历史记录失败:', error);
+            alert('删除失败: ' + error.message);
+        }
+    }
+
+    toggleHistoryMaximize() {
+        const modalContent = document.getElementById('ai-chat-history-modal-content');
+        const historyDetail = document.getElementById('history-detail-content');
+        
+        if (modalContent.classList.contains('maximized')) {
+            modalContent.classList.remove('maximized');
+            modalContent.style.width = '';
+            modalContent.style.maxWidth = '';
+            modalContent.style.maxHeight = '';
+            modalContent.style.height = '';
+            if (historyDetail) {
+                historyDetail.style.maxHeight = '600px';
+            }
+        } else {
+            modalContent.classList.add('maximized');
+            if (historyDetail) {
+                historyDetail.style.maxHeight = 'calc(95vh - 180px)';
+            }
+        }
     }
 
     async loadAIChatRoles() {
@@ -3948,7 +4132,7 @@ class App {
                     
                     textElement.innerHTML = `
                         <div class="ai-chat-image-container">
-                            <img src="${imageSrc}" alt="生成的图片" class="ai-chat-image" loading="lazy">
+                            <img src="${imageSrc}" alt="生成的图片" class="ai-chat-image" loading="lazy" onclick="window.aiChatOpenImage('${imageSrc.replace(/'/g, "\\'")}')">
                             <div class="ai-chat-image-prompt">提示词: ${this.escapeHtml(prompt)}</div>
                         </div>
                         <span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>
@@ -3979,7 +4163,7 @@ class App {
                     <div class="ai-chat-message-name">${messageData.role_name}${timestamp ? `<span class="ai-chat-message-time">${timestamp}</span>` : ''}</div>
                     <div class="ai-chat-message-text">
                         <div class="ai-chat-image-container">
-                            <img src="${imageSrc}" alt="生成的图片" class="ai-chat-image" loading="lazy">
+                            <img src="${imageSrc}" alt="生成的图片" class="ai-chat-image" loading="lazy" onclick="window.aiChatOpenImage('${imageSrc.replace(/'/g, "\\'")}')">
                             <div class="ai-chat-image-prompt">提示词: ${this.escapeHtml(prompt)}</div>
                         </div>
                         <span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>
@@ -4154,7 +4338,305 @@ class App {
         const seconds = String(date.getSeconds()).padStart(2, '0');
         return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
     }
+
+    // ========== 视频模型功能 ==========
+    
+    async loadVideoModels() {
+        try {
+            const response = await fetch('/api/video-models');
+            const models = await response.json();
+            
+            const select = document.getElementById('video-model-select');
+            if (!select) return;
+            
+            if (models.length === 0) {
+                select.innerHTML = '<option value="">-- 请先在模型配置中添加视频模型 --</option>';
+                return;
+            }
+            
+            select.innerHTML = models.map(m => 
+                `<option value="${m.id}">${m.name} (${m.model_name})</option>`
+            ).join('');
+        } catch (error) {
+            console.error('加载视频模型失败:', error);
+        }
+    }
+    
+    async generateVideo() {
+        const prompt = document.getElementById('video-prompt').value.trim();
+        if (!prompt) {
+            alert('请输入视频提示词');
+            return;
+        }
+        
+        const modelId = document.getElementById('video-model-select').value;
+        if (!modelId) {
+            alert('请先选择视频模型');
+            return;
+        }
+        
+        const width = parseInt(document.getElementById('video-width').value) || 1152;
+        const height = parseInt(document.getElementById('video-height').value) || 768;
+        const numFrames = parseInt(document.getElementById('video-frames').value) || 121;
+        const frameRate = parseInt(document.getElementById('video-fps').value) || 24;
+        const imageUrl = document.getElementById('video-image-url').value.trim();
+        const negativePrompt = document.getElementById('video-negative-prompt').value.trim();
+        
+        // 显示结果区域和进度条
+        document.getElementById('video-result').style.display = 'block';
+        document.getElementById('video-progress').style.display = 'block';
+        document.getElementById('video-result-content').style.display = 'none';
+        document.getElementById('video-error').style.display = 'none';
+        document.getElementById('video-progress-text').textContent = '正在创建任务...';
+        
+        // 进度条使用动画效果
+        const progressBar = document.getElementById('video-progress-bar');
+        progressBar.style.width = '0%';
+        progressBar.style.transition = 'width 0.5s ease';
+        let progress = 0;
+        const animateProgress = () => {
+            if (progress < 90) {
+                progress += Math.random() * 10;
+                progressBar.style.width = `${progress}%`;
+            }
+        };
+        const progressInterval = setInterval(animateProgress, 2000);
+        
+        // 禁用按钮
+        const btn = document.getElementById('generate-video-btn');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 生成中...';
+        
+        try {
+            const response = await fetch('/api/video-generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt: prompt,
+                    model_id: modelId,
+                    width: width,
+                    height: height,
+                    num_frames: numFrames,
+                    frame_rate: frameRate,
+                    image_url: imageUrl || null,
+                    negative_prompt: negativePrompt
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                const videoId = result.video_id;
+                document.getElementById('video-progress-text').textContent = `任务已创建 (ID: ${videoId.substring(0, 8)}...)，等待生成...`;
+                
+                // 开始轮询状态
+                clearInterval(progressInterval);
+                progressBar.style.width = '0%';
+                this.pollVideoStatus(videoId);
+            } else {
+                throw new Error(result.message || '创建任务失败');
+            }
+        } catch (error) {
+            console.error('视频生成失败:', error);
+            document.getElementById('video-error').style.display = 'block';
+            document.getElementById('video-error-text').textContent = error.message;
+            document.getElementById('video-progress').style.display = 'none';
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-play-circle"></i> 生成视频';
+        }
+    }
+    
+    async pollVideoStatus(videoId) {
+        let consecutiveFailures = 0;
+        const progressBar = document.getElementById('video-progress-bar');
+        
+        const pollVideo = async () => {
+            try {
+                const response = await fetch(`/api/video-status/${videoId}`);
+                const result = await response.json();
+                
+                // API返回格式: {code: "success"/"error", task_status: "completed"/"in_progress"/...}
+                if (result.code === 'error') {
+                    throw new Error(result.message || '请求失败');
+                }
+                
+                const taskStatus = result.task_status || 'unknown';
+                const progress = result.progress || 0;
+                
+                // 更新进度条
+                if (progressBar) {
+                    progressBar.style.width = `${progress}%`;
+                }
+                
+                // 更新进度状态文本
+                const statusTexts = {
+                    'queued': '排队等待中...',
+                    'in_progress': '生成中...',
+                    'completed': '生成完成！',
+                    'failed': '生成失败'
+                };
+                document.getElementById('video-progress-text').textContent = 
+                    `${statusTexts[taskStatus] || '处理中...'} ${progress}%`;
+                
+                if (taskStatus === 'completed') {
+                    clearInterval(pollInterval);
+                    if (progressBar) {
+                        progressBar.style.width = '100%';
+                    }
+                    
+                    const videoUrl = result.video_url || '';
+                    if (videoUrl) {
+                        document.getElementById('video-progress').style.display = 'none';
+                        document.getElementById('video-preview-area').style.display = 'none';
+                        document.getElementById('video-result-content').style.display = 'block';
+                        
+                        const player = document.getElementById('video-result-player');
+                        player.src = videoUrl;
+                        
+                        // 显示视频信息
+                        const sizeInfo = result.size || '未知大小';
+                        const seconds = result.seconds || '未知时长';
+                        document.getElementById('video-result-info').textContent = 
+                            `视频已保存到本地 | 时长: ${seconds} | 大小: ${sizeInfo}`;
+                        
+                        // 自动播放
+                        player.play().catch(e => console.log('自动播放被阻止:', e));
+                    } else {
+                        throw new Error('视频生成完成，但未获取到视频URL');
+                    }
+                } else if (taskStatus === 'failed') {
+                    clearInterval(pollInterval);
+                    document.getElementById('video-progress').style.display = 'none';
+                    document.getElementById('video-error').style.display = 'block';
+                    const errorMsg = result.error || '视频生成失败';
+                    document.getElementById('video-error-text').textContent = 
+                        typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg);
+                } else {
+                    // 仍在进行中，重置失败计数
+                    consecutiveFailures = 0;
+                    pollTimeout = setTimeout(pollVideo, 1000);
+                }
+            } catch (error) {
+                consecutiveFailures++;
+                // 如果连续失败多次，停止轮询
+                if (consecutiveFailures >= 3) {
+                    clearInterval(pollInterval);
+                    clearTimeout(pollTimeout);
+                    document.getElementById('video-progress').style.display = 'none';
+                    document.getElementById('video-error').style.display = 'block';
+                    document.getElementById('video-error-text').textContent = error.message || '轮询失败';
+                    return;
+                }
+                // 临时错误，继续重试
+                pollTimeout = setTimeout(pollVideo, 1000);
+            }
+        };
+        
+        // 每1秒轮询一次（更快的响应速度）
+        const pollInterval = setInterval(() => {}, 600000); // 10分钟后清理
+        let pollTimeout = setTimeout(pollVideo, 1000);
+    }
+    
+    clearVideoForm() {
+        document.getElementById('video-prompt').value = '';
+        document.getElementById('video-width').value = 1152;
+        document.getElementById('video-height').value = 768;
+        document.getElementById('video-frames').value = 121;
+        document.getElementById('video-fps').value = 24;
+        document.getElementById('video-image-url').value = '';
+        document.getElementById('video-negative-prompt').value = '';
+        document.getElementById('video-result').style.display = 'none';
+        document.getElementById('video-progress-bar').style.width = '0%';
+    }
+    
+    async optimizePrompt() {
+        const prompt = document.getElementById('video-prompt').value.trim();
+        
+        if (!prompt) {
+            alert('请先输入视频提示词');
+            return;
+        }
+        
+        const btn = document.getElementById('optimize-prompt-btn');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 优化中...';
+        btn.disabled = true;
+        
+        try {
+            const response = await fetch('/api/optimize-prompt', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: prompt })
+            });
+            
+            const result = await response.json();
+            
+            if (result.code === 'success') {
+                document.getElementById('video-prompt').value = result.optimized_prompt;
+            } else {
+                alert('优化失败: ' + result.message);
+            }
+        } catch (error) {
+            console.error('优化提示词失败:', error);
+            alert('优化提示词失败: ' + error.message);
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
 }
+
+// 图片放大查看
+App.prototype.openImage = function(imageSrc) {
+    // 检查是否已存在lightbox，存在则移除
+    let overlay = document.getElementById('image-lightbox');
+    if (overlay) {
+        overlay.remove();
+        return;
+    }
+    
+    // 创建遮罩层
+    overlay = document.createElement('div');
+    overlay.id = 'image-lightbox';
+    overlay.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.9);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 10000;
+        cursor: pointer;
+    `;
+    
+    // 创建图片
+    const img = document.createElement('img');
+    img.src = imageSrc;
+    img.style.cssText = `
+        max-width: 90%;
+        max-height: 90%;
+        object-fit: contain;
+        border-radius: 8px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    `;
+    
+    overlay.appendChild(img);
+    document.body.appendChild(overlay);
+    
+    // 点击关闭
+    overlay.addEventListener('click', () => {
+        overlay.remove();
+    });
+};
+
+// 将openImage挂载到window对象
+window.aiChatOpenImage = function(imageSrc) {
+    window.app.openImage(imageSrc);
+};
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', () => {

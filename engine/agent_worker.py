@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 from llm.adapter_base import LLMAdapter, LLMResponse
 from llm.image_adapter import ImageAdapter, ImageResponse
+from llm.video_adapter import VideoAdapter, VideoResponse, AgnesVideoAdapter, OpenAIVideoAdapter
 from llm import OpenAIAdapter, ClaudeAdapter, DeepSeekAdapter
 from llm.dalle_adapter import DALLEAdapter
 from llm.sd_adapter import StableDiffusionAdapter
@@ -270,9 +271,29 @@ def create_image_adapter(model_config: ModelConfig) -> Optional[ImageAdapter]:
     return None
 
 
+def create_video_adapter(model_config: ModelConfig) -> Optional[VideoAdapter]:
+    """Factory function to create video generation adapter based on model config"""
+    if model_config.api_type in ("openai", "custom"):
+        # 如果是OpenAI兼容接口使用OpenAIVideoAdapter，否则使用AgnesVideoAdapter
+        if model_config.model_name and model_config.model_name.startswith("sora"):
+            return OpenAIVideoAdapter(
+                api_key=model_config.api_key,
+                api_url=model_config.api_url,
+                model_name=model_config.model_name
+            )
+        return AgnesVideoAdapter(
+            api_key=model_config.api_key,
+            api_url=model_config.api_url,
+            model_name=model_config.model_name
+        )
+    return None
+
+
 def create_adapter(model_config: ModelConfig):
     """Factory function to create adapter based on model config (generic)"""
     if model_config.model_type == "image":
         return create_image_adapter(model_config)
+    elif model_config.model_type == "video":
+        return create_video_adapter(model_config)
     else:
         return create_llm_adapter(model_config)

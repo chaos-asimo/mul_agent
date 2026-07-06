@@ -10,7 +10,7 @@ class ModelConfig:
     id: str = ""
     name: str = ""
     api_type: str = "openai"  # openai, claude, deepseek, dall-e, sd, custom
-    model_type: str = "text"  # text, image
+    model_type: str = "text"  # text, image, video
     api_url: str = ""
     api_key: str = ""
     model_name: str = ""

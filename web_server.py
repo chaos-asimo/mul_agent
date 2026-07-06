@@ -1413,13 +1413,35 @@ async def websocket_ai_chat(websocket: WebSocket):
                 await websocket.send_json({"status": "roles", "data": roles})
     
     except WebSocketDisconnect:
-        logger.info("AI Chat WebSocket disconnected")
+        logger.info("AI Chat WebSocket disconnected, stopping chat if running")
         from ai_chat_manager import ai_chat_manager
         ai_chat_manager.remove_websocket(websocket)
+        ai_chat_manager.is_chatting = False
+        if ai_chat_manager.chat_task:
+            ai_chat_manager.chat_task.cancel()
+            try:
+                await asyncio.wait_for(ai_chat_manager.chat_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            finally:
+                ai_chat_manager.chat_task = None
+                if ai_chat_manager.messages:
+                    ai_chat_manager.save_current_chat()
     except Exception as e:
         logger.error(f"AI Chat WebSocket error: {e}")
         from ai_chat_manager import ai_chat_manager
         ai_chat_manager.remove_websocket(websocket)
+        ai_chat_manager.is_chatting = False
+        if ai_chat_manager.chat_task:
+            ai_chat_manager.chat_task.cancel()
+            try:
+                await asyncio.wait_for(ai_chat_manager.chat_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            finally:
+                ai_chat_manager.chat_task = None
+                if ai_chat_manager.messages:
+                    ai_chat_manager.save_current_chat()
 
 
 @app.post("/api/stream-llm")
@@ -1521,6 +1543,269 @@ async def get_image_models():
     """获取所有文生图模型"""
     image_models = [m.to_dict() for m in model_manager.get_all() if m.model_type == "image"]
     return image_models
+
+# ============ 文生视频 API ============
+
+class VideoGenerateRequest(BaseModel):
+    prompt: str
+    model_id: Optional[str] = None
+    width: int = 1152
+    height: int = 768
+    num_frames: int = 121
+    frame_rate: int = 24
+    image_url: Optional[str] = None
+    negative_prompt: str = ""
+
+# 任务状态存储
+video_tasks = {}
+
+@app.post("/api/video-generate")
+async def generate_video(request: VideoGenerateRequest):
+    """文生视频API"""
+    try:
+        models = model_manager.get_all()
+        
+        if request.model_id:
+            model = model_manager.get(request.model_id)
+        else:
+            video_models = [m for m in models if m.api_key and m.enabled and m.model_type == "video"]
+            if not video_models:
+                return {"status": "error", "message": "请先配置至少一个文生视频模型"}
+            model = video_models[0]
+        
+        if model.model_type != "video":
+            return {"status": "error", "message": "选择的模型不是文生视频模型"}
+        
+        from engine.agent_worker import create_video_adapter
+        adapter = create_video_adapter(model)
+        if not adapter:
+            return {"status": "error", "message": "无法创建视频适配器"}
+        
+        # 生成任务
+        video_data = {
+            "model": model.model_name,
+            "prompt": request.prompt,
+            "width": request.width,
+            "height": request.height,
+            "num_frames": request.num_frames,
+            "frame_rate": request.frame_rate
+        }
+        
+        if request.image_url:
+            video_data["image"] = request.image_url
+        
+        if request.negative_prompt:
+            video_data["negative_prompt"] = request.negative_prompt
+        
+        # 创建任务并获取task_id
+        response = adapter.generate(**video_data)
+        
+        if response.success and hasattr(response, 'video_id'):
+            # 保存任务状态
+            video_tasks[response.video_id] = {
+                "status": response.status,
+                "progress": response.progress,
+                "model": model.name,
+                "model_id": model.id,
+                "created_at": int(__import__('time').time())
+            }
+            
+            return {
+                "status": "success",
+                "video_id": response.video_id,
+                "task_id": response.task_id,
+                "message": "视频生成任务已创建，请轮询状态"
+            }
+        elif response.success and hasattr(response, 'task_id'):
+            video_tasks[response.task_id] = {
+                "status": response.status,
+                "progress": response.progress,
+                "model": model.name,
+                "model_id": model.id,
+                "created_at": int(__import__('time').time())
+            }
+            
+            return {
+                "status": "success",
+                "video_id": getattr(response, 'video_id', response.task_id),
+                "task_id": response.task_id,
+                "message": "视频生成任务已创建，请轮询状态"
+            }
+        else:
+            return {"status": "error", "message": f"创建任务失败: {response.error}"}
+            
+    except Exception as e:
+        logger.error(f"Video generation error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": f"创建任务失败: {str(e)}"}
+
+@app.get("/api/video-status/{video_id}")
+async def get_video_status(video_id: str):
+    """获取视频生成状态"""
+    try:
+        logger.info(f"视频状态查询请求: video_id={video_id}")
+        
+        import time
+        now = int(time.time())
+        
+        # 从video_tasks获取创建任务时使用的模型ID
+        task = video_tasks.get(video_id)
+        
+        if task and task.get("model_id"):
+            # 使用创建任务时相同的模型
+            model_id = task["model_id"]
+            models = model_manager.get_all()
+            model = next((m for m in models if m.id == model_id), None)
+        else:
+            # 如果没有找到任务记录，回退到使用第一个视频模型
+            models = model_manager.get_all()
+            video_models = [m for m in models if m.api_key and m.enabled and m.model_type == "video"]
+            if not video_models:
+                return {"code": "error", "message": "没有可用的视频模型"}
+            model = video_models[0]
+        
+        if not model:
+            return {"code": "error", "message": f"找不到模型ID: {model_id}"}
+        from engine.agent_worker import create_video_adapter
+        adapter = create_video_adapter(model)
+        if not adapter:
+            return {"code": "error", "message": "无法创建视频适配器"}
+        
+        task_info = adapter.get_status(video_id)
+        logger.info(f"适配器返回的任务信息: {task_info}")
+        
+        if task_info:
+            # 更新本地缓存
+            if video_id in video_tasks:
+                # 如果已有缓存，保留额外信息
+                video_tasks[video_id].update({
+                    "status": task_info.get("status", "unknown"),
+                    "progress": task_info.get("progress", 0),
+                    "video_url": task_info.get("video_url", ""),
+                    "error": task_info.get("error"),
+                    "seconds": task_info.get("seconds"),
+                    "size": task_info.get("size")
+                })
+            else:
+                video_tasks[video_id] = {
+                    "status": task_info.get("status", "unknown"),
+                    "progress": task_info.get("progress", 0),
+                    "video_url": task_info.get("video_url", ""),
+                    "error": task_info.get("error"),
+                    "seconds": task_info.get("seconds"),
+                    "size": task_info.get("size")
+                }
+            
+            # 构建返回数据
+            result = {
+                "code": "success",
+                "video_id": video_id,
+                "task_status": task_info.get("status", "unknown"),
+                "progress": task_info.get("progress", 0),
+                "video_url": task_info.get("video_url", ""),
+                "error": task_info.get("error"),
+                "seconds": task_info.get("seconds"),
+                "size": task_info.get("size")
+            }
+            
+            # 如果视频已完成且有URL，添加视频信息
+            if task_info.get("status") == "completed" and task_info.get("video_url"):
+                # 尝试获取视频文件大小
+                try:
+                    video_path = os.path.join(
+                        os.path.dirname(os.path.dirname(__file__)),
+                        "uploads", "videos",
+                        task_info["video_url"].lstrip("/uploads/videos/")
+                    )
+                    if os.path.exists(video_path):
+                        size_bytes = os.path.getsize(video_path)
+                        result["size"] = f"{size_bytes / (1024*1024):.1f}MB"
+                        result["seconds"] = task_info.get("seconds", "未知")
+                except:
+                    pass
+            
+            return result
+        else:
+            return {"code": "error", "message": "无法获取视频状态"}
+            
+    except Exception as e:
+        logger.error(f"Video status error: {e}")
+        return {"code": "error", "message": f"获取状态失败: {str(e)}"}
+
+@app.get("/api/video-models")
+async def get_video_models():
+    """获取所有文生视频模型"""
+    video_models = [m.to_dict() for m in model_manager.get_all() if m.model_type == "video"]
+    return video_models
+
+# ============ 视频提示词优化 API ============
+
+@app.post("/api/optimize-prompt")
+async def optimize_prompt(request: Request):
+    """随机选择一个文本模型优化视频提示词"""
+    import random
+    from engine.agent_worker import create_llm_adapter
+    
+    try:
+        # 获取请求体
+        body = await request.json()
+        prompt = body.get("prompt", "")
+        
+        if not prompt:
+            return {"code": "error", "message": "提示词不能为空"}
+        
+        # 获取所有可用的文本模型
+        models = model_manager.get_all()
+        text_models = [m for m in models if m.api_key and m.enabled and m.model_type == "text"]
+        
+        if not text_models:
+            return {"code": "error", "message": "没有可用的文本模型"}
+        
+        # 随机选择一个模型
+        selected_model = random.choice(text_models)
+        logger.info(f"选择模型优化提示词: {selected_model.name} ({selected_model.model_name})")
+        
+        # 创建适配器
+        adapter = create_llm_adapter(selected_model)
+        if not adapter:
+            return {"code": "error", "message": f"无法为模型 {selected_model.name} 创建适配器"}
+        
+        # 构建优化提示词
+        system_prompt = """你是一个专业的视频提示词优化专家。请帮助用户优化他们的视频生成提示词，使其更加详细、精美和生动。
+
+优化要求：
+1. 保持原始意图和主题
+2. 添加丰富的视觉细节描述（光线、色彩、氛围、运动等）
+3. 使用更具表现力的语言
+4. 保持提示词简洁但有画面感
+5. 如果原始提示词很简单，适当扩展但不要过度
+
+请直接返回优化后的提示词，不要添加额外的解释或说明。"""
+
+        # 调用模型优化提示词
+        response = adapter.chat(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"请优化这个视频提示词：{prompt}"}
+            ],
+            temperature=0.7,
+            max_tokens=500
+        )
+        
+        # 获取优化的提示词
+        optimized_prompt = response.content.strip()
+        
+        return {
+            "code": "success",
+            "original_prompt": prompt,
+            "optimized_prompt": optimized_prompt,
+            "model_used": f"{selected_model.name} ({selected_model.model_name})"
+        }
+        
+    except Exception as e:
+        logger.error(f"提示词优化失败: {e}")
+        return {"code": "error", "message": f"优化失败: {str(e)}"}
 
 # ============ 模型调用日志 API ============
 
@@ -1933,6 +2218,54 @@ async def ai_chat_events(request: Request):
             ai_chat_manager.remove_callback(callback)
     
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ============ AI聊天历史记录 API ============
+
+@app.get("/api/ai-chat/history")
+async def ai_chat_get_history(limit: int = 50):
+    """获取聊天记录列表"""
+    try:
+        from ai_chat_manager import ai_chat_manager
+        history = ai_chat_manager.get_history_list(limit)
+        return {"status": "success", "data": history}
+    except Exception as e:
+        logger.error(f"AI chat get history error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/ai-chat/history/{session_id}")
+async def ai_chat_get_history_detail(session_id: str):
+    """获取单条聊天记录的详细信息"""
+    try:
+        from ai_chat_manager import ai_chat_manager
+        detail = ai_chat_manager.get_history_detail(session_id)
+        if detail:
+            return {"status": "success", "data": detail}
+        else:
+            return {"status": "error", "message": "聊天记录不存在"}
+    except Exception as e:
+        logger.error(f"AI chat get history detail error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/ai-chat/history/delete")
+async def ai_chat_delete_history(request: Request):
+    """删除某条聊天记录"""
+    try:
+        request_data = await request.json()
+        session_id = request_data.get("session_id")
+        if not session_id:
+            return {"status": "error", "message": "缺少session_id"}
+        
+        from ai_chat_manager import ai_chat_manager
+        if ai_chat_manager.delete_history(session_id):
+            return {"status": "success", "message": "删除成功"}
+        else:
+            return {"status": "error", "message": "删除失败"}
+    except Exception as e:
+        logger.error(f"AI chat delete history error: {e}")
+        return {"status": "error", "message": str(e)}
 
 
 if __name__ == "__main__":

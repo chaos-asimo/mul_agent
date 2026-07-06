@@ -96,14 +96,14 @@ class IterationController:
                 all_models = self.model_manager.get_all()
                 available_models = [
                     m for m in all_models 
-                    if m.api_key and m.model_type != "image" and m.id not in tried_models
+                    if m.api_key and m.model_type not in ("image", "video") and m.id not in tried_models
                 ]
                 
                 # 如果所有模型都尝试过了，重新随机选择
                 if not available_models:
                     available_models = [
                         m for m in all_models 
-                        if m.api_key and m.model_type != "image"
+                        if m.api_key and m.model_type not in ("image", "video")
                     ]
                 
                 if not available_models:
@@ -155,10 +155,10 @@ class IterationController:
         yield {"type": "iteration_complete", "content": current_doc}
 
     def _get_random_model(self) -> Optional[ModelConfig]:
-        """随机选择一个已配置的文本模型（排除文生图模型）"""
+        """随机选择一个已配置的文本模型（排除文生图和文生视频模型）"""
         all_models = self.model_manager.get_all()
         # 只选择有API密钥且是文本模型的
-        configured_models = [m for m in all_models if m.api_key and m.model_type != "image"]
+        configured_models = [m for m in all_models if m.api_key and m.model_type not in ("image", "video")]
         if not configured_models:
             return None
         return random.choice(configured_models)
@@ -290,14 +290,14 @@ class IterationController:
                 all_models = self.model_manager.get_all()
                 available_models = [
                     m for m in all_models 
-                    if m.api_key and m.model_type != "image" and m.id not in tried_models
+                    if m.api_key and m.model_type not in ("image", "video") and m.id not in tried_models
                 ]
                 
                 # 如果所有模型都尝试过了，重新随机选择
                 if not available_models:
                     available_models = [
                         m for m in all_models 
-                        if m.api_key and m.model_type != "image"
+                        if m.api_key and m.model_type not in ("image", "video")
                     ]
                 
                 if not available_models:

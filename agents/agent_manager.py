@@ -67,8 +67,10 @@ class AgentManager:
         ),
     ]
 
-    def __init__(self, config_path: str = "agents.json"):
-        self.config_path = config_path
+    def __init__(self, config_path: str = None):
+        if config_path is None:
+            config_path = os.path.join(os.path.dirname(__file__), "..", "agents.json")
+        self.config_path = os.path.abspath(config_path)
         self.agents: List[AgentConfig] = []
         self.load()
 

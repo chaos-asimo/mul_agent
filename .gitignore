@@ -67,5 +67,8 @@ node_modules/
 # Uploaded files
 uploads/
 
+# Data files
+data/
+
 # Trae IDE
 .trae/

@@ -54,6 +54,15 @@ class ModelManager:
             api_key="",
             model_name="sd3-medium"
         ),
+        ModelConfig(
+            id="default_video",
+            name="OpenAI Video",
+            api_type="custom",
+            model_type="video",
+            api_url="https://api.openai.com/v1/videos",
+            api_key="",
+            model_name="sora-2"
+        ),
     ]
 
     def __init__(self, config_path: str = "models.json"):

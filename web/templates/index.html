@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Multi-Agent Document Enhancer</title>
+    <title>多智能体协作平台</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="/static/css/style.css?v=20240115">
@@ -16,7 +16,7 @@
             <div class="header-content">
                 <div class="logo">
                     <i class="fas fa-brain"></i>
-                    <span>Multi-Agent Document Enhancer</span>
+                    <span>多智能体协作平台</span>
                 </div>
                 <div class="header-actions">
                     <button id="save-btn" class="btn btn-secondary">
@@ -42,6 +42,9 @@
                 </button>
                 <button class="nav-btn" data-tab="ai-chat" title="AI聊天">
                     <i class="fas fa-comments"></i>
+                </button>
+                <button class="nav-btn" data-tab="video-models" title="视频模型">
+                    <i class="fas fa-video"></i>
                 </button>
                 <button class="nav-btn" data-tab="models" title="模型配置">
                     <i class="fas fa-cog"></i>
@@ -265,6 +268,49 @@
                     </div>
                 </div>
 
+                <!-- ========== AI聊天历史记录模态框 ========== -->
+                <div id="ai-chat-history-modal" class="modal" style="display: none;">
+                    <div id="ai-chat-history-modal-content" class="modal-content history-modal-content">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-history"></i> 聊天记录历史</h3>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="modal-close maximize-btn" onclick="window.app.toggleHistoryMaximize()" style="width: 32px; height: 32px; font-size: 16px;">&square;</button>
+                                <button class="modal-close" onclick="document.getElementById('ai-chat-history-modal').style.display='none'">&times;</button>
+                            </div>
+                        </div>
+                        <div class="modal-body history-modal-body">
+                            <!-- 历史记录列表视图 -->
+                            <div id="history-list-view">
+                                <div style="margin-bottom: 15px;">
+                                    <input type="text" id="history-search" class="form-control" placeholder="搜索主题..." oninput="window.app.loadHistoryList()">
+                                </div>
+                                <div id="history-list" style="max-height: 500px; overflow-y: auto;">
+                                    <div class="empty-state">
+                                        <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                                        <p>暂无聊天记录</p>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- 历史记录详情视图 -->
+                            <div id="history-detail-view" style="display: none;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                    <button class="btn btn-outline btn-sm" onclick="window.app.showHistoryList()">
+                                        <i class="fas fa-arrow-left"></i> 返回列表
+                                    </button>
+                                    <div>
+                                        <button class="btn btn-outline-danger btn-sm" onclick="window.app.deleteCurrentHistory()">
+                                            <i class="fas fa-trash"></i> 删除
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="history-detail-content" class="history-detail-content">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- ========== 模型配置内容 ========== -->
                 <div class="tab-panel" id="models-panel">
                     <div class="panel-header">
@@ -431,6 +477,104 @@
                     <div id="skills-list" class="config-grid"></div>
                 </div>
 
+                <!-- ========== 视频模型内容 ========== -->
+                <div class="tab-panel" id="video-models-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-video"></i> 视频模型</h2>
+                    </div>
+                    <div class="panel-content" style="display: flex; gap: 20px;">
+                        <!-- 左侧：参数设置 -->
+                        <div style="flex: 1; min-width: 400px;">
+                            <div class="form-section">
+                                <div style="margin-bottom: 12px; padding: 8px 10px; background: #f1f5f9; border-radius: 6px; font-size: 12px; line-height: 1.6;">
+                                    <strong>推荐：</strong>标准 1152x768/121帧/24fps | 短视频 81-121帧/24fps | 长视频 241帧/24fps
+                                </div>
+
+                                <div class="form-group">
+                                    <label>视频模型</label>
+                                    <select id="video-model-select" class="form-control">
+                                        <option value="">-- 请先在模型配置中添加视频模型 --</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>视频提示词
+                                        <button type="button" id="optimize-prompt-btn" style="float: right; margin: 0; padding: 4px 12px; font-size: 12px; background: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                                            <i class="fas fa-magic"></i> 提示词优化
+                                        </button>
+                                    </label>
+                                    <textarea id="video-prompt" class="form-control" rows="3" placeholder="描述你想要生成的视频内容..."></textarea>
+                                </div>
+
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                                    <div class="form-group">
+                                        <label>宽度</label>
+                                        <input type="number" id="video-width" class="form-control" value="1152" min="480" max="1920" step="64">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>高度</label>
+                                        <input type="number" id="video-height" class="form-control" value="768" min="360" max="1080" step="64">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>帧数</label>
+                                        <input type="number" id="video-frames" class="form-control" value="121" min="1" max="441" step="8">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>帧率(fps)</label>
+                                        <input type="number" id="video-fps" class="form-control" value="24" min="1" max="60">
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>起始图片URL(可选)</label>
+                                    <input type="text" id="video-image-url" class="form-control" placeholder="图生视频URL">
+                                </div>
+
+                                <div class="form-group">
+                                    <label>反向提示词(可选)</label>
+                                    <input type="text" id="video-negative-prompt" class="form-control" placeholder="描述需要避免的内容...">
+                                </div>
+
+                                <div style="display: flex; gap: 8px; margin-top: 15px;">
+                                    <button id="generate-video-btn" class="btn btn-primary" style="flex: 1;">
+                                        <i class="fas fa-play-circle"></i> 生成视频
+                                    </button>
+                                    <button id="clear-video-btn" class="btn btn-outline-danger">
+                                        <i class="fas fa-trash"></i> 清空
+                                    </button>
+                                </div>
+
+                                <div id="video-result" style="margin-top: 15px; display: none;">
+                                    <div style="font-weight: 600; margin-bottom: 8px; font-size: 13px;"><i class="fas fa-film"></i> 生成进度</div>
+                                    <div id="video-progress" style="display: none;">
+                                        <div class="progress-bar">
+                                            <div id="video-progress-bar" class="progress-bar-fill" style="width: 0%;"></div>
+                                        </div>
+                                        <p id="video-progress-text" style="text-align: center; margin-top: 5px; color: #64748b; font-size: 12px;">等待任务创建...</p>
+                                    </div>
+                                    <div id="video-error" style="display: none; color: #ef4444; padding: 8px; background: #fef2f2; border-radius: 6px; font-size: 12px;">
+                                        <i class="fas fa-exclamation-circle"></i> <span id="video-error-text"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 右侧：视频预览 -->
+                        <div style="flex: 1; min-width: 400px; display: flex; align-items: flex-start; justify-content: center;">
+                            <div id="video-preview-area" style="width: 100%; min-height: 400px; background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #94a3b8;">
+                                <i class="fas fa-video" style="font-size: 48px; margin-bottom: 15px; opacity: 0.5;"></i>
+                                <p style="font-size: 14px;">生成的视频将在这里显示</p>
+                            </div>
+                            <div id="video-result-content" style="display: none; width: 100%;">
+                                <video id="video-result-player" controls style="width: 100%; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                                    您的浏览器不支持视频播放
+                                </video>
+                                <p id="video-result-info" style="margin-top: 8px; color: #64748b; font-size: 12px; text-align: center;"></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- ========== 设置内容 ========== -->
                 <div class="tab-panel" id="settings-panel">
                     <div class="panel-header">
@@ -545,6 +689,9 @@
                                 <button id="ai-chat-start-btn" class="btn btn-success btn-sm">
                                     <i class="fas fa-play"></i> 启动聊天
                                 </button>
+                                <button id="ai-chat-history-btn" class="btn btn-outline btn-sm">
+                                    <i class="fas fa-history"></i> 历史记录
+                                </button>
                             </div>
                             <div id="ai-chat-role-list" class="ai-chat-role-list">
                                 <div class="empty-state">
@@ -645,6 +792,7 @@
                             <select id="form-model-type" class="form-control">
                                 <option value="text">文本模型</option>
                                 <option value="image">文生图模型</option>
+                                <option value="video">文生视频模型</option>
                             </select>
                         </div>
                         <div class="form-group">
@@ -656,6 +804,8 @@
                                 <option value="deepseek">DeepSeek</option>
                                 <option value="dall-e">DALL-E</option>
                                 <option value="stable-diffusion">Stable Diffusion</option>
+                                <option value="runway">Runway</option>
+                                <option value="pika">Pika</option>
                                 <option value="custom">自定义</option>
                             </select>
                         </div>
