@@ -6,8 +6,20 @@ import uuid
 import time
 import random
 import logging
+import re
+
+# 过滤模型思考内容（如 <think>...</think>）
+_THINK_BLOCK_RE = re.compile(r'<(think|thinking|reasoning)\b[^>]*>.*?</\1>', re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r'<(think|thinking|reasoning)\b[^>]*>.*', re.DOTALL | re.IGNORECASE)
+
+def strip_thinking(text: str) -> str:
+    """Remove thinking/reasoning blocks from model output."""
+    text = _THINK_BLOCK_RE.sub('', text)
+    text = _THINK_OPEN_RE.sub('', text)
+    return text.strip()
 from queue import Queue, Empty
 from typing import List, Dict, Optional
+from starlette.websockets import WebSocketState
 from agents import AgentManager
 from models import ModelManager
 from search import SearchManager
@@ -102,7 +114,10 @@ class AIChatManager:
         
         for ws in list(self.websockets):
             try:
-                await ws.send_json({"event": event_type, "data": data})
+                if ws.client_state == WebSocketState.CONNECTED:
+                    await ws.send_json({"event": event_type, "data": data})
+                else:
+                    self.websockets.discard(ws)
             except:
                 self.websockets.discard(ws)
     
@@ -347,7 +362,8 @@ class AIChatManager:
             yield f"发言失败：{str(e)[:50]}"
             return
         
-        full_content = ""
+        raw_content = ""
+        displayed_content = ""
         chunk_queue = Queue()
         worker_started = False
         
@@ -374,8 +390,12 @@ class AIChatManager:
                     if chunk.startswith("Error:"):
                         yield chunk
                         return
-                    full_content += chunk
-                    yield chunk
+                    raw_content += chunk
+                    filtered_content = strip_thinking(raw_content)
+                    delta = filtered_content[len(displayed_content):]
+                    if delta:
+                        displayed_content = filtered_content
+                        yield delta
                 except asyncio.TimeoutError:
                     continue
                 except Empty:
@@ -444,7 +464,6 @@ class AIChatManager:
                         
                         image_result = await self.generate_image_response(role, last_message, theme)
                         
-                        import time
                         if image_result["success"]:
                             image_url = image_result.get("image_url", "")
                             image_data = image_result.get("image_data", "")
@@ -492,7 +511,6 @@ class AIChatManager:
                                 "full_content": full_response
                             })
                         
-                        import time
                         message = ChatMessage(role.name, full_response, time.time())
                         self.messages.append(message)
                         
@@ -505,17 +523,15 @@ class AIChatManager:
                 
                 round_count += 1
                 
-                # 每轮结束后检查是否需要停止并保存
+                # 每轮结束后检查是否需要停止（保存逻辑统一放到 finally）
                 if not self.is_chatting:
-                    logger.info(f"聊天停止信号，开始保存: {len(self.messages)}条消息")
-                    self.save_current_chat()
+                    logger.info(f"聊天停止信号: {len(self.messages)}条消息")
                     break
                 
                 # 检测WebSocket是否已断开（超过10秒没有活跃连接）
                 if len(self.websockets) == 0 and asyncio.get_event_loop().time() - last_active_time > 10:
                     logger.warning("WebSocket已断开，自动停止聊天并保存记录")
                     self.is_chatting = False
-                    self.save_current_chat()
                     break
         except asyncio.CancelledError:
             logger.info("聊天任务被取消")
@@ -524,7 +540,7 @@ class AIChatManager:
         finally:
             try:
                 self.is_chatting = False
-                # 聊天结束时自动保存聊天记录
+                # 聊天结束时自动保存聊天记录（唯一保存入口）
                 logger.info(f"聊天结束，保存记录: {len(self.messages)}条消息, 主题: {self.current_theme}")
                 session_id = self.save_current_chat()
                 if session_id:
@@ -561,7 +577,7 @@ class AIChatManager:
         self.is_chatting = False
         if self.chat_task:
             self.chat_task.cancel()
-            # 简单等待任务结束，最多3秒
+            # 等待任务结束，最多3秒；保存由 chat_loop 的 finally 统一处理
             try:
                 await asyncio.wait_for(self.chat_task, timeout=3.0)
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):

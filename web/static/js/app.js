@@ -4,6 +4,7 @@ class App {
         this.currentModalType = null;
         this.currentEditId = null;
         this.statusInterval = null;
+        this.statusIntervalTime = 3000;
         this.init();
     }
 
@@ -1588,7 +1589,7 @@ class App {
 
             document.getElementById('skill-sel-skip-btn').onclick = () => {
                 modal.remove();
-                resolve(null);
+                resolve({ selected: [] });
             };
 
             document.getElementById('skill-sel-go-btn').onclick = () => {
@@ -2082,7 +2083,10 @@ class App {
     }
 
     startStatusPolling() {
-        this.statusInterval = setInterval(async () => {
+        this.stopStatusPolling();
+        this.statusIntervalTime = 3000;
+
+        const poll = async () => {
             try {
                 const response = await fetch(`${this.baseUrl}/api/status`);
                 const status = await response.json();
@@ -2213,7 +2217,27 @@ class App {
             } catch (error) {
                 console.error('获取状态失败:', error);
             }
-        }, 1000);
+
+            // 根据运行状态动态调整轮询频率
+            let targetInterval = 3000;
+            if (status && status.status === 'processing') {
+                targetInterval = 800;
+            }
+            if (this.statusIntervalTime !== targetInterval) {
+                this.statusIntervalTime = targetInterval;
+                clearInterval(this.statusInterval);
+                this.statusInterval = setInterval(poll, targetInterval);
+            }
+        };
+
+        this.statusInterval = setInterval(poll, this.statusIntervalTime);
+    }
+
+    stopStatusPolling() {
+        if (this.statusInterval) {
+            clearInterval(this.statusInterval);
+            this.statusInterval = null;
+        }
     }
 
     addLog(message, scroll = true) {
@@ -2499,7 +2523,7 @@ class App {
                     content: content,
                     iterations: iterations,
                     enable_search: enableSearch,
-                    agent_ids: this.processingAgentIds
+                    agent_ids: self.processingAgentIds
                 }));
             };
 
@@ -3506,7 +3530,7 @@ class App {
                                 <div style="font-weight: 600; color: #3b82f6; margin-bottom: 4px;">
                                     ${this.escapeHtml(msg.role_name)} <span style="font-weight: normal; color: #94a3b8; font-size: 12px;">${time}</span>
                                 </div>
-                                <div style="color: #334155; line-height: 1.6; word-wrap: break-word;">${this.escapeHtml(msg.content)}</div>
+                                <div style="color: #334155; line-height: 1.6; word-wrap: break-word;">${this.escapeHtml(this.sanitizeThinkingContent(msg.content))}</div>
                                 ${imgHtml}
                             </div>
                         `;
@@ -4089,7 +4113,7 @@ class App {
                 <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
                 <div class="ai-chat-message-content">
                     <div class="ai-chat-message-name">${roleName}</div>
-                    <div class="ai-chat-message-text">${this.escapeHtml(fullContent)}</div>
+                    <div class="ai-chat-message-text">${this.escapeHtml(this.sanitizeThinkingContent(fullContent))}</div>
                 </div>
             `;
             
@@ -4097,7 +4121,7 @@ class App {
         } else {
             const textElement = streamingMsg.querySelector('.ai-chat-message-text');
             if (textElement) {
-                textElement.innerHTML = this.escapeHtml(fullContent);
+                textElement.innerHTML = this.escapeHtml(this.sanitizeThinkingContent(fullContent));
             }
         }
         
@@ -4199,16 +4223,12 @@ class App {
         }
     }
     
+    sanitizeThinkingContent(text) {
+        return window.Utils.sanitizeThinkingContent(text);
+    }
+
     formatAIChatContent(content) {
-        let formatted = this.escapeHtml(content);
-        
-        // 处理粗体强调：**文字** -> <strong>文字</strong>
-        formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        
-        // 处理彩色强调：[[文字]] -> <span style="color: #ef4444; font-weight: bold;">文字</span>
-        formatted = formatted.replace(/\[\[(.*?)\]\]/g, '<span style="color: #ef4444; font-weight: bold;">$1</span>');
-        
-        return formatted;
+        return window.Utils.formatAIChatContent(content);
     }
 
     renderAIChatMessages() {
@@ -4322,21 +4342,11 @@ class App {
     }
 
     escapeHtml(text) {
-        const div = document.createElement('div');
-        div.appendChild(document.createTextNode(text));
-        return div.innerHTML;
+        return window.Utils.escapeHtml(text);
     }
-    
+
     formatTimestamp(timestamp) {
-        if (!timestamp) return '';
-        const date = new Date(timestamp * 1000);
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        const hours = String(date.getHours()).padStart(2, '0');
-        const minutes = String(date.getMinutes()).padStart(2, '0');
-        const seconds = String(date.getSeconds()).padStart(2, '0');
-        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        return window.Utils.formatTimestamp(timestamp);
     }
 
     // ========== 视频模型功能 ==========

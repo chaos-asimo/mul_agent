@@ -1,0 +1,10 @@
+[
+  {
+    "id": "default_bing",
+    "name": "tavily",
+    "adapter_type": "tavily",
+    "api_key": "your-api-key",
+    "api_url": "https://api.tavily.com/search",
+    "enabled": true
+  }
+]

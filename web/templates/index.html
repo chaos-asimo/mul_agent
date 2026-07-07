@@ -6,7 +6,7 @@
     <title>多智能体协作平台</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="/static/css/style.css?v=20240115">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260706b">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
 </head>
 <body>
@@ -34,8 +34,8 @@
         <div style="display: flex; flex: 1; overflow: hidden;">
             <!-- 左侧图标导航 -->
             <nav class="left-nav">
-                <button class="nav-btn active" data-tab="main" title="主界面">
-                    <i class="fas fa-home"></i>
+                <button class="nav-btn active" data-tab="main" title="文档处理">
+                    <i class="fas fa-file-alt"></i>
                 </button>
                 <button class="nav-btn" data-tab="yijing" title="周易卜卦">
                     <i class="fas fa-coins"></i>
@@ -66,7 +66,7 @@
             <!-- 右侧工作区 -->
             <main class="workspace">
                 
-                <!-- ========== 主界面内容 ========== -->
+                <!-- ========== 文档处理内容 ========== -->
                 <div class="tab-panel active" id="main-panel">
                     <!-- 工具栏 -->
                     <div class="toolbar">
@@ -889,7 +889,8 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20260629i"></script>
+    <script src="/static/js/utils.js?v=20260706b"></script>
+    <script src="/static/js/app.js?v=20260706b"></script>
     <script>
         function closeSkillConfigModal() {
             const modal = document.getElementById('skill-config-modal');
