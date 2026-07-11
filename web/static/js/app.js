@@ -99,6 +99,9 @@ class App {
         // 导出日志
         document.getElementById('export-log-btn').addEventListener('click', () => this.exportLogs());
 
+        // 退出登录
+        document.getElementById('logout-btn').addEventListener('click', () => this.logout());
+
         // 日志清空
         document.getElementById('clear-log-btn').addEventListener('click', () => this.clearLog());
         
@@ -181,48 +184,75 @@ class App {
     async loadAgents() {
         try {
             const response = await fetch(`${this.baseUrl}/api/agents`);
-            const agents = await response.json();
-            this.renderAgents(agents);
+            const result = await response.json();
+            const groups = result.groups || [];
+            this.renderAgents(groups);
         } catch (error) {
             console.error('加载Agents失败:', error);
         }
     }
 
-    renderAgents(agents) {
+    renderAgents(groups) {
         const list = document.getElementById('agents-list');
-        if (agents.length === 0) {
+        
+        let allAgents = [];
+        groups.forEach(group => {
+            if (group.agents) {
+                allAgents = allAgents.concat(group.agents);
+            }
+        });
+        
+        if (allAgents.length === 0) {
             list.innerHTML = '<p style="text-align: center; color: #94a3b8; padding: 20px;">暂无Agent</p>';
             return;
         }
 
-        agents.sort((a, b) => a.order - b.order);
-        
-        list.innerHTML = agents.map((agent, index) => `
-            <div class="config-card" data-id="${agent.id}" draggable="true" data-order="${agent.order}">
-                <div class="card-header">
-                    <span class="drag-handle" title="拖拽排序">
-                        <i class="fas fa-grip-vertical"></i>
-                    </span>
-                    <span class="order-badge">#${index + 1}</span>
-                    <span class="card-title">${agent.name}</span>
-                    <div class="card-actions">
-                        <button class="action-btn edit-btn" title="编辑">
-                            <i class="fas fa-edit"></i>
-                        </button>
-                        <button class="action-btn delete-btn" title="删除">
-                            <i class="fas fa-trash"></i>
-                        </button>
+        let html = '';
+        groups.forEach(group => {
+            if (!group.agents || group.agents.length === 0) return;
+            
+            html += `
+                <div style="margin-bottom: 25px;">
+                    <h3 style="color: ${group.color}; margin-bottom: 15px; font-size: 16px; font-weight: 600;">
+                        <i class="fas ${group.icon}"></i> ${group.name} (${group.agents.length})
+                    </h3>
+                    <div class="config-grid">
+            `;
+            
+            group.agents.sort((a, b) => a.order - b.order);
+            
+            group.agents.forEach((agent, index) => {
+                html += `
+                    <div class="config-card" data-id="${agent.id}" draggable="true" data-order="${agent.order}">
+                        <div class="card-header">
+                            <span class="drag-handle" title="拖拽排序">
+                                <i class="fas fa-grip-vertical"></i>
+                            </span>
+                            <span class="order-badge">#${index + 1}</span>
+                            <span class="card-title">${agent.name}</span>
+                            <div class="card-actions">
+                                <button class="action-btn edit-btn" title="编辑">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button class="action-btn delete-btn" title="删除">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="badge-row">
+                                <span class="badge badge-info">${agent.model_name || agent.model_id || '未绑定'}</span>
+                                ${agent.enabled ? '<span class="badge badge-success">已启用</span>' : '<span class="badge badge-warning">已禁用</span>'}
+                            </div>
+                        </div>
                     </div>
-                </div>
-                <div class="card-body">
-                    <div class="badge-row">
-                        <span class="badge badge-info">${agent.model_id || '未绑定'}</span>
-                        ${agent.enabled ? '<span class="badge badge-success">已启用</span>' : '<span class="badge badge-warning">已禁用</span>'}
-                    </div>
-                </div>
-            </div>
-        `).join('');
+                `;
+            });
+            
+            html += '</div></div>';
+        });
 
+        list.innerHTML = html;
         this.setupDragSorting();
     }
 
@@ -285,11 +315,16 @@ class App {
         
         try {
             const response = await fetch(`${this.baseUrl}/api/agents`);
-            const agents = await response.json();
+            const result = await response.json();
+            const groups = result.groups || [];
             
             const agentMap = {};
-            agents.forEach(agent => {
-                agentMap[agent.id] = agent;
+            groups.forEach(group => {
+                if (group.agents) {
+                    group.agents.forEach(agent => {
+                        agentMap[agent.id] = agent;
+                    });
+                }
             });
 
             for (let index = 0; index < cards.length; index++) {
@@ -1192,8 +1227,15 @@ class App {
             // 编辑Agent
             try {
                 const response = await fetch(`${this.baseUrl}/api/agents`);
-                const agents = await response.json();
-                const agent = agents.find(a => a.id === agentId);
+                const result = await response.json();
+                const groups = result.groups || [];
+                let agent = null;
+                groups.forEach(group => {
+                    if (group.agents) {
+                        const found = group.agents.find(a => a.id === agentId);
+                        if (found) agent = found;
+                    }
+                });
                 if (agent) {
                     this.openAgentModal(agent);
                 }
@@ -2079,6 +2121,23 @@ class App {
             this.addLog(`日志已导出: ${filename}`);
         } catch (error) {
             alert(`导出失败: ${error.message}`);
+        }
+    }
+
+    async logout() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/logout`, {
+                method: 'POST'
+            });
+            
+            const result = await response.json();
+            if (result.status === 'success') {
+                window.location.href = '/login';
+            } else {
+                alert(result.message || '退出失败');
+            }
+        } catch (error) {
+            alert(`退出失败: ${error.message}`);
         }
     }
 
@@ -3524,7 +3583,9 @@ class App {
                     ${detail.messages.map(msg => {
                         const time = msg.timestamp ? new Date(msg.timestamp * 1000).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'}) : '';
                         const isImage = msg.is_image;
+                        const isVideo = msg.is_video;
                         const imgHtml = isImage && msg.image_url ? `<img src="${msg.image_url}" style="max-width: 100%; max-height: 300px; border-radius: 6px; margin-top: 5px; cursor: pointer;" onclick="window.aiChatOpenImage('${msg.image_url.replace(/'/g, "\\'")}')">` : '';
+                        const videoHtml = isVideo && msg.video_url ? `<video src="${msg.video_url}" controls style="max-width: 100%; max-height: 300px; border-radius: 6px; margin-top: 5px;">您的浏览器不支持视频播放</video>` : '';
                         return `
                             <div style="margin-bottom: 12px; padding: 10px; background: white; border-radius: 6px;">
                                 <div style="font-weight: 600; color: #3b82f6; margin-bottom: 4px;">
@@ -3532,6 +3593,7 @@ class App {
                                 </div>
                                 <div style="color: #334155; line-height: 1.6; word-wrap: break-word;">${this.escapeHtml(this.sanitizeThinkingContent(msg.content))}</div>
                                 ${imgHtml}
+                                ${videoHtml}
                             </div>
                         `;
                     }).join('')}
@@ -3947,6 +4009,12 @@ class App {
     
     async _startAIChatWithTheme(theme) {
         try {
+            if (this.isAIChatting) {
+                alert('聊天正在进行中，请先停止当前聊天');
+                return;
+            }
+            
+            this.isAIChatting = true;
             this.aiChatMessages = [];
             this.renderAIChatMessages();
             this.updateAIChatStats();
@@ -3960,11 +4028,13 @@ class App {
         } catch (error) {
             console.error('启动聊天失败:', error);
             alert('启动聊天失败: ' + error.message);
+            this.isAIChatting = false;
         }
     }
 
     async stopAIChat() {
         try {
+            this.isAIChatting = false;
             this.sendAIChatAction('stop');
             
             const startBtn = document.getElementById('ai-chat-start-btn');
@@ -4021,6 +4091,15 @@ class App {
                     this.finalizeStreamingMessage(data.data);
                 } else if (data.event === 'stopped') {
                     this.stopAIChat();
+                } else if (data.event === 'chat_ended') {
+                    this.isAIChatting = false;
+                    const startBtn = document.getElementById('ai-chat-start-btn');
+                    if (startBtn) {
+                        startBtn.innerHTML = '<i class="fas fa-play"></i> 启动聊天';
+                        startBtn.classList.remove('btn-danger');
+                        startBtn.classList.add('btn-success');
+                    }
+                    this.removeTypingIndicator();
                 }
             } catch (e) {
                 console.error('解析AI聊天事件失败:', e);
@@ -4150,7 +4229,20 @@ class App {
                 const charCount = messageData.char_count;
                 const messageIndex = messageData.message_index || (this.aiChatMessages.length + 1);
                 
-                if (messageData.is_image && (messageData.image_url || messageData.image_data)) {
+                if (messageData.is_video && messageData.video_url) {
+                    const videoSrc = messageData.video_url;
+                    const prompt = messageData.video_prompt || content;
+                    
+                    textElement.innerHTML = `
+                        <div class="ai-chat-video-container">
+                            <video src="${videoSrc}" controls class="ai-chat-video" loading="lazy">
+                                您的浏览器不支持视频播放
+                            </video>
+                            <div class="ai-chat-video-prompt">提示词: ${this.escapeHtml(prompt)}</div>
+                        </div>
+                        <span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>
+                    `;
+                } else if (messageData.is_image && (messageData.image_url || messageData.image_data)) {
                     const imageSrc = messageData.image_url || `data:image/png;base64,${messageData.image_data}`;
                     const prompt = messageData.image_prompt || content;
                     
@@ -4167,6 +4259,37 @@ class App {
                         `<span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>`;
                 }
             }
+        } else if (messageData.is_video && messageData.video_url) {
+            const role = this.aiChatRoles.find(r => r.name === messageData.role_name);
+            const avatar = role ? this.aiChatRoleAvatars[role.name] || this.getRandomAvatar() : '👤';
+            const colorIndex = this.aiChatRoles.findIndex(r => r.name === messageData.role_name);
+            const color = this.aiChatAvatarColors[colorIndex % this.aiChatAvatarColors.length];
+            
+            const videoSrc = messageData.video_url;
+            const prompt = messageData.video_prompt || messageData.content;
+            const charCount = messageData.char_count;
+            const messageIndex = messageData.message_index || (this.aiChatMessages.length + 1);
+            const timestamp = messageData.timestamp ? this.formatTimestamp(messageData.timestamp) : '';
+            
+            const videoMsg = document.createElement('div');
+            videoMsg.className = 'ai-chat-message';
+            videoMsg.innerHTML = `
+                <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
+                <div class="ai-chat-message-content">
+                    <div class="ai-chat-message-name">${messageData.role_name}${timestamp ? `<span class="ai-chat-message-time">${timestamp}</span>` : ''}</div>
+                    <div class="ai-chat-message-text">
+                        <div class="ai-chat-video-container">
+                            <video src="${videoSrc}" controls class="ai-chat-video" loading="lazy">
+                                您的浏览器不支持视频播放
+                            </video>
+                            <div class="ai-chat-video-prompt">提示词: ${this.escapeHtml(prompt)}</div>
+                        </div>
+                        <span class="ai-chat-char-count" style="color: #94a3b8; font-size: 11px; margin-left: 8px;">(${messageIndex}号/${charCount}字)</span>
+                    </div>
+                </div>
+            `;
+            messagesContainer.appendChild(videoMsg);
+            this.scrollAIChatToBottom();
         } else if (messageData.is_image && (messageData.image_url || messageData.image_data)) {
             const role = this.aiChatRoles.find(r => r.name === messageData.role_name);
             const avatar = role ? this.aiChatRoleAvatars[role.name] || this.getRandomAvatar() : '👤';
@@ -4264,12 +4387,41 @@ class App {
                 // 处理强调文字
                 const formattedContent = this.formatAIChatContent(msg.content);
                 
+                let messageContent = `<div class="ai-chat-message-text ${colorClass}">${formattedContent}${charCountHtml}</div>`;
+                
+                if (msg.is_video && msg.video_url) {
+                    const videoPrompt = msg.video_prompt || msg.content;
+                    messageContent = `
+                        <div class="ai-chat-message-text">
+                            <div class="ai-chat-video-container">
+                                <video src="${msg.video_url}" controls class="ai-chat-video" loading="lazy">
+                                    您的浏览器不支持视频播放
+                                </video>
+                                <div class="ai-chat-video-prompt">提示词: ${this.escapeHtml(videoPrompt)}</div>
+                            </div>
+                            ${charCountHtml}
+                        </div>
+                    `;
+                } else if (msg.is_image && (msg.image_url || msg.image_data)) {
+                    const imageSrc = msg.image_url || `data:image/png;base64,${msg.image_data}`;
+                    const imagePrompt = msg.image_prompt || msg.content;
+                    messageContent = `
+                        <div class="ai-chat-message-text">
+                            <div class="ai-chat-image-container">
+                                <img src="${imageSrc}" alt="生成的图片" class="ai-chat-image" loading="lazy" onclick="window.aiChatOpenImage('${imageSrc.replace(/'/g, "\\'")}')">
+                                <div class="ai-chat-image-prompt">提示词: ${this.escapeHtml(imagePrompt)}</div>
+                            </div>
+                            ${charCountHtml}
+                        </div>
+                    `;
+                }
+                
                 html += `
                     <div class="ai-chat-message">
                         <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
                         <div class="ai-chat-message-content">
                             <div class="ai-chat-message-name">${msg.role_name}${timestamp ? `<span class="ai-chat-message-time">${timestamp}</span>` : ''}</div>
-                            <div class="ai-chat-message-text ${colorClass}">${formattedContent}${charCountHtml}</div>
+                            ${messageContent}
                         </div>
                     </div>
                 `;
@@ -4304,13 +4456,42 @@ class App {
                 // 处理强调文字
                 const formattedContent = this.formatAIChatContent(msg.content);
                 
+                let messageContent = `<div class="ai-chat-message-text ${colorClass}">${formattedContent}${charCountHtml}</div>`;
+                
+                if (msg.is_video && msg.video_url) {
+                    const videoPrompt = msg.video_prompt || msg.content;
+                    messageContent = `
+                        <div class="ai-chat-message-text">
+                            <div class="ai-chat-video-container">
+                                <video src="${msg.video_url}" controls class="ai-chat-video" loading="lazy">
+                                    您的浏览器不支持视频播放
+                                </video>
+                                <div class="ai-chat-video-prompt">提示词: ${this.escapeHtml(videoPrompt)}</div>
+                            </div>
+                            ${charCountHtml}
+                        </div>
+                    `;
+                } else if (msg.is_image && (msg.image_url || msg.image_data)) {
+                    const imageSrc = msg.image_url || `data:image/png;base64,${msg.image_data}`;
+                    const imagePrompt = msg.image_prompt || msg.content;
+                    messageContent = `
+                        <div class="ai-chat-message-text">
+                            <div class="ai-chat-image-container">
+                                <img src="${imageSrc}" alt="生成的图片" class="ai-chat-image" loading="lazy" onclick="window.aiChatOpenImage('${imageSrc.replace(/'/g, "\\'")}')">
+                                <div class="ai-chat-image-prompt">提示词: ${this.escapeHtml(imagePrompt)}</div>
+                            </div>
+                            ${charCountHtml}
+                        </div>
+                    `;
+                }
+                
                 const msgDiv = document.createElement('div');
                 msgDiv.className = 'ai-chat-message';
                 msgDiv.innerHTML = `
                     <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
                     <div class="ai-chat-message-content">
                         <div class="ai-chat-message-name">${msg.role_name}${timestamp ? `<span class="ai-chat-message-time">${timestamp}</span>` : ''}</div>
-                        <div class="ai-chat-message-text ${colorClass}">${formattedContent}${charCountHtml}</div>
+                        ${messageContent}
                     </div>
                 `;
                 

@@ -25,6 +25,12 @@
                     <button id="export-log-btn" class="btn btn-secondary">
                         <i class="fas fa-download"></i> 导出日志
                     </button>
+                    <span id="current-user" class="current-user">
+                        <i class="fas fa-user"></i> {{ current_user.username if current_user else '' }}
+                    </span>
+                    <button id="logout-btn" class="btn btn-danger">
+                        <i class="fas fa-sign-out-alt"></i> 退出
+                    </button>
                     <span id="version-number" class="version-number"></span>
                 </div>
             </div>
@@ -215,7 +221,7 @@
                                         </tr>
                                     </thead>
                                     <tbody id="agent-status-body">
-                                        {% for agent in agents %}
+                                        {% for agent in flat_agents %}
                                         <tr data-id="{{ agent.id }}">
                                             <td>{{ agent.name }}</td>
                                             <td><span class="status-badge badge-ready">就绪</span></td>
@@ -364,32 +370,45 @@
                             <i class="fas fa-plus"></i> 添加Agent
                         </button>
                     </div>
-                    <div id="agents-list" class="config-grid">
-                        {% for agent in agents %}
-                        <div class="config-card" data-id="{{ agent.id }}">
-                            <div class="card-header">
-                                <span class="card-title">{{ agent.name }}</span>
-                                <div class="card-actions">
-                                    <button class="action-btn edit-btn" title="编辑">
-                                        <i class="fas fa-edit"></i>
-                                    </button>
-                                    <button class="action-btn delete-btn" title="删除">
-                                        <i class="fas fa-trash"></i>
-                                    </button>
+                    
+                    <div id="agents-list">
+                    {% for group in agents %}
+                    {% if group.agents %}
+                    <div style="margin-bottom: 25px;">
+                        <h3 style="color: {{ group.color }}; margin-bottom: 15px; font-size: 16px; font-weight: 600;">
+                            <i class="fas {{ group.icon }}"></i> {{ group.name }} ({{ group.agents|length }})
+                        </h3>
+                        <div class="config-grid">
+                            {% for agent in group.agents %}
+                            <div class="config-card" data-id="{{ agent.id }}">
+                                <div class="card-header">
+                                    <span class="card-title">{{ agent.name }}</span>
+                                    <div class="card-actions">
+                                        <button class="action-btn edit-btn" title="编辑">
+                                            <i class="fas fa-edit"></i>
+                                        </button>
+                                        <button class="action-btn delete-btn" title="删除">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <p class="card-desc">{{ agent.role_description[:50] if agent.role_description else '-' }}...</p>
+                                    <div class="badge-row">
+                                        <span class="badge badge-info">{{ agent.model_name }}</span>
+                                        {% if agent.enabled %}
+                                        <span class="badge badge-success">已启用</span>
+                                        {% else %}
+                                        <span class="badge badge-warning">已禁用</span>
+                                        {% endif %}
+                                    </div>
                                 </div>
                             </div>
-                            <div class="card-body">
-                                <p class="card-desc">{{ agent.role_description[:50] if agent.role_description else '-' }}...</p>
-                                <div class="badge-row">
-                                    {% if agent.enabled %}
-                                    <span class="badge badge-success">已启用</span>
-                                    {% else %}
-                                    <span class="badge badge-warning">已禁用</span>
-                                    {% endif %}
-                                </div>
-                            </div>
+                            {% endfor %}
                         </div>
-                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% endfor %}
                     </div>
                 </div>
 

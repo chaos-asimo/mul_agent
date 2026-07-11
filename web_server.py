@@ -8,11 +8,13 @@ from datetime import datetime
 from utils.logger import setup_logging, logger
 setup_logging()
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader
 from starlette.websockets import WebSocketState
+from starlette.middleware.sessions import SessionMiddleware
+from pydantic import BaseModel
 from agents.agent_manager import AgentManager
 from models.model_manager import ModelManager
 from attachment.attachment_manager import AttachmentManager
@@ -36,6 +38,8 @@ from web.routes import ai_chat as ai_chat_router
 
 logger.info("Initializing FastAPI app...")
 app = FastAPI(title="Multi-Agent Document Enhancer", version="1.0")
+
+app.add_middleware(SessionMiddleware, secret_key="mul_agent_secret_key_2026")
 
 
 async def safe_send_json(websocket: WebSocket, data: dict):
@@ -154,22 +158,87 @@ app.state.controller = controller
 
 logger.info("App initialized successfully")
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+async def get_current_user(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return None
+    return user
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    template = jinja_env.get_template("login.html")
+    return HTMLResponse(content=template.render())
+
+
+@app.post("/api/login")
+async def login(request: Request, login_data: LoginRequest):
+    if login_data.username == "shineyue" and login_data.password == "shineyue@2026":
+        request.session["user"] = {"username": login_data.username}
+        return {"status": "success", "message": "登录成功"}
+    return {"status": "error", "message": "用户名或密码错误"}
+
+
+@app.post("/api/logout")
+async def logout(request: Request):
+    request.session.pop("user", None)
+    return {"status": "success", "message": "退出成功"}
+
+
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+async def index(request: Request, user=Depends(get_current_user)):
     """主页面"""
+    if not user:
+        return RedirectResponse(url="/login")
+    
     models = [m.to_dict() for m in model_manager.get_all()]
-    agents = sorted([a.to_dict() for a in agent_manager.get_all()], key=lambda x: x['order'])
+    
+    agent_groups = {
+        'text': {'name': '文本模型', 'icon': 'fa-message-square', 'color': '#3b82f6', 'agents': []},
+        'image': {'name': '文生图', 'icon': 'fa-image', 'color': '#10b981', 'agents': []},
+        'video': {'name': '文生视频', 'icon': 'fa-video', 'color': '#f59e0b', 'agents': []}
+    }
+    
+    for agent in agent_manager.get_all():
+        agent_dict = agent.to_dict()
+        model = model_manager.get(agent.model_id)
+        if model:
+            agent_dict["model_type"] = model.model_type
+            agent_dict["model_name"] = model.model_name
+        else:
+            agent_dict["model_type"] = "text"
+            agent_dict["model_name"] = ""
+        
+        model_type = agent_dict["model_type"]
+        if model_type in agent_groups:
+            agent_groups[model_type]['agents'].append(agent_dict)
+        else:
+            agent_groups['text']['agents'].append(agent_dict)
+    
+    agent_groups_list = list(agent_groups.values())
+    
+    flat_agents = []
+    for group in agent_groups_list:
+        flat_agents.extend(group['agents'])
+    
     search_engines = [s.to_dict() for s in search_manager.get_all()]
     template = jinja_env.get_template("index.html")
     html_content = template.render({
         "request": request,
         "models": models,
-        "agents": agents,
+        "agents": agent_groups_list,
+        "flat_agents": flat_agents,
         "search_engines": search_engines,
         "current_document": current_document,
         "processing_status": processing_status,
         "settings": settings,
-        "logs": processing_log
+        "logs": processing_log,
+        "current_user": user
     })
     return HTMLResponse(content=html_content, status_code=200)
 
@@ -633,6 +702,11 @@ async def websocket_process(websocket: WebSocket):
     global controller, current_document, processing_status, processing_log, agent_results
     global selected_agent_count
 
+    session_cookie = websocket.cookies.get("session")
+    if not session_cookie:
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     logger.info("WebSocket connection established")
     await safe_send_json(websocket, {"status": "log", "message": "WebSocket连接已建立"})
@@ -864,6 +938,11 @@ async def websocket_process(websocket: WebSocket):
 @app.websocket("/ws/ai-chat")
 async def websocket_ai_chat(websocket: WebSocket):
     """WebSocket endpoint for AI chat streaming"""
+    session_cookie = websocket.cookies.get("session")
+    if not session_cookie:
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     logger.info("AI Chat WebSocket connection established")
 

@@ -92,7 +92,12 @@ class AgnesVideoAdapter(VideoAdapter):
     def generate(self, prompt: str, **kwargs) -> VideoResponse:
         """Create video generation task using Agnes Video API"""
         try:
-            url = f"{self.api_url}/v1/videos"
+            base_url = self.api_url.rstrip("/")
+            if base_url.endswith("/v1/videos"):
+                base_url = base_url.rsplit("/v1/videos", 1)[0]
+            elif base_url.endswith("/v1"):
+                base_url = base_url.rsplit("/v1", 1)[0]
+            url = f"{base_url}/v1/videos"
             
             headers = {
                 "Authorization": f"Bearer {self.api_key}",

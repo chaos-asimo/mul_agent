@@ -23,7 +23,7 @@ from starlette.websockets import WebSocketState
 from agents import AgentManager
 from models import ModelManager
 from search import SearchManager
-from engine.agent_worker import create_llm_adapter, create_image_adapter
+from engine.agent_worker import create_llm_adapter, create_image_adapter, create_video_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class ChatRole:
 class ChatMessage:
     """A chat message from a role"""
     
-    def __init__(self, role_name: str, content: str, timestamp: float, is_image: bool = False, image_url: str = "", image_data: str = "", image_prompt: str = ""):
+    def __init__(self, role_name: str, content: str, timestamp: float, is_image: bool = False, image_url: str = "", image_data: str = "", image_prompt: str = "", is_video: bool = False, video_url: str = "", video_prompt: str = ""):
         self.role_name = role_name
         self.content = content
         self.timestamp = timestamp
@@ -67,6 +67,9 @@ class ChatMessage:
         self.image_url = image_url
         self.image_data = image_data
         self.image_prompt = image_prompt
+        self.is_video = is_video
+        self.video_url = video_url
+        self.video_prompt = video_prompt
     
     def to_dict(self) -> Dict:
         return {
@@ -76,7 +79,10 @@ class ChatMessage:
             "is_image": self.is_image,
             "image_url": self.image_url,
             "image_data": self.image_data,
-            "image_prompt": self.image_prompt
+            "image_prompt": self.image_prompt,
+            "is_video": self.is_video,
+            "video_url": self.video_url,
+            "video_prompt": self.video_prompt
         }
 
 
@@ -324,6 +330,63 @@ class AIChatManager:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    async def generate_video_response(self, role: ChatRole, last_message: str, theme: str) -> Dict:
+        """Generate a video response from a role with video model"""
+        if not role.adapter:
+            model = self.model_manager.get(role.model_id)
+            if model:
+                role.adapter = create_video_adapter(model)
+        
+        if not role.adapter:
+            return {"success": False, "error": "无法连接到视频生成模型"}
+        
+        video_prompt = last_message if last_message else theme
+        
+        try:
+            response = role.adapter.generate(video_prompt)
+            
+            if response.success:
+                video_id = response.video_id
+                task_id = response.task_id
+                
+                if video_id:
+                    max_retries = 120
+                    retry_interval = 5
+                    
+                    for attempt in range(max_retries):
+                        status_result = role.adapter.get_status(video_id)
+                        video_status = status_result.get("status", "")
+                        progress = status_result.get("progress", 0)
+                        
+                        if video_status == "completed" and status_result.get("video_url"):
+                            return {
+                                "success": True,
+                                "video_url": status_result["video_url"],
+                                "video_id": video_id,
+                                "prompt": video_prompt,
+                                "status": "completed",
+                                "progress": 100
+                            }
+                        elif video_status in ["queued", "processing", "in_progress"]:
+                            await self.notify("message_chunk", {
+                                "role_name": role.name,
+                                "chunk": f"视频生成中... (进度: {progress}%)",
+                                "full_content": f"视频生成中... (视频ID: {video_id}, 进度: {progress}%)"
+                            })
+                            
+                            await asyncio.sleep(retry_interval)
+                        else:
+                            return {"success": False, "error": status_result.get("error", "视频生成失败")}
+                    
+                    return {"success": False, "error": f"视频生成超时（已等待{max_retries * retry_interval}秒）"}
+                else:
+                    return {"success": False, "error": "未返回视频ID"}
+            else:
+                return {"success": False, "error": response.error}
+                
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
     async def generate_response_stream(self, role: ChatRole, context: str, theme: str, search_info: str = ""):
         """Generate a streaming response from a role, yields chunks"""
         if not role.adapter:
@@ -495,6 +558,43 @@ class AIChatManager:
                             message_data["message_index"] = message_index
                             await self.notify("message", message_data)
                             last_active_time = asyncio.get_event_loop().time()
+                    elif role.model_type == "video":
+                        # 获取上一个角色的发言作为提示词
+                        last_message = ""
+                        if self.messages:
+                            last_message = self.messages[-1].content
+                        
+                        video_result = await self.generate_video_response(role, last_message, theme)
+                        
+                        if video_result["success"]:
+                            video_url = video_result.get("video_url", "")
+                            prompt = video_result.get("prompt", "")
+                            
+                            message = ChatMessage(
+                                role.name, 
+                                f"[视频]: {prompt}", 
+                                time.time(),
+                                is_video=True,
+                                video_url=video_url,
+                                video_prompt=prompt
+                            )
+                            self.messages.append(message)
+                            
+                            message_data = message.to_dict()
+                            message_data["char_count"] = len(prompt)
+                            message_data["message_index"] = message_index
+                            await self.notify("message", message_data)
+                            last_active_time = asyncio.get_event_loop().time()
+                        else:
+                            error_msg = f"视频生成失败: {video_result.get('error', '未知错误')}"
+                            message = ChatMessage(role.name, error_msg, time.time())
+                            self.messages.append(message)
+                            
+                            message_data = message.to_dict()
+                            message_data["char_count"] = len(error_msg)
+                            message_data["message_index"] = message_index
+                            await self.notify("message", message_data)
+                            last_active_time = asyncio.get_event_loop().time()
                     else:
                         search_info = ""
                         if round_count % 3 == 0:
@@ -540,6 +640,8 @@ class AIChatManager:
         finally:
             try:
                 self.is_chatting = False
+                # 通知前端聊天结束
+                await self.notify("chat_ended", {"message": "聊天已结束", "message_count": len(self.messages)})
                 # 聊天结束时自动保存聊天记录（唯一保存入口）
                 logger.info(f"聊天结束，保存记录: {len(self.messages)}条消息, 主题: {self.current_theme}")
                 session_id = self.save_current_chat()

@@ -12,9 +12,33 @@ def get_managers(request: Request):
 
 @router.get("/agents")
 async def get_agents(managers: dict = Depends(get_managers)):
-    """获取所有Agent配置"""
+    """获取所有Agent配置（按模型类型分类）"""
     agent_manager = managers["agent_manager"]
-    return [a.to_dict() for a in agent_manager.get_all()]
+    model_manager = managers["model_manager"]
+    
+    type_groups = {
+        'text': {'name': '文本模型', 'icon': 'fa-message-square', 'color': '#3b82f6', 'agents': []},
+        'image': {'name': '文生图', 'icon': 'fa-image', 'color': '#10b981', 'agents': []},
+        'video': {'name': '文生视频', 'icon': 'fa-video', 'color': '#f59e0b', 'agents': []}
+    }
+    
+    for agent in agent_manager.get_all():
+        agent_dict = agent.to_dict()
+        model = model_manager.get(agent.model_id)
+        if model:
+            agent_dict["model_type"] = model.model_type
+            agent_dict["model_name"] = model.model_name
+        else:
+            agent_dict["model_type"] = "text"
+            agent_dict["model_name"] = ""
+        
+        model_type = agent_dict["model_type"]
+        if model_type in type_groups:
+            type_groups[model_type]['agents'].append(agent_dict)
+        else:
+            type_groups['text']['agents'].append(agent_dict)
+    
+    return {"groups": list(type_groups.values())}
 
 
 @router.post("/agents")
