@@ -112,6 +112,7 @@ class App {
         document.getElementById('start-divination-btn').addEventListener('click', () => this.startDivination());
         document.getElementById('reset-divination-btn').addEventListener('click', () => this.resetDivination());
         document.getElementById('ai-explain-btn').addEventListener('click', () => this.startAiExplain());
+        document.getElementById('yijing-history-btn').addEventListener('click', () => this.openYijingHistory());
 
         // 预览切换
         document.querySelectorAll('.toggle-btn').forEach(btn => {
@@ -3305,6 +3306,177 @@ class App {
         this.currentDivinationData = null;
     }
 
+    async saveDivinationResult(data) {
+        try {
+            const aiSolutionContainer = document.getElementById('ai-solution-container');
+            const aiSolution = aiSolutionContainer ? aiSolutionContainer.innerHTML : '';
+            
+            await fetch(`${this.baseUrl}/api/yijing/save`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    content: data.content || '',
+                    original_hexagram: data.original_hexagram,
+                    changed_hexagram: data.changed_hexagram,
+                    yao_results: data.yao_results,
+                    change_count: data.change_count,
+                    change_yao_positions: data.change_yao_positions,
+                    solution_text: data.solution_text,
+                    ai_solution: aiSolution
+                })
+            });
+        } catch (error) {
+            console.error('保存卜卦结果失败:', error);
+        }
+    }
+
+    openYijingHistory() {
+        document.getElementById('yijing-history-modal').style.display = 'flex';
+        this.loadYijingHistory();
+    }
+
+    async loadYijingHistory() {
+        const listEl = document.getElementById('yijing-history-list');
+        try {
+            const response = await fetch(`${this.baseUrl}/api/yijing/history`);
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                const history = result.data;
+                
+                if (history.length === 0) {
+                    listEl.innerHTML = `
+                        <div class="empty-state">
+                            <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                            <p>暂无卜卦记录</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                listEl.innerHTML = history.map(item => `
+                    <div class="history-item" style="
+                        padding: 12px;
+                        margin-bottom: 8px;
+                        background: white;
+                        border-radius: 6px;
+                        border: 1px solid #e2e8f0;
+                        transition: all 0.2s;
+                    " onmouseover="this.style.borderColor='#c0392b';this.style.boxShadow='0 2px 8px rgba(192,57,43,0.1)'" 
+                       onmouseout="this.style.borderColor='#e2e8f0';this.style.boxShadow='none'">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1; min-width: 0; cursor: pointer;" onclick="window.app.restoreYijingRecord('${item.session_id}')">
+                                <div style="font-weight: 600; color: #1e293b; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                    ${this.escapeHtml(item.content || '无占卜内容')}
+                                </div>
+                                <div style="font-size: 12px; color: #64748b;">
+                                    ${item.date} · ${item.original_name} · 变爻: ${item.change_count}
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: center; margin-left: 10px;">
+                                <button onclick="event.stopPropagation(); window.app.deleteYijingRecord('${item.session_id}')" 
+                                        style="border: none; background: none; color: #94a3b8; cursor: pointer; padding: 4px 8px; border-radius: 4px;"
+                                        onmouseover="this.style.color='#ef4444';this.style.background='#fee2e2'"
+                                        onmouseout="this.style.color='#94a3b8';this.style.background='none'">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                                <i class="fas fa-chevron-right" style="color: #94a3b8; margin-left: 8px; cursor: pointer;" 
+                                   onclick="window.app.restoreYijingRecord('${item.session_id}')"></i>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+        } catch (error) {
+            console.error('加载卜卦历史失败:', error);
+            listEl.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-exclamation-circle" style="font-size: 48px; margin-bottom: 15px; color: #ef4444;"></i>
+                    <p>加载失败: ${error.message}</p>
+                </div>
+            `;
+        }
+    }
+
+    async restoreYijingRecord(sessionId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/yijing/history/${sessionId}`);
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                const data = result.data;
+                
+                document.getElementById('yijing-history-modal').style.display = 'none';
+                document.getElementById('divination-content').value = data.content || '';
+                
+                const coinsContainer = document.getElementById('coins-container');
+                const hexagramContainer = document.getElementById('hexagram-container');
+                const solutionContainer = document.getElementById('solution-container');
+                const aiSolutionContainer = document.getElementById('ai-solution-container');
+                
+                coinsContainer.innerHTML = '';
+                for (let i = 0; i < data.yao_results.length; i++) {
+                    const yao = data.yao_results[i];
+                    await this.renderCoinResult(yao, i + 1, coinsContainer);
+                    await new Promise(r => setTimeout(r, 300));
+                }
+                
+                await new Promise(r => setTimeout(r, 300));
+                this.renderHexagramResult(data, hexagramContainer);
+                this.renderSolution(data, solutionContainer);
+                
+                if (data.ai_solution) {
+                    aiSolutionContainer.innerHTML = data.ai_solution;
+                } else {
+                    aiSolutionContainer.innerHTML = `
+                        <div class="empty-state">
+                            <i class="fas fa-robot" style="font-size: 48px; margin-bottom: 15px;"></i>
+                            <p>点击"AI深度解卦"获取AI解卦</p>
+                        </div>
+                    `;
+                }
+                
+                this.currentDivinationData = data;
+                const aiExplainBtn = document.getElementById('ai-explain-btn');
+                if (aiExplainBtn) {
+                    aiExplainBtn.disabled = false;
+                }
+                
+                const resetBtn = document.getElementById('reset-divination-btn');
+                if (resetBtn) {
+                    resetBtn.disabled = false;
+                }
+            } else {
+                alert('加载记录失败: ' + result.message);
+            }
+        } catch (error) {
+            console.error('还原卜卦记录失败:', error);
+            alert('还原失败: ' + error.message);
+        }
+    }
+
+    async deleteYijingRecord(sessionId) {
+        if (!confirm('确定要删除这条卜卦记录吗？')) {
+            return;
+        }
+        try {
+            const response = await fetch(`${this.baseUrl}/api/yijing/history/${sessionId}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            if (result.status === 'success') {
+                this.loadYijingHistory();
+            } else {
+                alert('删除失败: ' + result.message);
+            }
+        } catch (error) {
+            console.error('删除卜卦记录失败:', error);
+            alert('删除失败: ' + error.message);
+        }
+    }
+
     startAiExplain() {
         const aiExplainBtn = document.getElementById('ai-explain-btn');
         const aiSolutionContainer = document.getElementById('ai-solution-container');
@@ -3426,6 +3598,8 @@ class App {
                                         rightContainer.scrollTop = rightContainer.scrollHeight;
                                     }
                                 }
+                                
+                                this.saveDivinationResult(this.currentDivinationData);
                             } else if (result.status === 'error') {
                                 alert('AI解卦失败: ' + result.message);
                                 aiExplainBtn.disabled = false;
@@ -3546,6 +3720,9 @@ class App {
                                 </div>
                                 <div style="font-size: 12px; color: #64748b;">
                                     ${item.date} · ${item.message_count} 条消息 · ${item.role_names.join(', ')}
+                                </div>
+                                <div style="font-size: 12px; color: #3b82f6; margin-top: 4px;">
+                                    <i class="fas fa-link"></i> <a href="/chat-history/${item.session_id}" target="_blank" style="text-decoration: underline;">独立访问</a>
                                 </div>
                             </div>
                             <div style="margin-left: 10px;">

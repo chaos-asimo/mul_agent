@@ -317,6 +317,24 @@
                     </div>
                 </div>
 
+                <!-- ========== 周易卜卦历史记录弹窗 ========== -->
+                <div id="yijing-history-modal" class="modal" style="display: none;">
+                    <div class="modal-content history-modal-content">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-history"></i> 卜卦历史记录</h3>
+                            <button class="modal-close" onclick="document.getElementById('yijing-history-modal').style.display='none'">&times;</button>
+                        </div>
+                        <div class="modal-body" style="max-height: 600px; overflow-y: auto;">
+                            <div id="yijing-history-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                                    <p>暂无卜卦记录</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- ========== 模型配置内容 ========== -->
                 <div class="tab-panel" id="models-panel">
                     <div class="panel-header">
@@ -632,6 +650,9 @@
                             </button>
                             <button id="reset-divination-btn" class="btn btn-primary divination-btn" style="background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%);">
                                 <i class="fas fa-redo"></i> 重新摇卦
+                            </button>
+                            <button id="yijing-history-btn" class="btn btn-outline divination-btn">
+                                <i class="fas fa-history"></i> 历史记录
                             </button>
                             <div class="divination-hint">摒除杂念，集中注意力默想自己所求之事，然后点击"开始摇卦"，即可生成卦象。</div>
                         </div>

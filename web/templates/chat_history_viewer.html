@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多智能体协作平台 - 聊天记录</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260706b">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+</head>
+<body>
+    <div class="app-container" style="min-height: 100vh;">
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-brain"></i>
+                    <span>多智能体协作平台</span>
+                </div>
+                <div class="header-actions">
+                    <span id="version-number" class="version-number"></span>
+                </div>
+            </div>
+        </header>
+
+        <div style="flex: 1; overflow: auto; padding: 20px;">
+            <div class="config-section" style="max-width: 1200px; margin: 0 auto;">
+                <h2 id="history-title" style="font-size: 20px; margin-bottom: 15px;">加载中...</h2>
+                
+                <div id="history-info" style="margin-bottom: 20px; padding: 12px; background: #f8fafc; border-radius: 8px; font-size: 13px; color: #64748b;">
+                </div>
+                
+                <div id="history-messages" style="background: white; border-radius: 8px; border: 1px solid #e2e8f0; padding: 20px; max-height: calc(100vh - 200px); overflow-y: auto;">
+                    <div style="text-align: center; color: #94a3b8; padding: 40px;">
+                        <i class="fas fa-spinner fa-spin" style="font-size: 32px; margin-bottom: 10px;"></i>
+                        <p>加载聊天记录...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="image-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center;" onclick="closeImageModal()">
+        <img id="modal-image" src="" style="max-width: 90%; max-height: 90%; border-radius: 8px;" onclick="event.stopPropagation()">
+        <div style="position: absolute; top: 20px; right: 20px; color: white; font-size: 24px; cursor: pointer;" onclick="closeImageModal()">✕</div>
+    </div>
+
+    <script>
+        function openImageModal(src) {
+            document.getElementById('modal-image').src = src;
+            document.getElementById('image-modal').style.display = 'flex';
+            document.body.style.overflow = 'hidden';
+        }
+        
+        function closeImageModal() {
+            document.getElementById('image-modal').style.display = 'none';
+            document.body.style.overflow = '';
+        }
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            const sessionId = "{{ session_id }}";
+            
+            async function loadHistory() {
+                try {
+                    const response = await fetch(`/api/ai-chat/history/${sessionId}`);
+                    const result = await response.json();
+                    
+                    if (result.status === 'success') {
+                        const data = result.data;
+                        
+                        document.getElementById('history-title').textContent = data.theme || '聊天记录';
+                        
+                        const infoEl = document.getElementById('history-info');
+                        infoEl.innerHTML = `
+                            <div style="display: flex; flex-wrap: wrap; gap: 15px;">
+                                <span><i class="fas fa-calendar"></i> ${data.date}</span>
+                                <span><i class="fas fa-comments"></i> ${data.message_count} 条消息</span>
+                                <span><i class="fas fa-users"></i> ${data.roles.map(r => r.name).join(', ')}</span>
+                            </div>
+                        `;
+                        
+                        const messagesEl = document.getElementById('history-messages');
+                        messagesEl.innerHTML = '';
+                        
+                        data.messages.forEach(msg => {
+                            const isUser = msg.role === 'user';
+                            const isVideo = msg.is_video;
+                            const isImage = msg.is_image;
+                            
+                            const msgDiv = document.createElement('div');
+                            msgDiv.className = isUser ? 'user-message' : 'ai-message';
+                            msgDiv.style.cssText = `
+                                display: flex;
+                                margin-bottom: 20px;
+                                ${isUser ? 'flex-direction: row-reverse;' : ''}
+                            `;
+                            
+                            let contentHtml = '';
+                            if (isVideo && msg.video_url) {
+                                const videoSrc = msg.video_url.startsWith('http') ? msg.video_url : window.location.origin + msg.video_url;
+                                contentHtml = `
+                                    <div class="ai-chat-video-container">
+                                        <video src="${videoSrc}" controls style="max-width: 100%; max-height: 400px; border-radius: 8px;">
+                                            您的浏览器不支持视频播放
+                                        </video>
+                                        <div class="ai-chat-video-prompt" style="margin-top: 8px; padding: 8px; background: #f1f5f9; border-radius: 4px; font-size: 12px; color: #64748b;">
+                                            <i class="fas fa-lightbulb"></i> ${msg.video_prompt || '视频提示词'}
+                                        </div>
+                                    </div>
+                                `;
+                            } else if (isImage && msg.image_url) {
+                                const imgSrc = msg.image_url.startsWith('http') ? msg.image_url : window.location.origin + msg.image_url;
+                                contentHtml = `
+                                    <div>
+                                        <img src="${imgSrc}" style="max-width: 100%; max-height: 400px; border-radius: 8px; cursor: pointer;" onclick="openImageModal('${imgSrc}')"/>
+                                        ${msg.image_prompt ? '<div style="margin-top: 8px; padding: 8px; background: #f1f5f9; border-radius: 4px; font-size: 12px; color: #64748b;">' + msg.image_prompt + '</div>' : ''}
+                                    </div>
+                                `;
+                            } else {
+                                let textContent = msg.content || '';
+                                if (msg.images && msg.images.length > 0) {
+                                    textContent += '<br><br>';
+                                    msg.images.forEach(img => {
+                                        const imgSrc = img.startsWith('http') ? img : window.location.origin + img;
+                                        textContent += `<img src="${imgSrc}" style="max-width: 200px; max-height: 200px; border-radius: 6px; margin: 5px; cursor: pointer;" onclick="openImageModal('${imgSrc}')"/>`;
+                                    });
+                                }
+                                contentHtml = `<div style="white-space: pre-wrap; line-height: 1.6;">${textContent}</div>`;
+                            }
+                            
+                            msgDiv.innerHTML = `
+                                <div style="display: flex; flex-direction: column; width: 100%;">
+                                    <div style="font-size: 13px; font-weight: 600; margin-bottom: 6px; ${isUser ? 'color: #2563eb; text-align: right;' : 'color: #16a34a;'}">
+                                        ${msg.role_name || (isUser ? '用户' : 'AI')}
+                                    </div>
+                                    <div style="padding: 12px 16px; border-radius: 12px; ${isUser ? 'background: #3b82f6; color: white; border-bottom-right-radius: 4px;' : 'background: #f1f5f9; color: #1e293b; border-bottom-left-radius: 4px;'}">
+                                        ${contentHtml}
+                                    </div>
+                                </div>
+                            `;
+                            
+                            messagesEl.appendChild(msgDiv);
+                        });
+                        
+                        messagesEl.scrollTop = messagesEl.scrollHeight;
+                    } else {
+                        document.getElementById('history-messages').innerHTML = `
+                            <div style="text-align: center; color: #ef4444; padding: 40px;">
+                                <i class="fas fa-exclamation-circle" style="font-size: 32px; margin-bottom: 10px;"></i>
+                                <p>${result.message || '加载失败'}</p>
+                            </div>
+                        `;
+                    }
+                } catch (error) {
+                    console.error('加载失败:', error);
+                    document.getElementById('history-messages').innerHTML = `
+                        <div style="text-align: center; color: #ef4444; padding: 40px;">
+                            <i class="fas fa-exclamation-circle" style="font-size: 32px; margin-bottom: 10px;"></i>
+                            <p>加载失败: ${error.message}</p>
+                        </div>
+                    `;
+                }
+            }
+            
+            loadHistory();
+        });
+    </script>
+</body>
+</html>

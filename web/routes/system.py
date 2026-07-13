@@ -109,16 +109,118 @@ async def get_hexagram_by_name(name: str):
     return {"status": "error", "message": "卦象不存在"}
 
 
-async def _generate_yijing_explain(content: str, original: dict, changed: dict, yao_results: list, change_count: int, change_yao_positions: list, managers: dict):
+YIJING_HISTORY_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "yijing_history")
+
+@router.post("/api/yijing/save")
+async def save_yijing_history(request: Request):
+    """保存卜卦结果"""
+    try:
+        data = await request.json()
+        os.makedirs(YIJING_HISTORY_DIR, exist_ok=True)
+        
+        session_id = str(random.randint(10000000, 99999999))
+        record = {
+            "session_id": session_id,
+            "content": data.get("content", ""),
+            "original_hexagram": data.get("original_hexagram", {}),
+            "changed_hexagram": data.get("changed_hexagram", None),
+            "yao_results": data.get("yao_results", []),
+            "change_count": data.get("change_count", 0),
+            "change_yao_positions": data.get("change_yao_positions", []),
+            "solution_text": data.get("solution_text", ""),
+            "ai_solution": data.get("ai_solution", ""),
+            "timestamp": datetime.now().timestamp(),
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        filepath = os.path.join(YIJING_HISTORY_DIR, f"{session_id}.json")
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+        
+        return {"status": "success", "session_id": session_id}
+    except Exception as e:
+        logger.error(f"Save yijing history error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/api/yijing/history")
+async def get_yijing_history():
+    """获取卜卦历史列表"""
+    try:
+        os.makedirs(YIJING_HISTORY_DIR, exist_ok=True)
+        history = []
+        
+        if not os.path.exists(YIJING_HISTORY_DIR):
+            return {"status": "success", "data": []}
+        
+        files = sorted(os.listdir(YIJING_HISTORY_DIR), key=lambda x: os.path.getmtime(os.path.join(YIJING_HISTORY_DIR, x)), reverse=True)
+        
+        for filename in files:
+            if not filename.endswith(".json"):
+                continue
+            try:
+                filepath = os.path.join(YIJING_HISTORY_DIR, filename)
+                with open(filepath, "r", encoding="utf-8") as f:
+                    record = json.load(f)
+                original_name = record["original_hexagram"].get("full_name", "") if record.get("original_hexagram") else ""
+                history.append({
+                    "session_id": record["session_id"],
+                    "content": record["content"],
+                    "original_name": original_name,
+                    "change_count": record["change_count"],
+                    "date": record["date"]
+                })
+            except Exception as e:
+                logger.error(f"Read yijing history error: {e}")
+        
+        return {"status": "success", "data": history}
+    except Exception as e:
+        logger.error(f"Get yijing history error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/api/yijing/history/{session_id}")
+async def get_yijing_history_detail(session_id: str):
+    """获取单个卜卦记录详情"""
+    try:
+        filepath = os.path.join(YIJING_HISTORY_DIR, f"{session_id}.json")
+        if not os.path.exists(filepath):
+            return {"status": "error", "message": "记录不存在"}
+        
+        with open(filepath, "r", encoding="utf-8") as f:
+            record = json.load(f)
+        
+        return {"status": "success", "data": record}
+    except Exception as e:
+        logger.error(f"Get yijing history detail error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.delete("/api/yijing/history/{session_id}")
+async def delete_yijing_history(session_id: str):
+    """删除卜卦历史记录"""
+    try:
+        filepath = os.path.join(YIJING_HISTORY_DIR, f"{session_id}.json")
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            return {"status": "success", "message": "删除成功"}
+        return {"status": "error", "message": "记录不存在"}
+    except Exception as e:
+        logger.error(f"Delete yijing history error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def _generate_yijing_explain(content: str, original: dict, changed: dict, yao_results: list, change_count: int, change_yao_positions: list, managers: dict):
     """生成AI解卦内容（公共逻辑）"""
     async def generate():
+        import asyncio
         try:
-            configured_models = [m for m in managers["model_manager"].get_all() if m.api_key and m.enabled]
-            if not configured_models:
-                yield f"data: {{\"status\": \"error\", \"message\": \"请先配置至少一个模型的API密钥\"}}\n\n"
+            text_models = [m for m in managers["model_manager"].get_all() if m.api_key and m.enabled and m.model_type == "text"]
+            if not text_models:
+                yield f"data: {{\"status\": \"error\", \"message\": \"请先配置至少一个文本类型的模型\"}}\n\n"
                 return
 
-            model = random.choice(configured_models)
+            model = random.choice(text_models)
             adapter = create_llm_adapter(model)
             if not adapter:
                 yield f"data: {{\"status\": \"error\", \"message\": \"无法创建模型适配器\"}}\n\n"
@@ -169,7 +271,13 @@ async def _generate_yijing_explain(content: str, original: dict, changed: dict, 
             yield f"data: {{\"status\": \"started\", \"model\": \"{model.name}\", \"prompt\": {json.dumps(prompt, ensure_ascii=False)}}}\n\n"
 
             for chunk in adapter.chat_stream(messages):
+                if chunk.startswith("{\"__stats__\""):
+                    continue
+                if chunk.startswith("Error:"):
+                    yield f"data: {{\"status\": \"error\", \"message\": {json.dumps(chunk[7:], ensure_ascii=False)}}}\n\n"
+                    return
                 yield f"data: {{\"status\": \"stream\", \"chunk\": {json.dumps(chunk, ensure_ascii=False)}}}\n\n"
+                await asyncio.sleep(0.01)
 
             yield f"data: {{\"status\": \"completed\", \"model\": \"{model.name}\", \"prompt\": {json.dumps(prompt, ensure_ascii=False)}}}\n\n"
 
@@ -192,7 +300,7 @@ async def yijing_ai_explain(request: Request, managers: dict = Depends(get_manag
             yield f"data: {{\"status\": \"error\", \"message\": \"请求体解析失败\"}}\n\n"
         return StreamingResponse(error_gen(), media_type="text/event-stream")
 
-    return await _generate_yijing_explain(
+    return _generate_yijing_explain(
         content=request_data.get("content", "") or "",
         original=request_data.get("original") or {},
         changed=request_data.get("changed") or {},
@@ -213,7 +321,7 @@ async def yijing_ai_explain_stream(data: str, managers: dict = Depends(get_manag
             yield f"data: {{\"status\": \"error\", \"message\": \"参数解析失败\"}}\n\n"
         return StreamingResponse(error_gen(), media_type="text/event-stream")
 
-    return await _generate_yijing_explain(
+    return _generate_yijing_explain(
         content=request_data.get("content", ""),
         original=request_data.get("original", {}),
         changed=request_data.get("changed", {}),

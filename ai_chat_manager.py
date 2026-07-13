@@ -147,14 +147,14 @@ class AIChatManager:
     
     def bind_model_to_role(self, agent_id: str) -> Optional[Dict]:
         """Bind an available model to an agent"""
-        available_models = [m for m in self.model_manager.get_all() if m.api_key and m.enabled]
+        available_models = [m for m in self.model_manager.get_all() if m.api_key and m.enabled and m.model_type == "text"]
         if not available_models:
             return None
         
         agent = self.agent_manager.get(agent_id)
         if agent and agent.model_id:
             model = self.model_manager.get(agent.model_id)
-            if model and model.api_key and model.enabled:
+            if model and model.api_key and model.enabled and model.model_type == "text":
                 return model.to_dict()
         
         return random.choice(available_models).to_dict()

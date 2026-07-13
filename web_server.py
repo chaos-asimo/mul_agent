@@ -242,6 +242,13 @@ async def index(request: Request, user=Depends(get_current_user)):
     })
     return HTMLResponse(content=html_content, status_code=200)
 
+
+@app.get("/chat-history/{session_id}", response_class=HTMLResponse)
+async def chat_history_viewer(request: Request, session_id: str):
+    """独立访问聊天记录页面"""
+    template = jinja_env.get_template("chat_history_viewer.html")
+    return HTMLResponse(content=template.render({"session_id": session_id}))
+
 # ============ 文档处理 API（保留在 web_server.py） ============
 
 @app.post("/api/process")

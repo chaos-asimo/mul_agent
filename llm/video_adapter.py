@@ -114,7 +114,9 @@ class AgnesVideoAdapter(VideoAdapter):
             }
             
             # Add optional parameters
-            if kwargs.get("image_url"):
+            if kwargs.get("image"):
+                data["image"] = kwargs["image"]
+            elif kwargs.get("image_url"):
                 data["image"] = kwargs["image_url"]
             
             if kwargs.get("negative_prompt"):
