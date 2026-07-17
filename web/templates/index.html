@@ -31,7 +31,6 @@
                     <button id="logout-btn" class="btn btn-danger">
                         <i class="fas fa-sign-out-alt"></i> 退出
                     </button>
-                    <span id="version-number" class="version-number"></span>
                 </div>
             </div>
         </header>
@@ -40,7 +39,10 @@
         <div style="display: flex; flex: 1; overflow: hidden;">
             <!-- 左侧图标导航 -->
             <nav class="left-nav">
-                <button class="nav-btn active" data-tab="main" title="文档处理">
+                <button class="nav-btn active" data-tab="lobster-claw" title="龙虾Claw">
+                    <span style="font-size: 20px;">🦞</span>
+                </button>
+                <button class="nav-btn" data-tab="main" title="文档处理">
                     <i class="fas fa-file-alt"></i>
                 </button>
                 <button class="nav-btn" data-tab="yijing" title="周易卜卦">
@@ -72,8 +74,69 @@
             <!-- 右侧工作区 -->
             <main class="workspace">
                 
+                <!-- ========== 龙虾Claw内容 ========== -->
+                <div class="tab-panel active" id="lobster-claw-panel">
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <h3>🦞 龙虾Claw - OpenClaw AI聊天</h3>
+                        </div>
+                        <div class="toolbar-right">
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.loadClawChatSessions()">
+                                <i class="fas fa-history"></i> 会话记录
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.createNewClawSession()">
+                                <i class="fas fa-plus"></i> 新建会话
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div style="display: flex; flex-direction: column; flex: 1; padding: 15px; min-height: 0;">
+                        <div style="flex: 1; overflow-y: auto; background: #f8fafc; border-radius: 8px; padding: 15px; margin-bottom: 15px;" id="claw-chat-messages">
+                            <div style="text-align: center; color: #94a3b8; margin-top: 50px;">
+                                <i class="fas fa-robot" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                <p>欢迎来到龙虾Claw！</p>
+                                <p style="font-size: 14px; margin-top: 5px;">我是你的AI助手，可以回答问题、执行命令、操作文件等。</p>
+                            </div>
+                        </div>
+                        
+                        <div style="flex: 0 0 auto;">
+                            <div style="display: flex; gap: 10px;">
+                                <div style="flex: 1; position: relative;">
+                                    <textarea id="claw-chat-input" 
+                                        placeholder="输入你的问题或命令..." 
+                                        style="width: 100%; padding: 12px 15px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 14px; resize: none; min-height: 48px; max-height: 150px; font-family: inherit;"></textarea>
+                                </div>
+                                <button id="claw-chat-send-btn" class="btn btn-primary" style="padding: 12px 24px;">
+                                    <i class="fas fa-send"></i> 发送
+                                </button>
+                                <button id="claw-chat-clear-btn" class="btn btn-outline-secondary" style="padding: 12px 15px;">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                            <div style="display: flex; gap: 15px; margin-top: 8px; font-size: 12px; color: #64748b;">
+                                <span><i class="fas fa-info-circle"></i> 支持对话问答、Shell命令、文件操作、网页搜索等</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="claw-sessions-modal" class="modal" style="display: none;">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h3><i class="fas fa-history"></i> 会话记录</h3>
+                                <button class="modal-close" onclick="document.getElementById('claw-sessions-modal').style.display='none'">&times;</button>
+                            </div>
+                            <div class="modal-body" style="max-height: 500px; overflow-y: auto;" id="claw-sessions-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                                    <p>暂无会话记录</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- ========== 文档处理内容 ========== -->
-                <div class="tab-panel active" id="main-panel">
+                <div class="tab-panel" id="main-panel">
                     <!-- 工具栏 -->
                     <div class="toolbar">
                         <div class="toolbar-left">
@@ -929,8 +992,9 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="/static/js/utils.js?v=20260706b"></script>
-    <script src="/static/js/app.js?v=20260706b"></script>
+    <script src="/static/js/app.js?v=20260706c"></script>
     <script>
         function closeSkillConfigModal() {
             const modal = document.getElementById('skill-config-modal');

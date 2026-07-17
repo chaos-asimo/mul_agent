@@ -35,6 +35,7 @@ from web.routes import system as system_router
 from web.routes import image as image_router
 from web.routes import video as video_router
 from web.routes import ai_chat as ai_chat_router
+from web.routes import lobster_claw as lobster_claw_router
 
 logger.info("Initializing FastAPI app...")
 app = FastAPI(title="Multi-Agent Document Enhancer", version="1.0")
@@ -145,6 +146,7 @@ app.include_router(system_router.router, prefix="")
 app.include_router(image_router.router, prefix="/api")
 app.include_router(video_router.router, prefix="/api")
 app.include_router(ai_chat_router.router, prefix="/api")
+app.include_router(lobster_claw_router.router, prefix="")
 
 # 初始化控制器
 controller = IterationController(

@@ -113,6 +113,9 @@ class App {
         document.getElementById('reset-divination-btn').addEventListener('click', () => this.resetDivination());
         document.getElementById('ai-explain-btn').addEventListener('click', () => this.startAiExplain());
         document.getElementById('yijing-history-btn').addEventListener('click', () => this.openYijingHistory());
+        
+        // 龙虾Claw相关
+        this.initClawChat();
 
         // 预览切换
         document.querySelectorAll('.toggle-btn').forEach(btn => {
@@ -689,7 +692,13 @@ class App {
                 
                 <div class="form-group">
                     <label>提示模板 (使用{变量名}作为占位符)</label>
-                    <textarea id="skill-new-prompt" class="form-control" rows="4" placeholder="请处理以下内容：\n{content}"></textarea>
+                    <textarea id="skill-new-prompt" class="form-control" rows="4" placeholder="请处理以下内容：\n{content}">请处理以下内容：
+{content}</textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label>脚本内容 (Python)</label>
+                    <textarea id="skill-new-script" class="form-control" rows="4" placeholder="def execute(input_data):&#10;    return {'result': '处理完成'}"></textarea>
                 </div>
                 
                 <div class="form-group">
@@ -707,14 +716,28 @@ class App {
             return;
         }
         
+        const executor = document.getElementById('skill-new-executor').value;
+        const promptTemplate = document.getElementById('skill-new-prompt').value.trim();
+        
+        if (executor === 'llm' && !promptTemplate) {
+            alert('选择"AI模型"执行器时必须填写提示模板');
+            return;
+        }
+        
+        if (executor === 'script' && !document.getElementById('skill-new-script').value.trim()) {
+            alert('选择"脚本"执行器时必须填写脚本内容');
+            return;
+        }
+        
         const skillData = {
             name: name,
             description: document.getElementById('skill-new-description').value,
             skill_type: document.getElementById('skill-new-type').value,
-            executor: document.getElementById('skill-new-executor').value,
+            executor: executor,
             enabled: document.getElementById('skill-new-enabled').checked,
             icon: document.getElementById('skill-new-icon').value || 'fas fa-cog',
-            prompt_template: document.getElementById('skill-new-prompt').value,
+            prompt_template: promptTemplate,
+            script: document.getElementById('skill-new-script').value || '',
             tags: document.getElementById('skill-new-tags').value.split(',').map(t => t.trim()).filter(t => t),
             parameters: [],
             input_type: 'text',
@@ -734,7 +757,7 @@ class App {
                 await this.loadSkillsForConfig();
                 await this.loadSkills();
             } else {
-                alert('创建失败: ' + data.message);
+                alert('创建失败: ' + (data.errors ? data.errors.join('\n') : data.message));
             }
         } catch (error) {
             alert('创建失败: ' + error.message);
@@ -3616,6 +3639,350 @@ class App {
             alert('AI解卦失败: ' + error.message);
             aiExplainBtn.disabled = false;
             aiExplainBtn.innerHTML = '<i class="fas fa-robot"></i> AI 深度解卦';
+        }
+    }
+
+    // ============ 龙虾Claw功能 ============
+    clawChatSessionId = null;
+    clawChatMessages = [];
+    
+    initClawChat() {
+        const sendBtn = document.getElementById('claw-chat-send-btn');
+        const input = document.getElementById('claw-chat-input');
+        const clearBtn = document.getElementById('claw-chat-clear-btn');
+        
+        if (sendBtn) {
+            sendBtn.onclick = () => this.sendClawChatMessage();
+        }
+        
+        if (input) {
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.sendClawChatMessage();
+                }
+            });
+        }
+        
+        if (clearBtn) {
+            clearBtn.onclick = () => this.clearClawChat();
+        }
+    }
+    
+    async sendClawChatMessage() {
+        const input = document.getElementById('claw-chat-input');
+        const sendBtn = document.getElementById('claw-chat-send-btn');
+        const messagesContainer = document.getElementById('claw-chat-messages');
+        const message = input.value.trim();
+        
+        if (!message) {
+            return;
+        }
+        
+        input.value = '';
+        sendBtn.disabled = true;
+        sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 发送中...';
+        
+        this.addClawChatMessage('user', message);
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/chat/stream`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    message: message, 
+                    session_id: this.clawChatSessionId 
+                })
+            });
+            
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let assistantMessageId = null;
+            let isDone = false;
+            
+            while (!isDone) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+                
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.substring(6));
+                            
+                            if (data.success) {
+                                this.clawChatSessionId = data.session_id;
+                                
+                                if (data.content) {
+                                    if (!assistantMessageId) {
+                                        assistantMessageId = this.addClawChatMessage('assistant', data.content, true);
+                                    } else {
+                                        this.updateClawChatMessage(assistantMessageId, data.content);
+                                    }
+                                }
+                                
+                                if (data.done) {
+                                    isDone = true;
+                                }
+                            } else {
+                                this.addClawChatMessage('system', `<span style="color: #ef4444;">错误: ${data.error}</span>`);
+                            }
+                        } catch (e) {
+                            console.error('解析SSE数据失败:', e);
+                        }
+                    }
+                }
+            }
+            
+            if (assistantMessageId) {
+                this.finishClawChatMessage(assistantMessageId);
+            } else {
+                const indicators = document.querySelectorAll('.claw-typing-indicator');
+                indicators.forEach(ind => ind.remove());
+            }
+        } catch (error) {
+            this.addClawChatMessage('system', `<span style="color: #ef4444;">发送失败: ${error.message}</span>`);
+        } finally {
+            const indicators = document.querySelectorAll('.claw-typing-indicator');
+            indicators.forEach(ind => ind.remove());
+            sendBtn.disabled = false;
+            sendBtn.innerHTML = '<i class="fas fa-send"></i> 发送';
+        }
+    }
+    
+    addClawChatMessage(role, content, isStreaming = false) {
+        const messagesContainer = document.getElementById('claw-chat-messages');
+        const isWelcome = messagesContainer.querySelector('.empty-state');
+        if (isWelcome) {
+            messagesContainer.innerHTML = '';
+        }
+        
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `claw-chat-message ${role}`;
+        messageDiv.style.cssText = `
+            display: flex; margin-bottom: 15px; ${role === 'user' ? 'justify-content: flex-end;' : 'justify-content: flex-start;'}
+        `;
+        
+        const avatar = document.createElement('div');
+        avatar.style.cssText = `
+            width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            font-size: 18px; flex-shrink: 0; margin ${role === 'user' ? 'left' : 'right'}: 10px;
+        `;
+        
+        if (role === 'user') {
+            avatar.style.background = '#3b82f6';
+            avatar.innerHTML = '<i class="fas fa-user" style="color: white;"></i>';
+        } else if (role === 'assistant') {
+            avatar.style.background = '#10b981';
+            avatar.innerHTML = '<i class="fas fa-robot" style="color: white;"></i>';
+        } else {
+            avatar.style.background = '#64748b';
+            avatar.innerHTML = '<i class="fas fa-info-circle" style="color: white;"></i>';
+        }
+        
+        const contentDiv = document.createElement('div');
+        contentDiv.style.cssText = `
+            max-width: 70%; padding: 12px 15px; border-radius: 12px; font-size: 14px; line-height: 1.5;
+            ${role === 'user' 
+                ? 'background: #3b82f6; color: white; border-bottom-right-radius: 4px;' 
+                : role === 'assistant' 
+                    ? 'background: white; color: #1e293b; border-bottom-left-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);' 
+                    : 'background: #f1f5f9; color: #64748b; border-radius: 8px;'}
+        `;
+        
+        if (isStreaming) {
+            contentDiv.id = `claw-assistant-${Date.now()}`;
+            contentDiv.innerHTML = `<span class="claw-streaming-text">${content}</span><span class="claw-typing-indicator"><i class="fas fa-circle fa-xs"></i><i class="fas fa-circle fa-xs" style="animation-delay: 0.2s;"></i><i class="fas fa-circle fa-xs" style="animation-delay: 0.4s;"></i></span>`;
+            const indicatorStyle = document.createElement('style');
+            indicatorStyle.textContent = `.claw-typing-indicator i { animation: bounce 1.4s infinite ease-in-out both; } @keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }`;
+            document.head.appendChild(indicatorStyle);
+        } else {
+            if (role === 'assistant') {
+                contentDiv.innerHTML = `<span class="claw-streaming-text">${this.renderMarkdown(content)}</span>`;
+            } else if (role === 'user') {
+                contentDiv.textContent = content;
+            } else {
+                contentDiv.innerHTML = content.replace(/\n/g, '<br>');
+            }
+        }
+        
+        messageDiv.appendChild(avatar);
+        messageDiv.appendChild(contentDiv);
+        messagesContainer.appendChild(messageDiv);
+        
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        
+        return contentDiv.id;
+    }
+    
+    updateClawChatMessage(elementId, content) {
+        const element = document.getElementById(elementId);
+        if (element) {
+            const textSpan = element.querySelector('.claw-streaming-text');
+            if (textSpan) {
+                textSpan.textContent += content;
+            } else {
+                element.innerHTML += content.replace(/\n/g, '<br>');
+            }
+        }
+        
+        const messagesContainer = document.getElementById('claw-chat-messages');
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+    
+    finishClawChatMessage(elementId) {
+        const element = document.getElementById(elementId);
+        if (element) {
+            const textSpan = element.querySelector('.claw-streaming-text');
+            const indicator = element.querySelector('.claw-typing-indicator');
+            
+            if (textSpan) {
+                let htmlContent = this.renderMarkdown(textSpan.textContent);
+                textSpan.innerHTML = htmlContent;
+            }
+            
+            if (indicator) {
+                indicator.remove();
+            }
+        }
+        
+        const messagesContainer = document.getElementById('claw-chat-messages');
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+    
+    renderMarkdown(text) {
+        if (!text) return '';
+        
+        if (typeof marked !== 'undefined') {
+            marked.setOptions({
+                breaks: true,
+                gfm: true
+            });
+            return marked.parse(text);
+        }
+        
+        let html = text;
+        
+        html = html.replace(/&/g, '&amp;');
+        html = html.replace(/</g, '&lt;');
+        html = html.replace(/>/g, '&gt;');
+        
+        html = html.replace(/^### (.*$)/gm, '<h3>$1</h3>');
+        html = html.replace(/^## (.*$)/gm, '<h2>$1</h2>');
+        html = html.replace(/^# (.*$)/gm, '<h1>$1</h1>');
+        
+        html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre class="claw-code-block"><code>$2</code></pre>');
+        html = html.replace(/`([^`]+)`/g, '<code class="claw-inline-code">$1</code>');
+        
+        html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+        
+        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" class="claw-link">$1</a>');
+        html = html.replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>');
+        
+        html = html.replace(/^\s*\d+\.\s+/gm, '<li>$&</li>');
+        html = html.replace(/^\s*[-*+]\s+/gm, '<li>$&</li>');
+        html = html.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
+        
+        html = html.replace(/^\|(.*)\|$/gm, (match) => {
+            const parts = match.split('|').map(p => p.trim()).filter(p => p);
+            if (parts.length === 0) return match;
+            if (match.includes('---')) return '';
+            return '<tr>' + parts.map(p => `<td>${p}</td>`).join('') + '</tr>';
+        });
+        
+        html = html.replace(/(<tr>[\s\S]*?<\/tr>[\s\S]*?<\/tr>)/g, '<table class="claw-table">$1</table>');
+        
+        html = html.replace(/\*\*\*\*/g, '<hr>');
+        html = html.replace(/^---$/gm, '<hr>');
+        
+        html = html.replace(/\n/g, '<br>');
+        html = html.replace(/<li>(\s*\d+\.\s+|\*\s+|-|\s*)\s*/g, '<li>');
+        
+        return html;
+    }
+    
+    clearClawChat() {
+        const messagesContainer = document.getElementById('claw-chat-messages');
+        messagesContainer.innerHTML = `
+            <div style="text-align: center; color: #94a3b8; margin-top: 50px;">
+                <i class="fas fa-robot" style="font-size: 48px; margin-bottom: 15px;"></i>
+                <p>欢迎来到龙虾Claw！</p>
+                <p style="font-size: 14px; margin-top: 5px;">我是你的AI助手，可以回答问题、执行命令、操作文件等。</p>
+            </div>
+        `;
+        this.clawChatSessionId = null;
+        this.clawChatMessages = [];
+    }
+    
+    createNewClawSession() {
+        this.clearClawChat();
+    }
+    
+    async loadClawChatSessions() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/chat/sessions`);
+            const result = await response.json();
+            
+            const listContainer = document.getElementById('claw-sessions-list');
+            
+            if (result.success && result.sessions.length > 0) {
+                const sortedSessions = result.sessions.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                
+                listContainer.innerHTML = sortedSessions.map(session => {
+                    const createdAt = new Date(session.created_at);
+                    const timeStr = createdAt.toLocaleString('zh-CN', {
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    });
+                    
+                    return `
+                        <div style="padding: 12px; border-bottom: 1px solid #e2e8f0; cursor: pointer;" onclick="app.loadClawChatSession('${session.id}')">
+                            <div style="font-weight: bold; color: #1e293b;">会话 ${session.id.split('_')[2] || session.id.substring(0, 10)}</div>
+                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">消息数: ${session.message_count} | ${timeStr}</div>
+                            <div style="font-size: 12px; color: #94a3b8; margin-top: 2px;">${session.preview || '无预览'}</div>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                listContainer.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                        <p>暂无会话记录</p>
+                    </div>
+                `;
+            }
+            
+            document.getElementById('claw-sessions-modal').style.display = 'block';
+        } catch (error) {
+            alert('获取会话记录失败: ' + error.message);
+        }
+    }
+    
+    async loadClawChatSession(sessionId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/chat/session/${sessionId}`);
+            const result = await response.json();
+            
+            if (result.success) {
+                this.clearClawChat();
+                this.clawChatSessionId = sessionId;
+                
+                const messagesContainer = document.getElementById('claw-chat-messages');
+                messagesContainer.innerHTML = '';
+                
+                result.session.messages.forEach(msg => {
+                    this.addClawChatMessage(msg.role, msg.content);
+                });
+                
+                document.getElementById('claw-sessions-modal').style.display = 'none';
+            }
+        } catch (error) {
+            alert('加载会话失败: ' + error.message);
         }
     }
 
