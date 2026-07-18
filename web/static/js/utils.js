@@ -22,7 +22,39 @@ window.Utils = (function() {
 
     function formatTimestamp(timestamp) {
         if (!timestamp) return '';
-        const date = new Date(timestamp * 1000);
+        
+        let date;
+        
+        if (typeof timestamp === 'number') {
+            if (timestamp.toString().length === 10) {
+                date = new Date(timestamp * 1000);
+            } else {
+                date = new Date(timestamp);
+            }
+        } else if (typeof timestamp === 'string') {
+            let trimmed = timestamp.trim();
+            
+            if (trimmed.includes('T')) {
+                const parts = trimmed.split('.');
+                if (parts.length > 1) {
+                    trimmed = parts[0] + '.' + parts[1].substring(0, 3);
+                }
+            }
+            
+            date = new Date(trimmed);
+            
+            if (isNaN(date.getTime())) {
+                const normalized = trimmed.replace(' ', 'T');
+                date = new Date(normalized);
+            }
+        } else {
+            date = new Date(timestamp);
+        }
+        
+        if (isNaN(date.getTime())) {
+            return '未知时间';
+        }
+        
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, '0');
         const day = String(date.getDate()).padStart(2, '0');

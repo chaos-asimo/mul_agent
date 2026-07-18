@@ -123,6 +123,15 @@ class AgnesVideoAdapter(VideoAdapter):
                 data["negative_prompt"] = kwargs["negative_prompt"]
             
             response = requests.post(url, headers=headers, json=data, timeout=60)
+            
+            if response.status_code == 400:
+                try:
+                    error_detail = response.json()
+                    error_msg = error_detail.get("error", {}).get("message", str(response.text))
+                except:
+                    error_msg = f"400 Bad Request: {response.text[:200]}"
+                return VideoResponse(success=False, error=error_msg)
+            
             response.raise_for_status()
             
             result = response.json()
@@ -141,6 +150,13 @@ class AgnesVideoAdapter(VideoAdapter):
             
             return VideoResponse(success=False, error="No video_id or task_id returned")
             
+        except requests.exceptions.HTTPError as e:
+            try:
+                error_detail = response.json()
+                error_msg = error_detail.get("error", {}).get("message", str(e))
+            except:
+                error_msg = f"HTTP Error {response.status_code}: {response.text[:200]}"
+            return VideoResponse(success=False, error=error_msg)
         except Exception as e:
             return VideoResponse(success=False, error=str(e))
     

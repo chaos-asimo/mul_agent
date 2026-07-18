@@ -3679,11 +3679,13 @@ class App {
             return;
         }
         
+        this.clawChatAbortController = new AbortController();
+        
         input.value = '';
         sendBtn.disabled = true;
         sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 发送中...';
         
-        this.addClawChatMessage('user', message);
+        this.addClawChatMessage('user', message, false, new Date().toISOString());
         
         try {
             const response = await fetch(`${this.baseUrl}/api/lobster-claw/chat/stream`, {
@@ -3692,7 +3694,9 @@ class App {
                 body: JSON.stringify({ 
                     message: message, 
                     session_id: this.clawChatSessionId 
-                })
+                }),
+                keepalive: true,
+                signal: this.clawChatAbortController?.signal
             });
             
             const reader = response.body.getReader();
@@ -3752,7 +3756,7 @@ class App {
         }
     }
     
-    addClawChatMessage(role, content, isStreaming = false) {
+    addClawChatMessage(role, content, isStreaming = false, timestamp = null) {
         const messagesContainer = document.getElementById('claw-chat-messages');
         const isWelcome = messagesContainer.querySelector('.empty-state');
         if (isWelcome) {
@@ -3762,7 +3766,12 @@ class App {
         const messageDiv = document.createElement('div');
         messageDiv.className = `claw-chat-message ${role}`;
         messageDiv.style.cssText = `
-            display: flex; margin-bottom: 15px; ${role === 'user' ? 'justify-content: flex-end;' : 'justify-content: flex-start;'}
+            display: flex; flex-direction: column; margin-bottom: 15px; align-items: ${role === 'user' ? 'flex-end' : 'flex-start'};
+        `;
+        
+        const innerDiv = document.createElement('div');
+        innerDiv.style.cssText = `
+            display: flex;
         `;
         
         const avatar = document.createElement('div');
@@ -3795,6 +3804,8 @@ class App {
         if (isStreaming) {
             contentDiv.id = `claw-assistant-${Date.now()}`;
             contentDiv.innerHTML = `<span class="claw-streaming-text">${content}</span><span class="claw-typing-indicator"><i class="fas fa-circle fa-xs"></i><i class="fas fa-circle fa-xs" style="animation-delay: 0.2s;"></i><i class="fas fa-circle fa-xs" style="animation-delay: 0.4s;"></i></span>`;
+            contentDiv.dataset.rawText = content;
+            contentDiv.dataset.timestamp = timestamp || new Date().toISOString();
             const indicatorStyle = document.createElement('style');
             indicatorStyle.textContent = `.claw-typing-indicator i { animation: bounce 1.4s infinite ease-in-out both; } @keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }`;
             document.head.appendChild(indicatorStyle);
@@ -3806,10 +3817,20 @@ class App {
             } else {
                 contentDiv.innerHTML = content.replace(/\n/g, '<br>');
             }
+            
+            if (timestamp) {
+                const timeDiv = document.createElement('div');
+                timeDiv.style.cssText = `
+                    font-size: 11px; color: #94a3b8; margin-top: 4px; text-align: ${role === 'user' ? 'right' : 'left'};
+                `;
+                timeDiv.textContent = this.formatTimestamp(timestamp);
+                messageDiv.appendChild(timeDiv);
+            }
         }
         
-        messageDiv.appendChild(avatar);
-        messageDiv.appendChild(contentDiv);
+        innerDiv.appendChild(avatar);
+        innerDiv.appendChild(contentDiv);
+        messageDiv.appendChild(innerDiv);
         messagesContainer.appendChild(messageDiv);
         
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -3822,7 +3843,15 @@ class App {
         if (element) {
             const textSpan = element.querySelector('.claw-streaming-text');
             if (textSpan) {
-                textSpan.textContent += content;
+                const currentText = element.dataset.rawText || '';
+                const newText = currentText + content;
+                element.dataset.rawText = newText;
+                
+                if (content.includes('<video') || content.includes('<img')) {
+                    textSpan.innerHTML = newText;
+                } else {
+                    textSpan.innerHTML = this.renderMarkdown(newText);
+                }
             } else {
                 element.innerHTML += content.replace(/\n/g, '<br>');
             }
@@ -3835,16 +3864,21 @@ class App {
     finishClawChatMessage(elementId) {
         const element = document.getElementById(elementId);
         if (element) {
-            const textSpan = element.querySelector('.claw-streaming-text');
             const indicator = element.querySelector('.claw-typing-indicator');
-            
-            if (textSpan) {
-                let htmlContent = this.renderMarkdown(textSpan.textContent);
-                textSpan.innerHTML = htmlContent;
-            }
             
             if (indicator) {
                 indicator.remove();
+            }
+            
+            const timestamp = element.dataset.timestamp;
+            if (timestamp) {
+                const messageDiv = element.parentElement.parentElement;
+                const timeDiv = document.createElement('div');
+                timeDiv.style.cssText = `
+                    font-size: 11px; color: #94a3b8; margin-top: 4px; text-align: left;
+                `;
+                timeDiv.textContent = this.formatTimestamp(timestamp);
+                messageDiv.appendChild(timeDiv);
             }
         }
         
@@ -3904,6 +3938,51 @@ class App {
         return html;
     }
     
+    formatTimestamp(timestamp) {
+        if (!timestamp) return '';
+        
+        let date;
+        
+        if (typeof timestamp === 'number') {
+            if (timestamp.toString().length === 10) {
+                date = new Date(timestamp * 1000);
+            } else {
+                date = new Date(timestamp);
+            }
+        } else if (typeof timestamp === 'string') {
+            let trimmed = timestamp.trim();
+            
+            if (trimmed.includes('T')) {
+                const parts = trimmed.split('.');
+                if (parts.length > 1) {
+                    trimmed = parts[0] + '.' + parts[1].substring(0, 3);
+                }
+            }
+            
+            date = new Date(trimmed);
+            
+            if (isNaN(date.getTime())) {
+                const normalized = trimmed.replace(' ', 'T');
+                date = new Date(normalized);
+            }
+        } else {
+            date = new Date(timestamp);
+        }
+        
+        if (isNaN(date.getTime())) {
+            return '未知时间';
+        }
+        
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    }
+    
     clearClawChat() {
         const messagesContainer = document.getElementById('claw-chat-messages');
         messagesContainer.innerHTML = `
@@ -3957,7 +4036,7 @@ class App {
                 `;
             }
             
-            document.getElementById('claw-sessions-modal').style.display = 'block';
+            document.getElementById('claw-sessions-modal').style.display = 'flex';
         } catch (error) {
             alert('获取会话记录失败: ' + error.message);
         }
@@ -3976,7 +4055,7 @@ class App {
                 messagesContainer.innerHTML = '';
                 
                 result.session.messages.forEach(msg => {
-                    this.addClawChatMessage(msg.role, msg.content);
+                    this.addClawChatMessage(msg.role, msg.content, false, msg.timestamp);
                 });
                 
                 document.getElementById('claw-sessions-modal').style.display = 'none';

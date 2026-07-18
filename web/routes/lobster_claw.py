@@ -983,8 +983,8 @@ async def chat_message(request: ChatMessageRequest):
     
     if result["success"]:
         session = chat_sessions[session_id]
-        session["messages"].append({"role": "user", "content": request.message})
-        session["messages"].append({"role": "assistant", "content": result["content"]})
+        session["messages"].append({"role": "user", "content": request.message, "timestamp": datetime.now().isoformat()})
+        session["messages"].append({"role": "assistant", "content": result["content"], "timestamp": datetime.now().isoformat()})
         session["last_used"] = datetime.now().isoformat()
         
         if len(session["messages"]) > MAX_CHAT_HISTORY:
@@ -997,7 +997,7 @@ async def chat_message(request: ChatMessageRequest):
 async def chat_stream(request: ChatStreamRequest):
     session_id = get_or_create_session(request.session_id)
     session = chat_sessions[session_id]
-    session["messages"].append({"role": "user", "content": request.message})
+    session["messages"].append({"role": "user", "content": request.message, "timestamp": datetime.now().isoformat()})
     session["last_used"] = datetime.now().isoformat()
     
     generation_type = detect_generation_type(request.message)
@@ -1039,20 +1039,20 @@ async def chat_stream(request: ChatStreamRequest):
                     else:
                         content = f"🖼️ 图片生成成功，但无法获取图片数据"
                     
-                    session["messages"].append({"role": "assistant", "content": content})
+                    session["messages"].append({"role": "assistant", "content": content, "timestamp": datetime.now().isoformat()})
                     if len(session["messages"]) > MAX_CHAT_HISTORY:
                         session["messages"] = session["messages"][-MAX_CHAT_HISTORY:]
                     
                     yield f"data: {json.dumps({'success': True, 'content': content, 'session_id': session_id})}\n\n"
                 else:
                     error_msg = f"❌ 图片生成失败: {response.error}"
-                    session["messages"].append({"role": "assistant", "content": error_msg})
+                    session["messages"].append({"role": "assistant", "content": error_msg, "timestamp": datetime.now().isoformat()})
                     yield f"data: {json.dumps({'success': False, 'error': error_msg, 'session_id': session_id})}\n\n"
                 
                 yield f"data: {json.dumps({'success': True, 'content': '', 'session_id': session_id, 'done': True})}\n\n"
             except Exception as e:
                 error_msg = f"❌ 图片生成异常: {str(e)}"
-                session["messages"].append({"role": "assistant", "content": error_msg})
+                session["messages"].append({"role": "assistant", "content": error_msg, "timestamp": datetime.now().isoformat()})
                 yield f"data: {json.dumps({'success': False, 'error': error_msg, 'session_id': session_id})}\n\n"
         
         return StreamingResponse(image_generator(), media_type="text/event-stream")
@@ -1104,7 +1104,7 @@ async def chat_stream(request: ChatStreamRequest):
                             
                             if status == "completed" and task_info.get("video_url"):
                                 content = f"🎬 视频生成成功！\n\n<video src=\"{task_info['video_url']}\" controls style=\"max-width: 100%; border-radius: 8px;\"></video>"
-                                session["messages"].append({"role": "assistant", "content": content})
+                                session["messages"].append({"role": "assistant", "content": content, "timestamp": datetime.now().isoformat()})
                                 if len(session["messages"]) > MAX_CHAT_HISTORY:
                                     session["messages"] = session["messages"][-MAX_CHAT_HISTORY:]
                                 
@@ -1112,7 +1112,7 @@ async def chat_stream(request: ChatStreamRequest):
                                 break
                             elif status == "failed":
                                 error_msg = f"❌ 视频生成失败: {task_info.get('error', '未知错误')}"
-                                session["messages"].append({"role": "assistant", "content": error_msg})
+                                session["messages"].append({"role": "assistant", "content": error_msg, "timestamp": datetime.now().isoformat()})
                                 yield f"data: {json.dumps({'success': False, 'error': error_msg, 'session_id': session_id})}\n\n"
                                 break
                             else:
@@ -1121,17 +1121,17 @@ async def chat_stream(request: ChatStreamRequest):
                         time.sleep(3)
                     else:
                         error_msg = "❌ 视频生成超时，请稍后查询视频状态"
-                        session["messages"].append({"role": "assistant", "content": error_msg})
+                        session["messages"].append({"role": "assistant", "content": error_msg, "timestamp": datetime.now().isoformat()})
                         yield f"data: {json.dumps({'success': False, 'error': error_msg, 'session_id': session_id})}\n\n"
                 else:
                     error_msg = f"❌ 创建视频生成任务失败: {response.error}"
-                    session["messages"].append({"role": "assistant", "content": error_msg})
+                    session["messages"].append({"role": "assistant", "content": error_msg, "timestamp": datetime.now().isoformat()})
                     yield f"data: {json.dumps({'success': False, 'error': error_msg, 'session_id': session_id})}\n\n"
                 
                 yield f"data: {json.dumps({'success': True, 'content': '', 'session_id': session_id, 'done': True})}\n\n"
             except Exception as e:
                 error_msg = f"❌ 视频生成异常: {str(e)}"
-                session["messages"].append({"role": "assistant", "content": error_msg})
+                session["messages"].append({"role": "assistant", "content": error_msg, "timestamp": datetime.now().isoformat()})
                 yield f"data: {json.dumps({'success': False, 'error': error_msg, 'session_id': session_id})}\n\n"
         
         return StreamingResponse(video_generator(), media_type="text/event-stream")
@@ -1142,14 +1142,41 @@ async def chat_stream(request: ChatStreamRequest):
             yield f"data: {json.dumps({'success': False, 'error': '未找到可用的LLM适配器'})}\n\n"
         return StreamingResponse(error_generator(), media_type="text/event-stream")
     
-    system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以回答用户问题、执行命令、操作文件、搜索网页等。请直接给出详细的回答。"""
+    system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以帮助用户回答问题、分析信息、提供建议。当提供了工具执行结果时，请基于结果给出详细的解答和说明。"""
     
-    context = session["messages"][-10:]
-    messages = adapter.create_prompt(system_prompt, request.message, context)
+    tool_call = detect_tool_intent(request.message)
     
     def sync_stream_generator():
         full_response = ""
+        tool_result = ""
         try:
+            if tool_call:
+                tool_name = tool_call.get("tool")
+                tool_desc = {"exec": "执行命令", "read_file": "读取文件", "list_dir": "列出目录", "search": "网页搜索"}.get(tool_name, tool_name)
+                tool_header = "\n🔧 正在执行工具: " + tool_desc + "...\n\n"
+                yield f"data: {json.dumps({'success': True, 'content': tool_header, 'session_id': session_id})}\n\n"
+                
+                tool_result = execute_tool_call(tool_call)
+                
+                if tool_result:
+                    result_header = "📋 工具执行结果:\n" + tool_result + "\n\n---\n\n"
+                    yield f"data: {json.dumps({'success': True, 'content': result_header, 'session_id': session_id})}\n\n"
+            
+            context = session["messages"][-10:]
+            
+            if tool_result:
+                user_content = f"""用户问题: {request.message}
+
+我已经为你执行了相关工具，以下是工具执行结果：
+
+{tool_result}
+
+请基于上述工具执行结果，为用户提供详细的分析和解答。"""
+            else:
+                user_content = request.message
+            
+            messages = adapter.create_prompt(system_prompt, user_content, context)
+            
             for chunk in adapter.chat_stream(messages):
                 if isinstance(chunk, dict):
                     content = chunk.get("content", "")
@@ -1160,7 +1187,11 @@ async def chat_stream(request: ChatStreamRequest):
                     full_response += content
                     yield f"data: {json.dumps({'success': True, 'content': content, 'session_id': session_id})}\n\n"
             
-            session["messages"].append({"role": "assistant", "content": full_response})
+            final_response = full_response
+            if tool_result:
+                final_response = f"🔧 工具执行结果:\n{tool_result}\n\n---\n\n{full_response}"
+            
+            session["messages"].append({"role": "assistant", "content": final_response, "timestamp": datetime.now().isoformat()})
             if len(session["messages"]) > MAX_CHAT_HISTORY:
                 session["messages"] = session["messages"][-MAX_CHAT_HISTORY:]
             
@@ -1201,3 +1232,219 @@ async def chat_session_delete(session_id: str):
 async def chat_sessions_clear():
     chat_sessions.clear()
     return {"success": True, "message": "所有会话已清空"}
+
+def exec_cmd(command: str) -> str:
+    cmd_lower = command.strip().lower().split()[0] if command.strip() else ""
+    if cmd_lower in DANGEROUS_COMMANDS:
+        return f"❌ 危险命令禁止执行: {cmd_lower}"
+    if cmd_lower and cmd_lower not in ALLOWED_COMMANDS:
+        return f"❌ 命令不在允许列表中: {cmd_lower}"
+    try:
+        result = subprocess.run(command, shell=True, timeout=30, capture_output=True, text=True, cwd=str(BASE_DIR))
+        output = ""
+        if result.stdout:
+            output += f"标准输出:\n{result.stdout}\n"
+        if result.stderr:
+            output += f"错误输出:\n{result.stderr}\n"
+        if result.returncode != 0:
+            output += f"返回码: {result.returncode}"
+        if not output:
+            output = "命令执行完成，无输出"
+        return f"```bash\n{command}\n```\n\n执行结果:\n{output}"
+    except subprocess.TimeoutExpired:
+        return f"❌ 命令执行超时 (30秒)"
+    except Exception as e:
+        return f"❌ 命令执行失败: {str(e)}"
+
+def read_file(path: str) -> str:
+    try:
+        file_path = Path(path).resolve()
+        allowed = False
+        for allowed_path in ALLOWED_PATHS:
+            if str(file_path).startswith(allowed_path):
+                allowed = True
+                break
+        if not allowed:
+            return f"❌ 无权访问该文件: {path}"
+        if not file_path.exists():
+            return f"❌ 文件不存在: {path}"
+        if not file_path.is_file():
+            return f"❌ 路径不是文件: {path}"
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return f"```\n{content}\n```"
+    except Exception as e:
+        return f"❌ 读取文件失败: {str(e)}"
+
+def list_dir(path: str = ".") -> str:
+    try:
+        dir_path = Path(path).resolve()
+        allowed = False
+        for allowed_path in ALLOWED_PATHS:
+            if str(dir_path).startswith(allowed_path):
+                allowed = True
+                break
+        if not allowed:
+            return f"❌ 无权访问该目录: {path}"
+        if not dir_path.exists():
+            return f"❌ 目录不存在: {path}"
+        if not dir_path.is_dir():
+            return f"❌ 路径不是目录: {path}"
+        items = []
+        for item in sorted(dir_path.iterdir()):
+            if item.is_file():
+                size = item.stat().st_size
+                items.append(f"📄 {item.name} ({size} bytes)")
+            elif item.is_dir():
+                items.append(f"📁 {item.name}/")
+        return "\n".join(items) if items else "目录为空"
+    except Exception as e:
+        return f"❌ 列出目录失败: {str(e)}"
+
+def web_search(query: str, num_results: int = 5) -> str:
+    try:
+        from search.search_manager import SearchManager
+        search_manager = SearchManager()
+        results = search_manager.search_sync(query, num_results=num_results)
+        if not results:
+            return "❌ 搜索无结果"
+        output = []
+        for i, result in enumerate(results, 1):
+            if isinstance(result, dict):
+                title = result.get("title", "")
+                url = result.get("url", "")
+                snippet = result.get("content", result.get("snippet", ""))[:200]
+            else:
+                title = getattr(result, "title", "")
+                url = getattr(result, "url", "")
+                snippet = getattr(result, "snippet", "")[:200]
+            output.append(f"{i}. **{title}**")
+            output.append(f"   URL: {url}")
+            output.append(f"   摘要: {snippet}...")
+            output.append("")
+        return "\n".join(output)
+    except Exception as e:
+        return f"❌ 搜索失败: {str(e)}"
+
+import re
+
+def execute_tools_in_response(content: str) -> str:
+    pattern = r'\[tool:(\w+)\(([^)]+)\)\]'
+    matches = re.findall(pattern, content)
+    
+    for match in matches:
+        tool_name = match[0]
+        params_str = match[1]
+        
+        params = {}
+        for param in params_str.split(','):
+            param = param.strip()
+            if '=' in param:
+                key, value = param.split('=', 1)
+                params[key.strip()] = value.strip().strip('"\'')
+        
+        result = ""
+        if tool_name == "exec":
+            result = exec_cmd(params.get("command", ""))
+        elif tool_name == "read_file":
+            result = read_file(params.get("path", ""))
+        elif tool_name == "list_dir":
+            result = list_dir(params.get("path", "."))
+        elif tool_name == "search":
+            result = web_search(params.get("query", ""), int(params.get("num", 5)))
+        
+        if result:
+            content = content.replace(f"[tool:{tool_name}({params_str})]", f"\n\n工具执行结果:\n{result}")
+    
+    return content
+
+def detect_tool_intent(message: str) -> dict:
+    """检测用户消息中的工具调用意图，返回工具调用信息"""
+    msg_lower = message.lower()
+    
+    exec_patterns = [
+        r'执行(?:命令|shell|cmd)[：:\s]*(.+)',
+        r'运行(?:命令)?[：:\s]*(.+)',
+        r'(?:执行|运行|跑)\s*[`"]([^`"]+)[`"]',
+        r'命令[：:\s]*(.+)',
+    ]
+    list_dir_patterns = [
+        r'(?:列出|显示|查看)(?:当前)?(?:目录|文件夹)(?:下(?:的)?(?:文件|内容))?',
+        r'(?:列出|显示|查看)(.+?)(?:目录|文件夹)(?:下(?:的)?(?:文件|内容))?',
+        r'list\s+dir',
+        r'ls\s+(.+)',
+    ]
+    read_file_patterns = [
+        r'(?:读取|查看|看)(?:文件|内容)[：:\s]*(.+)',
+        r'(?:读取|查看|看)\s+[`"]([^`"]+)[`"]',
+        r'(?:cat|type)\s+(.+)',
+    ]
+    search_patterns = [
+        r'(?:搜索|联网搜索|网上搜索|查一下|查询|search)[：:\s]*(.+)',
+        r'(?:搜索|查一下|查询)\s+(.+)',
+    ]
+    
+    for pattern in exec_patterns:
+        m = re.search(pattern, msg_lower)
+        if m:
+            cmd = m.group(1).strip().strip('`"\'')
+            for allowed in ALLOWED_COMMANDS:
+                if cmd.lower().startswith(allowed):
+                    return {"tool": "exec", "command": cmd}
+            return {"tool": "exec", "command": cmd}
+    
+    for pattern in list_dir_patterns:
+        m = re.search(pattern, msg_lower)
+        if m:
+            path = m.group(1).strip() if m.lastindex else "."
+            if path in ["目录", "文件夹", "当前", ""]:
+                path = "."
+            return {"tool": "list_dir", "path": path}
+    
+    for pattern in read_file_patterns:
+        m = re.search(pattern, msg_lower)
+        if m:
+            path = m.group(1).strip().strip('`"\'')
+            return {"tool": "read_file", "path": path}
+    
+    for pattern in search_patterns:
+        m = re.search(pattern, message)
+        if m:
+            query = m.group(1).strip().strip('`"\'')
+            return {"tool": "search", "query": query}
+    
+    keywords_map = {
+        "list_dir": ["列出文件", "列出目录", "查看目录", "显示文件", "目录结构", "有哪些文件"],
+        "search": ["搜索一下", "帮我搜", "网上查", "联网查", "最新信息", "search for"],
+        "read_file": ["读取文件", "看下文件", "文件内容"],
+        "exec": ["执行命令", "运行命令", "shell命令"],
+    }
+    
+    for tool, keywords in keywords_map.items():
+        for kw in keywords:
+            if kw in msg_lower:
+                if tool == "list_dir":
+                    return {"tool": "list_dir", "path": "."}
+                elif tool == "search":
+                    return {"tool": "search", "query": message}
+                elif tool == "exec":
+                    return {"tool": "exec", "command": message}
+                elif tool == "read_file":
+                    return {"tool": "read_file", "path": message}
+    
+    return None
+
+def execute_tool_call(tool_call: dict) -> str:
+    """执行工具调用，返回结果字符串"""
+    tool = tool_call.get("tool")
+    
+    if tool == "exec":
+        return exec_cmd(tool_call.get("command", ""))
+    elif tool == "read_file":
+        return read_file(tool_call.get("path", ""))
+    elif tool == "list_dir":
+        return list_dir(tool_call.get("path", "."))
+    elif tool == "search":
+        return web_search(tool_call.get("query", ""), int(tool_call.get("num", 5)))
+    
+    return ""
