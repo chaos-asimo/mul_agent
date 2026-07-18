@@ -10,6 +10,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 
+from memory import MemoryManager
+from cron import CronTaskManager, CronScheduler, CronParser, TaskExecutor
+
+memory_manager = MemoryManager()
+cron_task_manager = CronTaskManager()
+cron_executor = TaskExecutor(cron_task_manager)
+cron_scheduler = CronScheduler(cron_task_manager, cron_executor.execute)
+
 router = APIRouter(prefix="/api/lobster-claw")
 
 claw_history = []
@@ -102,9 +110,13 @@ class WebSearchRequest(BaseModel):
     count: int = 5
 
 class CronRequest(BaseModel):
-    command: str
-    schedule: str
-    name: Optional[str] = None
+    name: str
+    task_type: str
+    content: str
+    schedule: Optional[str] = None
+    run_at: Optional[str] = None
+    enabled: bool = True
+    timeout: int = 300
 
 class CronListRequest(BaseModel):
     pass
@@ -494,8 +506,6 @@ async def web_search(request: WebSearchRequest):
         add_to_history(f"web_search {request.query}", result)
         return result
 
-cron_tasks = []
-
 agents = []
 
 class AgentCreateRequest(BaseModel):
@@ -507,29 +517,38 @@ class AgentCreateRequest(BaseModel):
 @router.post("/cron/add")
 async def cron_add(request: CronRequest):
     try:
-        import re
+        if request.task_type not in ['ai', 'command']:
+            return {"success": False, "error": "任务类型必须是 'ai' 或 'command'"}
         
-        cron_pattern = re.compile(r'^(\*|\d+|\d+-\d+|\*/\d+)\s+(\*|\d+|\d+-\d+|\*/\d+)\s+(\*|\d+|\d+-\d+|\*/\d+)\s+(\*|\d+|\d+-\d+|\*/\d+)\s+(\*|\d+|\d+-\d+|\*/\d+)$')
-        if not cron_pattern.match(request.schedule):
-            return {"success": False, "error": "Cron表达式格式错误，应为: minute hour day month weekday"}
+        if not request.schedule and not request.run_at:
+            return {"success": False, "error": "必须指定 schedule（cron表达式）或 run_at（执行时间）"}
         
-        if not is_command_safe(request.command):
+        if request.schedule:
+            try:
+                CronParser.parse(request.schedule)
+            except ValueError as e:
+                return {"success": False, "error": f"Cron表达式格式错误: {e}"}
+        
+        if request.task_type == 'command' and not is_command_safe(request.content):
             return {"success": False, "error": "安全警告：该命令不在白名单中"}
         
-        task_id = len(cron_tasks) + 1
-        task = {
-            "id": task_id,
-            "name": request.name or f"task_{task_id}",
-            "command": request.command,
-            "schedule": request.schedule,
-            "enabled": True,
-            "created_at": datetime.now().isoformat(),
-            "last_run": None,
-            "next_run": None
-        }
-        cron_tasks.append(task)
+        task_id = cron_task_manager.add_task(
+            name=request.name,
+            task_type=request.task_type,
+            content=request.content,
+            schedule=request.schedule,
+            run_at=request.run_at,
+            enabled=request.enabled,
+            timeout=request.timeout
+        )
         
-        result = {"success": True, "message": f"定时任务创建成功", "task": task}
+        task = cron_task_manager.get_task(task_id)
+        
+        if request.schedule and task['enabled']:
+            next_run = CronParser.get_next_run(request.schedule)
+            cron_task_manager.update_task(task_id, next_run_at=next_run.isoformat())
+        
+        result = {"success": True, "message": "定时任务创建成功", "task": task}
         add_to_history(f"cron_add {request.name}", result)
         return result
     except Exception as e:
@@ -538,31 +557,108 @@ async def cron_add(request: CronRequest):
         return result
 
 @router.get("/cron/list")
-async def cron_list():
-    result = {"success": True, "tasks": cron_tasks}
+async def cron_list(enabled: Optional[bool] = None):
+    tasks = cron_task_manager.list_tasks(enabled=enabled)
+    result = {"success": True, "tasks": tasks}
     return result
+
+@router.get("/cron/{task_id}")
+async def cron_get(task_id: int):
+    task = cron_task_manager.get_task(task_id)
+    if not task:
+        return {"success": False, "error": "任务不存在"}
+    return {"success": True, "task": task}
+
+@router.put("/cron/{task_id}")
+async def cron_update(task_id: int, request: CronRequest):
+    try:
+        task = cron_task_manager.get_task(task_id)
+        if not task:
+            return {"success": False, "error": "任务不存在"}
+        
+        if request.task_type not in ['ai', 'command']:
+            return {"success": False, "error": "任务类型必须是 'ai' 或 'command'"}
+        
+        if request.schedule:
+            try:
+                CronParser.parse(request.schedule)
+            except ValueError as e:
+                return {"success": False, "error": f"Cron表达式格式错误: {e}"}
+        
+        if request.task_type == 'command' and not is_command_safe(request.content):
+            return {"success": False, "error": "安全警告：该命令不在白名单中"}
+        
+        updates = {
+            'name': request.name,
+            'task_type': request.task_type,
+            'content': request.content,
+            'schedule': request.schedule,
+            'run_at': request.run_at,
+            'enabled': 1 if request.enabled else 0,
+            'timeout': request.timeout
+        }
+        
+        cron_task_manager.update_task(task_id, **updates)
+        
+        if request.schedule and request.enabled:
+            next_run = CronParser.get_next_run(request.schedule)
+            cron_task_manager.update_task(task_id, next_run_at=next_run.isoformat())
+        
+        task = cron_task_manager.get_task(task_id)
+        result = {"success": True, "message": "任务已更新", "task": task}
+        add_to_history(f"cron_update {task_id}", result)
+        return result
+    except Exception as e:
+        result = {"success": False, "error": str(e)}
+        add_to_history(f"cron_update {task_id}", result)
+        return result
 
 @router.delete("/cron/{task_id}")
 async def cron_delete(task_id: int):
-    global cron_tasks
-    task = next((t for t in cron_tasks if t["id"] == task_id), None)
+    task = cron_task_manager.get_task(task_id)
     if not task:
         return {"success": False, "error": "任务不存在"}
     
-    cron_tasks = [t for t in cron_tasks if t["id"] != task_id]
+    cron_task_manager.delete_task(task_id)
     result = {"success": True, "message": f"任务已删除: {task['name']}"}
     add_to_history(f"cron_delete {task_id}", result)
     return result
 
 @router.post("/cron/toggle/{task_id}")
 async def cron_toggle(task_id: int):
-    task = next((t for t in cron_tasks if t["id"] == task_id), None)
+    task = cron_task_manager.toggle_task(task_id)
     if not task:
         return {"success": False, "error": "任务不存在"}
     
-    task["enabled"] = not task["enabled"]
+    if task['enabled'] and task['schedule']:
+        next_run = CronParser.get_next_run(task['schedule'])
+        cron_task_manager.update_task(task_id, next_run_at=next_run.isoformat())
+    
     result = {"success": True, "message": f"任务状态已更新: {'启用' if task['enabled'] else '禁用'}", "task": task}
     add_to_history(f"cron_toggle {task_id}", result)
+    return result
+
+@router.get("/cron/{task_id}/runs")
+async def cron_runs(task_id: int, limit: int = 50):
+    task = cron_task_manager.get_task(task_id)
+    if not task:
+        return {"success": False, "error": "任务不存在"}
+    
+    runs = cron_task_manager.get_runs(task_id, limit=limit)
+    return {"success": True, "runs": runs}
+
+@router.post("/cron/{task_id}/run-now")
+async def cron_run_now(task_id: int):
+    task = cron_task_manager.get_task(task_id)
+    if not task:
+        return {"success": False, "error": "任务不存在"}
+    
+    if not task['enabled']:
+        return {"success": False, "error": "任务已禁用"}
+    
+    cron_scheduler.run_now(task_id)
+    result = {"success": True, "message": "任务已触发执行"}
+    add_to_history(f"cron_run_now {task_id}", result)
     return result
 
 @router.get("/history")
@@ -887,7 +983,7 @@ class ChatStreamRequest(BaseModel):
     session_id: Optional[str] = None
     model_name: Optional[str] = None
 
-def get_default_llm_adapter():
+def get_default_llm_adapter(model_name: Optional[str] = None):
     try:
         from engine.agent_worker import create_llm_adapter
         from models.model_manager import ModelManager
@@ -896,6 +992,12 @@ def get_default_llm_adapter():
         configured_models = [m for m in model_manager.get_all() if m.api_key and m.model_type == "text"]
         if not configured_models:
             return None
+        
+        if model_name:
+            model = next((m for m in configured_models if m.model_name == model_name), None)
+            if model:
+                adapter = create_llm_adapter(model)
+                return adapter
         
         model = configured_models[0]
         adapter = create_llm_adapter(model)
@@ -918,6 +1020,20 @@ def get_video_models():
         return [m for m in model_manager.get_all() if m.api_key and m.enabled and m.model_type == "video"]
     except Exception as e:
         return []
+
+
+@router.get("/chat/models")
+async def get_chat_models():
+    try:
+        from models.model_manager import ModelManager
+        model_manager = ModelManager()
+        configured_models = [m for m in model_manager.get_all() if m.api_key and m.enabled and m.model_type == "text"]
+        return {
+            "success": True,
+            "models": [{"name": m.model_name, "provider": m.api_type, "model_id": m.name} for m in configured_models]
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 def detect_generation_type(message: str) -> str:
     message_lower = message.lower()
@@ -1136,19 +1252,22 @@ async def chat_stream(request: ChatStreamRequest):
         
         return StreamingResponse(video_generator(), media_type="text/event-stream")
     
-    adapter = get_default_llm_adapter()
+    adapter = get_default_llm_adapter(request.model_name)
     if not adapter:
         async def error_generator():
             yield f"data: {json.dumps({'success': False, 'error': '未找到可用的LLM适配器'})}\n\n"
         return StreamingResponse(error_generator(), media_type="text/event-stream")
     
-    system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以帮助用户回答问题、分析信息、提供建议。当提供了工具执行结果时，请基于结果给出详细的解答和说明。"""
+    system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以帮助用户回答问题、分析信息、提供建议。当提供了工具执行结果时，请基于结果给出详细的解答和说明。
+
+你拥有记忆能力，可以记住用户的偏好、重要事实和历史对话。以下是与当前问题相关的记忆信息，请参考这些信息来回答用户的问题。"""
     
     tool_call = detect_tool_intent(request.message)
     
     def sync_stream_generator():
         full_response = ""
         tool_result = ""
+        token_stats = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         try:
             if tool_call:
                 tool_name = tool_call.get("tool")
@@ -1164,6 +1283,21 @@ async def chat_stream(request: ChatStreamRequest):
             
             context = session["messages"][-10:]
             
+            memory_context = ""
+            keywords = memory_manager.extract_keywords(request.message, max_keywords=8)
+            if keywords:
+                long_term_memories = memory_manager.retrieve_by_keywords(keywords, memory_type='long_term', limit=5)
+                short_term_memories = memory_manager.retrieve_by_keywords(keywords, memory_type='short_term', limit=5)
+                
+                all_memories = long_term_memories + short_term_memories
+                
+                if all_memories:
+                    memory_context = "\n\n📚 根据历史对话，以下信息可能对回答有帮助：\n"
+                    for i, memory in enumerate(all_memories[:8], 1):
+                        mem_type = {"long_term": "长期记忆", "short_term": "短期记忆"}.get(memory['type'], memory['type'])
+                        weight_info = f" (权重: {memory.get('weight', 1.0):.1f})" if memory.get('weight') else ""
+                        memory_context += f"{i}. [{mem_type}{weight_info}] {memory['content']}\n"
+            
             if tool_result:
                 user_content = f"""用户问题: {request.message}
 
@@ -1171,21 +1305,43 @@ async def chat_stream(request: ChatStreamRequest):
 
 {tool_result}
 
-请基于上述工具执行结果，为用户提供详细的分析和解答。"""
+{memory_context}
+
+请基于上述工具执行结果和记忆信息，为用户提供详细的分析和解答。"""
             else:
-                user_content = request.message
+                user_content = f"""用户问题: {request.message}
+
+{memory_context}
+
+请基于上述记忆信息，为用户提供详细的解答。"""
             
             messages = adapter.create_prompt(system_prompt, user_content, context)
             
             for chunk in adapter.chat_stream(messages):
                 if isinstance(chunk, dict):
                     content = chunk.get("content", "")
+                    if chunk.get("usage"):
+                        token_stats = chunk["usage"]
                 else:
                     content = str(chunk)
                 
                 if content and not content.startswith("{\"__stats__\""):
                     full_response += content
                     yield f"data: {json.dumps({'success': True, 'content': content, 'session_id': session_id})}\n\n"
+            
+            import time
+            time.sleep(0.1)
+            
+            from llm.model_call_logger import model_call_logger
+            recent_logs = model_call_logger.call_logs
+            if recent_logs:
+                latest_log = recent_logs[-1]
+                token_stats = {
+                    "prompt_tokens": latest_log.prompt_tokens,
+                    "completion_tokens": latest_log.completion_tokens,
+                    "total_tokens": latest_log.total_tokens,
+                    "tokens_per_second": latest_log.tokens_per_second
+                }
             
             final_response = full_response
             if tool_result:
@@ -1195,7 +1351,26 @@ async def chat_stream(request: ChatStreamRequest):
             if len(session["messages"]) > MAX_CHAT_HISTORY:
                 session["messages"] = session["messages"][-MAX_CHAT_HISTORY:]
             
-            yield f"data: {json.dumps({'success': True, 'content': '', 'session_id': session_id, 'done': True})}\n\n"
+            response_keywords = memory_manager.extract_keywords(full_response, max_keywords=8)
+            
+            combined_keywords = keywords + response_keywords
+            
+            short_term_content = f"对话记录: 用户问 '{request.message}', AI回答要点: {full_response[:150]}"
+            memory_manager.store('short_term', short_term_content, 
+                               keywords=combined_keywords, 
+                               session_id=session_id,
+                               weight=1.0)
+            
+            if len(request.message) > 8 and len(full_response) > 20:
+                important_facts = extract_important_facts(request.message, full_response)
+                for fact in important_facts[:3]:
+                    long_term_content = f"重要事实: {fact}"
+                    memory_manager.store('long_term', long_term_content,
+                                       keywords=memory_manager.extract_keywords(fact),
+                                       session_id=session_id,
+                                       weight=1.5)
+            
+            yield f"data: {json.dumps({'success': True, 'content': '', 'session_id': session_id, 'done': True, 'model_name': adapter.model_name, 'token_stats': token_stats})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'success': False, 'error': str(e), 'session_id': session_id})}\n\n"
     
@@ -1448,3 +1623,85 @@ def execute_tool_call(tool_call: dict) -> str:
         return web_search(tool_call.get("query", ""), int(tool_call.get("num", 5)))
     
     return ""
+
+class MemoryAddRequest(BaseModel):
+    content: str
+    memory_type: str = "long_term"
+    keywords: Optional[List[str]] = None
+    session_id: Optional[str] = None
+
+class MemorySearchRequest(BaseModel):
+    query: str
+    memory_type: Optional[str] = None
+    limit: int = 10
+
+@router.get("/memory/list")
+async def memory_list(memory_type: Optional[str] = None, limit: int = 100):
+    memories = memory_manager.get_all(memory_type=memory_type, limit=limit)
+    return {"success": True, "memories": memories, "count": len(memories)}
+
+@router.post("/memory/add")
+async def memory_add(request: MemoryAddRequest):
+    try:
+        memory_id = memory_manager.store(
+            memory_type=request.memory_type,
+            content=request.content,
+            keywords=request.keywords,
+            session_id=request.session_id
+        )
+        return {"success": True, "message": "记忆已添加", "memory_id": memory_id}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+@router.delete("/memory/{memory_id}")
+async def memory_delete(memory_id: int):
+    success = memory_manager.delete(memory_id)
+    if success:
+        return {"success": True, "message": "记忆已删除"}
+    return {"success": False, "error": "记忆不存在"}
+
+@router.post("/memory/search")
+async def memory_search(request: MemorySearchRequest):
+    memories = memory_manager.retrieve(
+        query=request.query,
+        memory_type=request.memory_type,
+        limit=request.limit
+    )
+    return {"success": True, "memories": memories, "count": len(memories)}
+
+@router.delete("/memory/clear")
+async def memory_clear(memory_type: str):
+    count = memory_manager.clear(memory_type)
+    return {"success": True, "message": f"已清空 {count} 条记忆"}
+
+
+def extract_important_facts(user_message, ai_response):
+    facts = []
+    
+    patterns = [
+        r'([^。！？\n]+[。！？])',
+        r'(\d+[\u4e00-\u9fa5]+)',
+        r'([\u4e00-\u9fa5]+是[\u4e00-\u9fa5]+)',
+        r'([\u4e00-\u9fa5]+可以[\u4e00-\u9fa5]+)',
+        r'(推荐[\u4e00-\u9fa5]+)',
+        r'(建议[\u4e00-\u9fa5]+)',
+        r'(需要[\u4e00-\u9fa5]+)',
+        r'(应该[\u4e00-\u9fa5]+)',
+    ]
+    
+    import re
+    for pattern in patterns:
+        matches = re.findall(pattern, ai_response)
+        for match in matches[:3]:
+            fact = match.strip()
+            if 5 <= len(fact) <= 50 and fact not in facts:
+                facts.append(fact)
+    
+    user_keywords = memory_manager.extract_keywords(user_message, max_keywords=3)
+    for keyword in user_keywords:
+        if keyword in ai_response:
+            for sentence in ai_response.split('。')[:5]:
+                if keyword in sentence and len(sentence.strip()) > 5:
+                    facts.append(sentence.strip() + '。')
+    
+    return list(set(facts))[:5]

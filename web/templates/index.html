@@ -66,6 +66,9 @@
                 <button class="nav-btn" data-tab="skills" title="Skills">
                     <i class="fas fa-magic"></i>
                 </button>
+                <button class="nav-btn" data-tab="statistics" title="统计分析">
+                    <i class="fas fa-chart-bar"></i>
+                </button>
                 <button class="nav-btn" data-tab="settings" title="系统设置">
                     <i class="fas fa-sliders-h"></i>
                 </button>
@@ -84,15 +87,21 @@
                             <button class="btn btn-outline-secondary btn-sm" onclick="app.loadClawChatSessions()">
                                 <i class="fas fa-history"></i> 会话记录
                             </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.loadClawMemory()">
+                                <i class="fas fa-brain"></i> 记忆管理
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.loadCronTasks()">
+                                <i class="fas fa-clock"></i> 定时任务
+                            </button>
                             <button class="btn btn-outline-secondary btn-sm" onclick="app.createNewClawSession()">
                                 <i class="fas fa-plus"></i> 新建会话
                             </button>
                         </div>
                     </div>
                     
-                    <div style="display: flex; flex-direction: column; flex: 1; padding: 15px; min-height: 0;">
-                        <div style="flex: 1; overflow-y: auto; background: #f8fafc; border-radius: 8px; padding: 15px; margin-bottom: 15px;" id="claw-chat-messages">
-                            <div style="text-align: center; color: #94a3b8; margin-top: 50px;">
+                    <div style="display: flex; flex-direction: column; flex: 1; padding: 8px; min-height: 0;">
+                        <div style="flex: 1; overflow-y: auto; background: #f8fafc; border-radius: 8px; padding: 10px;" id="claw-chat-messages">
+                            <div style="text-align: center; color: #94a3b8; margin-top: 30px;">
                                 <i class="fas fa-robot" style="font-size: 48px; margin-bottom: 15px;"></i>
                                 <p>欢迎来到龙虾Claw！</p>
                                 <p style="font-size: 14px; margin-top: 5px;">我是你的AI助手，可以回答问题、执行命令、操作文件等。</p>
@@ -100,21 +109,21 @@
                         </div>
                         
                         <div style="flex: 0 0 auto;">
-                            <div style="display: flex; gap: 10px;">
+                            <div style="display: flex; gap: 8px;">
                                 <div style="flex: 1; position: relative;">
                                     <textarea id="claw-chat-input" 
                                         placeholder="输入你的问题或命令..." 
-                                        style="width: 100%; padding: 12px 15px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 14px; resize: none; min-height: 48px; max-height: 150px; font-family: inherit;"></textarea>
+                                        style="width: 100%; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 14px; resize: none; min-height: 44px; max-height: 120px; font-family: inherit;"></textarea>
                                 </div>
-                                <button id="claw-chat-send-btn" class="btn btn-primary" style="padding: 12px 24px;">
+                                <button id="claw-chat-send-btn" class="btn btn-primary" style="padding: 10px 20px;">
                                     <i class="fas fa-send"></i> 发送
                                 </button>
-                                <button id="claw-chat-clear-btn" class="btn btn-outline-secondary" style="padding: 12px 15px;">
+                                <select id="claw-model-select" class="form-control" style="width: 160px; padding: 0 8px;">
+                                    <option value="">默认模型</option>
+                                </select>
+                                <button id="claw-chat-clear-btn" class="btn btn-outline-secondary" style="padding: 10px 12px;">
                                     <i class="fas fa-trash"></i>
                                 </button>
-                            </div>
-                            <div style="display: flex; gap: 15px; margin-top: 8px; font-size: 12px; color: #64748b;">
-                                <span><i class="fas fa-info-circle"></i> 支持对话问答、Shell命令、文件操作、网页搜索等</span>
                             </div>
                         </div>
                     </div>
@@ -130,6 +139,107 @@
                             <div class="empty-state">
                                 <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
                                 <p>暂无会话记录</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="claw-memory-modal" class="modal" style="display: none;">
+                    <div id="claw-memory-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-brain"></i> 记忆管理</h3>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="modal-close" onclick="app.toggleMemoryMaximize()" title="最大化" style="font-size: 14px;">
+                                    <i class="fas fa-expand"></i>
+                                </button>
+                                <button class="modal-close" onclick="document.getElementById('claw-memory-modal').style.display='none'">&times;</button>
+                            </div>
+                        </div>
+                        <div id="claw-memory-modal-body" class="modal-body" style="max-height: calc(80vh - 80px);">
+                            <div style="margin-bottom: 15px; display: flex; gap: 10px;">
+                                <input type="text" id="claw-memory-search-input" placeholder="搜索记忆..." class="form-control" style="flex: 1;">
+                                <select id="claw-memory-type-filter" class="form-control" style="width: 120px;">
+                                    <option value="">全部类型</option>
+                                    <option value="long_term">长期记忆</option>
+                                    <option value="short_term">短期记忆</option>
+                                </select>
+                                <button class="btn btn-primary btn-sm" onclick="app.searchClawMemory()">
+                                    <i class="fas fa-search"></i> 搜索
+                                </button>
+                            </div>
+                            <div id="claw-memory-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                                    <p>暂无记忆记录</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="claw-cron-modal" class="modal" style="display: none;">
+                    <div id="claw-cron-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-clock"></i> 定时任务管理</h3>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="modal-close" onclick="app.toggleCronMaximize()" title="最大化" style="font-size: 14px;">
+                                    <i class="fas fa-expand"></i>
+                                </button>
+                                <button class="btn btn-primary btn-sm" onclick="app.showAddCronTask()">
+                                    <i class="fas fa-plus"></i> 添加任务
+                                </button>
+                                <button class="modal-close" onclick="document.getElementById('claw-cron-modal').style.display='none'">&times;</button>
+                            </div>
+                        </div>
+                        <div id="claw-cron-modal-body" class="modal-body" style="max-height: calc(80vh - 80px);">
+                            <div id="claw-cron-task-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-clock" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                                    <p>暂无定时任务</p>
+                                </div>
+                            </div>
+                            <div id="claw-cron-add-form" style="display: none; margin-top: 20px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
+                                <h4 style="margin-bottom: 15px;">添加定时任务</h4>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                                    <div class="form-group">
+                                        <label>任务名称</label>
+                                        <input type="text" id="cron-name" class="form-control" placeholder="输入任务名称">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>任务类型</label>
+                                        <select id="cron-task-type" class="form-control">
+                                            <option value="ai">AI对话任务</option>
+                                            <option value="command">Shell命令任务</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Cron表达式</label>
+                                        <input type="text" id="cron-schedule" class="form-control" placeholder="如: */5 * * * * (每分钟执行)">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>一次性执行时间</label>
+                                        <input type="datetime-local" id="cron-run-at" class="form-control">
+                                    </div>
+                                    <div class="form-group" style="grid-column: 1 / -1;">
+                                        <label>任务内容</label>
+                                        <textarea id="cron-content" class="form-control" rows="3" placeholder="AI任务: 输入要执行的指令&#10;命令任务: 输入要执行的命令"></textarea>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>超时时间(秒)</label>
+                                        <input type="number" id="cron-timeout" class="form-control" value="300">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>启用状态</label>
+                                        <select id="cron-enabled" class="form-control">
+                                            <option value="true">启用</option>
+                                            <option value="false">禁用</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div style="display: flex; gap: 10px; margin-top: 15px;">
+                                    <button class="btn btn-primary" onclick="app.addCronTask()">确认添加</button>
+                                    <button class="btn btn-outline-secondary" onclick="app.hideAddCronTask()">取消</button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -456,7 +566,7 @@
                     {% for group in agents %}
                     {% if group.agents %}
                     <div style="margin-bottom: 25px;">
-                        <h3 style="color: {{ group.color }}; margin-bottom: 15px; font-size: 16px; font-weight: 600;">
+                        <h3 class="agent-group-title {{ group.css_class }}">
                             <i class="fas {{ group.icon }}"></i> {{ group.name }} ({{ group.agents|length }})
                         </h3>
                         <div class="config-grid">
@@ -575,6 +685,117 @@
                         </button>
                     </div>
                     <div id="skills-list" class="config-grid"></div>
+                </div>
+
+                <!-- ========== 统计分析内容 ========== -->
+                <div class="tab-panel" id="statistics-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-chart-bar"></i> 模型调用统计</h2>
+                    </div>
+                    <div class="panel-content">
+                        <div style="display: flex; gap: 10px; margin-bottom: 20px; align-items: center;">
+                            <label style="font-size: 13px; color: #64748b;">开始日期:</label>
+                            <input type="date" id="stat-start-date" class="form-control" style="width: 150px;">
+                            <label style="font-size: 13px; color: #64748b;">结束日期:</label>
+                            <input type="date" id="stat-end-date" class="form-control" style="width: 150px;">
+                            <button class="btn btn-primary btn-sm" onclick="app.loadStatistics()">
+                                <i class="fas fa-search"></i> 查询
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="document.getElementById('stat-start-date').value=''; document.getElementById('stat-end-date').value=''; app.loadStatistics();">
+                                清除筛选
+                            </button>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px;">
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">总调用次数</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #1e293b;" id="stat-total-calls">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">总Token消耗</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #3b82f6;" id="stat-total-tokens">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">输入Token</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #10b981;" id="stat-prompt-tokens">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">输出Token</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #f59e0b;" id="stat-completion-tokens">0</div>
+                            </div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 15px;">按模型统计</h3>
+                                <div id="stat-models-list">
+                                    <div class="empty-state">暂无数据</div>
+                                </div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 15px;">每日统计（近7天）</h3>
+                                <div id="stat-daily-list">
+                                    <div class="empty-state">暂无数据</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 20px; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                            <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 15px;">最近调用记录</h3>
+                            <div id="stat-recent-calls">
+                                <div class="empty-state">暂无数据</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="log-detail-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
+                    <div id="log-detail-modal-content" style="background: #fff; border-radius: 12px; width: 90%; max-width: 900px; max-height: 80vh; overflow: hidden; display: flex; flex-direction: column;">
+                        <div style="padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;">
+                            <h3 style="font-size: 16px; font-weight: 600; margin: 0;">调用详情</h3>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <button onclick="app.toggleLogDetailMaximize()" style="background: none; border: none; font-size: 16px; cursor: pointer; color: #64748b;" title="最大化"><i class="fas fa-expand"></i></button>
+                                <button onclick="document.getElementById('log-detail-modal').style.display='none'" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #64748b;">&times;</button>
+                            </div>
+                        </div>
+                        <div id="log-detail-body" style="padding: 20px; overflow-y: auto; flex: 1;">
+                            <div style="margin-bottom: 20px;">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">模型名称</div>
+                                <div style="font-size: 16px; font-weight: 600; color: #3b82f6;" id="detail-model-name">-</div>
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+                                <div style="background: #f8fafc; padding: 10px; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">总Token</div>
+                                    <div style="font-size: 14px; font-weight: 600;" id="detail-total-tokens">0</div>
+                                </div>
+                                <div style="background: #f8fafc; padding: 10px; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">输入Token</div>
+                                    <div style="font-size: 14px; font-weight: 600; color: #10b981;" id="detail-prompt-tokens">0</div>
+                                </div>
+                                <div style="background: #f8fafc; padding: 10px; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">输出Token</div>
+                                    <div style="font-size: 14px; font-weight: 600; color: #f59e0b;" id="detail-completion-tokens">0</div>
+                                </div>
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+                                <div style="background: #f8fafc; padding: 10px; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">耗时</div>
+                                    <div style="font-size: 14px; font-weight: 600;" id="detail-duration">0s</div>
+                                </div>
+                                <div style="background: #f8fafc; padding: 10px; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">时间</div>
+                                    <div style="font-size: 14px; font-weight: 600;" id="detail-timestamp">-</div>
+                                </div>
+                            </div>
+                            <div style="margin-bottom: 20px;">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 8px;">输入消息</div>
+                                <div style="background: #f8fafc; padding: 12px; border-radius: 6px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.6;" id="detail-messages">-</div>
+                            </div>
+                            <div style="margin-bottom: 10px;">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 8px;">模型响应</div>
+                                <div style="background: #f0fdf4; padding: 12px; border-radius: 6px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.6;" id="detail-response">-</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- ========== 视频模型内容 ========== -->

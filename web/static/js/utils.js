@@ -26,7 +26,7 @@ window.Utils = (function() {
         let date;
         
         if (typeof timestamp === 'number') {
-            if (timestamp.toString().length === 10) {
+            if (timestamp < 1000000000000) {
                 date = new Date(timestamp * 1000);
             } else {
                 date = new Date(timestamp);

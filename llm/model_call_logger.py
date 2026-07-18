@@ -137,10 +137,6 @@ class ModelCallLogger:
                 f.write(json.dumps(log_entry.to_dict(), ensure_ascii=False) + "\n")
         except Exception as e:
             print(f"Failed to write log: {e}")
-        
-        # 保留最近100条日志
-        if len(self.call_logs) > 100:
-            self.call_logs = self.call_logs[-100:]
     
     def get_logs(self, limit: int = 20) -> List[Dict]:
         """获取日志列表"""

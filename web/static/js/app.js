@@ -183,6 +183,11 @@ class App {
         if (tabName === 'video-models') {
             this.loadVideoModels();
         }
+        
+        // 如果切换到统计面板，加载统计数据
+        if (tabName === 'statistics') {
+            this.loadStatistics();
+        }
     }
 
     async loadAgents() {
@@ -3667,13 +3672,38 @@ class App {
         if (clearBtn) {
             clearBtn.onclick = () => this.clearClawChat();
         }
+        
+        this.loadClawChatModels();
+    }
+    
+    async loadClawChatModels() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/chat/models`);
+            const result = await response.json();
+            if (result.success && result.models.length > 0) {
+                const select = document.getElementById('claw-model-select');
+                if (select) {
+                    select.innerHTML = '<option value="">默认模型</option>';
+                    result.models.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.name;
+                        option.textContent = `${model.name} (${model.provider})`;
+                        select.appendChild(option);
+                    });
+                }
+            }
+        } catch (error) {
+            console.error('加载模型列表失败:', error);
+        }
     }
     
     async sendClawChatMessage() {
         const input = document.getElementById('claw-chat-input');
         const sendBtn = document.getElementById('claw-chat-send-btn');
+        const modelSelect = document.getElementById('claw-model-select');
         const messagesContainer = document.getElementById('claw-chat-messages');
         const message = input.value.trim();
+        const modelName = modelSelect ? modelSelect.value : '';
         
         if (!message) {
             return;
@@ -3693,7 +3723,8 @@ class App {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     message: message, 
-                    session_id: this.clawChatSessionId 
+                    session_id: this.clawChatSessionId,
+                    model_name: modelName || undefined
                 }),
                 keepalive: true,
                 signal: this.clawChatAbortController?.signal
@@ -3703,6 +3734,8 @@ class App {
             const decoder = new TextDecoder();
             let assistantMessageId = null;
             let isDone = false;
+            let modelInfo = null;
+            let tokenStats = null;
             
             while (!isDone) {
                 const { done, value } = await reader.read();
@@ -3719,6 +3752,13 @@ class App {
                             if (data.success) {
                                 this.clawChatSessionId = data.session_id;
                                 
+                                if (data.model_name) {
+                                    modelInfo = data.model_name;
+                                }
+                                if (data.token_stats) {
+                                    tokenStats = data.token_stats;
+                                }
+                                
                                 if (data.content) {
                                     if (!assistantMessageId) {
                                         assistantMessageId = this.addClawChatMessage('assistant', data.content, true);
@@ -3729,6 +3769,9 @@ class App {
                                 
                                 if (data.done) {
                                     isDone = true;
+                                    if (assistantMessageId) {
+                                        this.finishClawChatMessage(assistantMessageId, modelInfo, tokenStats);
+                                    }
                                 }
                             } else {
                                 this.addClawChatMessage('system', `<span style="color: #ef4444;">错误: ${data.error}</span>`);
@@ -3740,11 +3783,8 @@ class App {
                 }
             }
             
-            if (assistantMessageId) {
+            if (assistantMessageId && !isDone) {
                 this.finishClawChatMessage(assistantMessageId);
-            } else {
-                const indicators = document.querySelectorAll('.claw-typing-indicator');
-                indicators.forEach(ind => ind.remove());
             }
         } catch (error) {
             this.addClawChatMessage('system', `<span style="color: #ef4444;">发送失败: ${error.message}</span>`);
@@ -3793,7 +3833,7 @@ class App {
         
         const contentDiv = document.createElement('div');
         contentDiv.style.cssText = `
-            max-width: 70%; padding: 12px 15px; border-radius: 12px; font-size: 14px; line-height: 1.5;
+            max-width: 90%; padding: 12px 15px; border-radius: 12px; font-size: 14px; line-height: 1.5;
             ${role === 'user' 
                 ? 'background: #3b82f6; color: white; border-bottom-right-radius: 4px;' 
                 : role === 'assistant' 
@@ -3816,15 +3856,6 @@ class App {
                 contentDiv.textContent = content;
             } else {
                 contentDiv.innerHTML = content.replace(/\n/g, '<br>');
-            }
-            
-            if (timestamp) {
-                const timeDiv = document.createElement('div');
-                timeDiv.style.cssText = `
-                    font-size: 11px; color: #94a3b8; margin-top: 4px; text-align: ${role === 'user' ? 'right' : 'left'};
-                `;
-                timeDiv.textContent = this.formatTimestamp(timestamp);
-                messageDiv.appendChild(timeDiv);
             }
         }
         
@@ -3861,7 +3892,7 @@ class App {
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
     
-    finishClawChatMessage(elementId) {
+    finishClawChatMessage(elementId, modelName = null, tokenStats = null) {
         const element = document.getElementById(elementId);
         if (element) {
             const indicator = element.querySelector('.claw-typing-indicator');
@@ -3870,15 +3901,32 @@ class App {
                 indicator.remove();
             }
             
-            const timestamp = element.dataset.timestamp;
-            if (timestamp) {
-                const messageDiv = element.parentElement.parentElement;
-                const timeDiv = document.createElement('div');
-                timeDiv.style.cssText = `
+            const messageDiv = element.parentElement.parentElement;
+            
+            const infoParts = [];
+            
+            if (modelName) {
+                infoParts.push(`模型: ${modelName}`);
+            }
+            
+            if (tokenStats) {
+                const pt = tokenStats.prompt_tokens || 0;
+                const ct = tokenStats.completion_tokens || 0;
+                const tps = typeof tokenStats.tokens_per_second === 'number' && tokenStats.tokens_per_second >= 0
+                    ? tokenStats.tokens_per_second.toFixed(1)
+                    : '0.0';
+                infoParts.push(`输入 ${pt} → 输出 ${ct} tokens (${tps}/s)`);
+            }
+            
+            infoParts.push(this.formatTimestamp(new Date().toISOString()));
+            
+            if (infoParts.length > 0) {
+                const infoDiv = document.createElement('div');
+                infoDiv.style.cssText = `
                     font-size: 11px; color: #94a3b8; margin-top: 4px; text-align: left;
                 `;
-                timeDiv.textContent = this.formatTimestamp(timestamp);
-                messageDiv.appendChild(timeDiv);
+                infoDiv.textContent = infoParts.join(' | ');
+                messageDiv.appendChild(infoDiv);
             }
         }
         
@@ -4062,6 +4110,355 @@ class App {
             }
         } catch (error) {
             alert('加载会话失败: ' + error.message);
+        }
+    }
+    
+    async loadClawMemory() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/memory/list`);
+            const result = await response.json();
+            this.renderClawMemoryList(result);
+            document.getElementById('claw-memory-modal').style.display = 'flex';
+        } catch (error) {
+            alert('获取记忆列表失败: ' + error.message);
+        }
+    }
+    
+    async searchClawMemory() {
+        try {
+            const query = document.getElementById('claw-memory-search-input').value;
+            const memoryType = document.getElementById('claw-memory-type-filter').value;
+            
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/memory/search`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query, memory_type: memoryType || undefined, limit: 50 })
+            });
+            const result = await response.json();
+            this.renderClawMemoryList(result);
+        } catch (error) {
+            alert('搜索记忆失败: ' + error.message);
+        }
+    }
+    
+    renderClawMemoryList(result) {
+        const listContainer = document.getElementById('claw-memory-list');
+        
+        if (result.success && result.memories.length > 0) {
+            listContainer.innerHTML = result.memories.map(memory => {
+                const timestamp = new Date(memory.timestamp);
+                const timeStr = timestamp.toLocaleString('zh-CN', {
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                
+                const typeLabel = memory.type === 'long_term' ? 
+                    '<span style="background: #3b82f6; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">长期</span>' :
+                    '<span style="background: #10b981; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">短期</span>';
+                
+                const keywords = memory.keywords && memory.keywords.length > 0 ? 
+                    `<div style="font-size: 12px; color: #64748b; margin-top: 4px;">关键词: ${memory.keywords.join(', ')}</div>` : '';
+                
+                return `
+                    <div style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            ${typeLabel}
+                            <button class="btn btn-outline-danger btn-sm" onclick="app.deleteClawMemory(${memory.id})">
+                                <i class="fas fa-trash"></i> 删除
+                            </button>
+                        </div>
+                        <div style="font-size: 14px; color: #1e293b; margin-top: 8px; line-height: 1.5;">${memory.content}</div>
+                        ${keywords}
+                        <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">${timeStr}</div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            listContainer.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                    <p>暂无记忆记录</p>
+                </div>
+            `;
+        }
+    }
+    
+    async deleteClawMemory(memoryId) {
+        if (!confirm('确定要删除这条记忆吗？')) return;
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/memory/${memoryId}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                this.loadClawMemory();
+            } else {
+                alert('删除失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('删除记忆失败: ' + error.message);
+        }
+    }
+
+    toggleMemoryMaximize() {
+        const content = document.getElementById('claw-memory-modal-content');
+        const body = document.getElementById('claw-memory-modal-body');
+        const maxBtn = document.querySelector('#claw-memory-modal button[onclick="app.toggleMemoryMaximize()"] i');
+        
+        if (!content || !body || !maxBtn) return;
+        
+        if (this._memoryMaximized) {
+            content.style.width = '85%';
+            content.style.maxWidth = '900px';
+            content.style.maxHeight = '80vh';
+            content.style.borderRadius = '16px';
+            body.style.maxHeight = 'calc(80vh - 80px)';
+            maxBtn.className = 'fas fa-expand';
+            this._memoryMaximized = false;
+        } else {
+            content.style.width = '98%';
+            content.style.maxWidth = 'none';
+            content.style.maxHeight = '95vh';
+            content.style.borderRadius = '8px';
+            body.style.maxHeight = 'calc(95vh - 80px)';
+            maxBtn.className = 'fas fa-compress';
+            this._memoryMaximized = true;
+        }
+    }
+
+    // ============ 定时任务管理 ============
+    async loadCronTasks() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/cron/list`);
+            const result = await response.json();
+            this.renderCronTaskList(result);
+            document.getElementById('claw-cron-modal').style.display = 'flex';
+        } catch (error) {
+            alert('获取任务列表失败: ' + error.message);
+        }
+    }
+
+    renderCronTaskList(result) {
+        const listContainer = document.getElementById('claw-cron-task-list');
+        
+        if (result.success && result.tasks.length > 0) {
+            listContainer.innerHTML = result.tasks.map(task => {
+                const typeLabel = task.task_type === 'ai' ?
+                    '<span style="background: #3b82f6; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">AI对话</span>' :
+                    '<span style="background: #f59e0b; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">Shell命令</span>';
+                
+                const enabledLabel = task.enabled ?
+                    '<span style="background: #10b981; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">已启用</span>' :
+                    '<span style="background: #64748b; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">已禁用</span>';
+                
+                const schedule = task.schedule || task.run_at || '无';
+                const nextRun = task.next_run_at ? new Date(task.next_run_at).toLocaleString('zh-CN') : '未知';
+                
+                return `
+                    <div style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="display: flex; gap: 8px;">
+                                ${typeLabel}
+                                ${enabledLabel}
+                            </div>
+                            <div style="display: flex; gap: 5px;">
+                                <button class="btn btn-outline-secondary btn-sm" onclick="app.runCronTask(${task.id})" title="立即执行">
+                                    <i class="fas fa-play"></i>
+                                </button>
+                                <button class="btn btn-outline-secondary btn-sm" onclick="app.toggleCronTask(${task.id})" title="${task.enabled ? '禁用' : '启用'}">
+                                    <i class="fas ${task.enabled ? 'fa-pause' : 'fa-play'}"></i>
+                                </button>
+                                <button class="btn btn-outline-secondary btn-sm" onclick="app.viewCronRuns(${task.id})" title="查看运行历史">
+                                    <i class="fas fa-history"></i>
+                                </button>
+                                <button class="btn btn-outline-danger btn-sm" onclick="app.deleteCronTask(${task.id})">
+                                    <i class="fas fa-trash"></i> 删除
+                                </button>
+                            </div>
+                        </div>
+                        <div style="font-size: 16px; font-weight: 600; color: #1e293b; margin-top: 8px;">${task.name}</div>
+                        <div style="font-size: 14px; color: #64748b; margin-top: 4px; line-height: 1.5;">${task.content}</div>
+                        <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">
+                            调度: ${schedule} | 下次执行: ${nextRun} | 超时: ${task.timeout}秒
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            listContainer.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-clock" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                    <p>暂无定时任务</p>
+                </div>
+            `;
+        }
+    }
+
+    showAddCronTask() {
+        document.getElementById('claw-cron-task-list').style.display = 'none';
+        document.getElementById('claw-cron-add-form').style.display = 'block';
+    }
+
+    hideAddCronTask() {
+        document.getElementById('claw-cron-task-list').style.display = 'block';
+        document.getElementById('claw-cron-add-form').style.display = 'none';
+        document.getElementById('cron-name').value = '';
+        document.getElementById('cron-task-type').value = 'ai';
+        document.getElementById('cron-schedule').value = '';
+        document.getElementById('cron-run-at').value = '';
+        document.getElementById('cron-content').value = '';
+        document.getElementById('cron-timeout').value = '300';
+        document.getElementById('cron-enabled').value = 'true';
+    }
+
+    async addCronTask() {
+        const name = document.getElementById('cron-name').value.trim();
+        const taskType = document.getElementById('cron-task-type').value;
+        const schedule = document.getElementById('cron-schedule').value.trim();
+        const runAt = document.getElementById('cron-run-at').value;
+        const content = document.getElementById('cron-content').value.trim();
+        const timeout = parseInt(document.getElementById('cron-timeout').value) || 300;
+        const enabled = document.getElementById('cron-enabled').value === 'true';
+        
+        if (!name) {
+            alert('请输入任务名称');
+            return;
+        }
+        if (!content) {
+            alert('请输入任务内容');
+            return;
+        }
+        if (!schedule && !runAt) {
+            alert('请指定cron表达式或一次性执行时间');
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/cron/add`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, task_type: taskType, content, schedule, run_at: runAt, timeout, enabled })
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                alert('任务添加成功');
+                this.hideAddCronTask();
+                this.loadCronTasks();
+            } else {
+                alert('添加失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('添加任务失败: ' + error.message);
+        }
+    }
+
+    async deleteCronTask(taskId) {
+        if (!confirm('确定要删除这个任务吗？')) return;
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/cron/${taskId}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                this.loadCronTasks();
+            } else {
+                alert('删除失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('删除任务失败: ' + error.message);
+        }
+    }
+
+    async toggleCronTask(taskId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/cron/toggle/${taskId}`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                this.loadCronTasks();
+            } else {
+                alert('操作失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('操作失败: ' + error.message);
+        }
+    }
+
+    async runCronTask(taskId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/cron/${taskId}/run-now`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                alert('任务已触发执行');
+            } else {
+                alert('触发失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('触发任务失败: ' + error.message);
+        }
+    }
+
+    async viewCronRuns(taskId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/cron/${taskId}/runs`);
+            const result = await response.json();
+            
+            if (result.success && result.runs.length > 0) {
+                const runs = result.runs.map(run => {
+                    const status = run.status === 'completed' ? '成功' : run.status === 'failed' ? '失败' : run.status;
+                    return `<div style="padding: 8px; border-bottom: 1px solid #e2e8f0;">
+                        <div style="font-size: 12px; color: #64748b;">${new Date(run.started_at).toLocaleString('zh-CN')}</div>
+                        <div style="font-size: 14px; color: ${run.status === 'completed' ? '#10b981' : '#ef4444'};">状态: ${status}</div>
+                        ${run.output ? `<div style="font-size: 13px; color: #1e293b; margin-top: 4px; white-space: pre-wrap; max-height: 100px; overflow-y: auto;">${run.output}</div>` : ''}
+                        ${run.error ? `<div style="font-size: 13px; color: #ef4444; margin-top: 4px;">错误: ${run.error}</div>` : ''}
+                        <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">耗时: ${run.duration ? run.duration.toFixed(2) : '0'}秒</div>
+                    </div>`;
+                }).join('');
+                
+                alert(`运行历史:\n\n${runs}`);
+            } else {
+                alert('暂无运行历史');
+            }
+        } catch (error) {
+            alert('获取运行历史失败: ' + error.message);
+        }
+    }
+
+    toggleCronMaximize() {
+        const content = document.getElementById('claw-cron-modal-content');
+        const body = document.getElementById('claw-cron-modal-body');
+        const maxBtn = document.querySelector('#claw-cron-modal button[onclick="app.toggleCronMaximize()"] i');
+        
+        if (!content || !body || !maxBtn) return;
+        
+        if (this._cronMaximized) {
+            content.style.width = '85%';
+            content.style.maxWidth = '900px';
+            content.style.maxHeight = '80vh';
+            content.style.borderRadius = '16px';
+            body.style.maxHeight = 'calc(80vh - 80px)';
+            maxBtn.className = 'fas fa-expand';
+            this._cronMaximized = false;
+        } else {
+            content.style.width = '98%';
+            content.style.maxWidth = 'none';
+            content.style.maxHeight = '95vh';
+            content.style.borderRadius = '8px';
+            body.style.maxHeight = 'calc(95vh - 80px)';
+            maxBtn.className = 'fas fa-compress';
+            this._cronMaximized = true;
         }
     }
 
@@ -5151,6 +5548,174 @@ class App {
 
     formatTimestamp(timestamp) {
         return window.Utils.formatTimestamp(timestamp);
+    }
+
+    // ========== 统计分析功能 ==========
+    
+    async loadStatistics() {
+        try {
+            const startDate = document.getElementById('stat-start-date')?.value;
+            const endDate = document.getElementById('stat-end-date')?.value;
+            
+            let statsUrl = `${this.baseUrl}/api/model_calls/statistics`;
+            if (startDate || endDate) {
+                const params = [];
+                if (startDate) params.push(`start_date=${startDate}`);
+                if (endDate) params.push(`end_date=${endDate}`);
+                statsUrl += '?' + params.join('&');
+            }
+            
+            const [statsResponse, logsResponse] = await Promise.all([
+                fetch(statsUrl),
+                fetch(`${this.baseUrl}/api/model_calls?limit=10`)
+            ]);
+            
+            const stats = await statsResponse.json();
+            const logs = await logsResponse.json();
+            
+            this.renderStatistics(stats);
+            this.renderRecentCalls(logs);
+        } catch (error) {
+            console.error('加载统计数据失败:', error);
+        }
+    }
+    
+    renderStatistics(stats) {
+        document.getElementById('stat-total-calls').textContent = stats.total_calls || 0;
+        document.getElementById('stat-total-tokens').textContent = (stats.total_tokens || 0).toLocaleString();
+        document.getElementById('stat-prompt-tokens').textContent = (stats.total_prompt_tokens || 0).toLocaleString();
+        document.getElementById('stat-completion-tokens').textContent = (stats.total_completion_tokens || 0).toLocaleString();
+        
+        const modelsList = document.getElementById('stat-models-list');
+        if (stats.models && Object.keys(stats.models).length > 0) {
+            modelsList.innerHTML = Object.entries(stats.models).map(([modelName, modelStats]) => {
+                return `
+                    <div style="padding: 10px; border-bottom: 1px solid #e2e8f0;">
+                        <div style="font-size: 13px; font-weight: 500; color: #1e293b;">${modelName}</div>
+                        <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                            调用 ${modelStats.calls} 次 | Token ${modelStats.total_tokens.toLocaleString()} | 
+                            输入 ${modelStats.prompt_tokens.toLocaleString()} | 输出 ${modelStats.completion_tokens.toLocaleString()}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            modelsList.innerHTML = '<div class="empty-state">暂无数据</div>';
+        }
+        
+        const dailyList = document.getElementById('stat-daily-list');
+        if (stats.daily_stats && stats.daily_stats.length > 0) {
+            dailyList.innerHTML = stats.daily_stats.map(day => {
+                return `
+                    <div style="padding: 10px; border-bottom: 1px solid #e2e8f0;">
+                        <div style="font-size: 13px; font-weight: 500; color: #1e293b;">${day.date}</div>
+                        <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                            调用 ${day.calls} 次 | Token ${day.total_tokens.toLocaleString()}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            dailyList.innerHTML = '<div class="empty-state">暂无数据</div>';
+        }
+    }
+    
+    renderRecentCalls(logs) {
+        const recentList = document.getElementById('stat-recent-calls');
+        if (logs.logs && logs.logs.length > 0) {
+            recentList.innerHTML = logs.logs.map(log => {
+                const timestamp = new Date(log.timestamp);
+                const timeStr = timestamp.toLocaleString('zh-CN', {
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+                
+                const userMsg = log.messages && log.messages.length > 0 ? 
+                    log.messages[log.messages.length - 1].content.slice(0, 50) + (log.messages[log.messages.length - 1].content.length > 50 ? '...' : '') : '';
+                
+                return `
+                    <div style="padding: 12px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; cursor: pointer;" 
+                         onclick="app.showLogDetail('${log.id}')" 
+                         onmouseenter="this.style.background='#f8fafc'" 
+                         onmouseleave="this.style.background='transparent'">
+                        <div style="flex: 1;">
+                            <div style="font-size: 13px; font-weight: 500; color: #3b82f6;">${log.model_name}</div>
+                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">${userMsg}</div>
+                        </div>
+                        <div style="text-align: right; margin-left: 20px;">
+                            <div style="font-size: 12px; color: #64748b;">${timeStr}</div>
+                            <div style="font-size: 12px; color: #10b981; margin-top: 4px;">
+                                ${log.prompt_tokens} → ${log.completion_tokens} tokens
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            recentList.innerHTML = '<div class="empty-state">暂无数据</div>';
+        }
+    }
+
+    async showLogDetail(logId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/model_calls/${logId}`);
+            const result = await response.json();
+            if (result.log) {
+                const log = result.log;
+                document.getElementById('detail-model-name').textContent = log.model_name;
+                document.getElementById('detail-total-tokens').textContent = log.total_tokens.toLocaleString();
+                document.getElementById('detail-prompt-tokens').textContent = log.prompt_tokens.toLocaleString();
+                document.getElementById('detail-completion-tokens').textContent = log.completion_tokens.toLocaleString();
+                document.getElementById('detail-duration').textContent = log.duration ? log.duration.toFixed(2) + 's' : '0s';
+                
+                const timestamp = new Date(log.timestamp);
+                document.getElementById('detail-timestamp').textContent = timestamp.toLocaleString('zh-CN');
+                
+                if (log.messages && log.messages.length > 0) {
+                    const messagesStr = log.messages.map(m => `[${m.role}] ${m.content}`).join('\n\n');
+                    document.getElementById('detail-messages').textContent = messagesStr;
+                } else {
+                    document.getElementById('detail-messages').textContent = '-';
+                }
+                
+                document.getElementById('detail-response').textContent = log.response || '-';
+                
+                document.getElementById('log-detail-modal').style.display = 'flex';
+                this._logDetailMaximized = false;
+            }
+        } catch (error) {
+            console.error('获取日志详情失败:', error);
+        }
+    }
+
+    toggleLogDetailMaximize() {
+        const modal = document.getElementById('log-detail-modal');
+        const content = document.getElementById('log-detail-modal-content');
+        const body = document.getElementById('log-detail-body');
+        const maxBtn = document.querySelector('#log-detail-modal button[onclick="app.toggleLogDetailMaximize()"] i');
+        
+        if (!modal || !content || !body || !maxBtn) return;
+        
+        if (this._logDetailMaximized) {
+            content.style.width = '90%';
+            content.style.maxWidth = '900px';
+            content.style.maxHeight = '80vh';
+            content.style.borderRadius = '12px';
+            body.style.padding = '20px';
+            maxBtn.className = 'fas fa-expand';
+            this._logDetailMaximized = false;
+        } else {
+            content.style.width = '100%';
+            content.style.maxWidth = 'none';
+            content.style.maxHeight = 'none';
+            content.style.borderRadius = '0';
+            body.style.padding = '30px';
+            maxBtn.className = 'fas fa-compress';
+            this._logDetailMaximized = true;
+        }
     }
 
     // ========== 视频模型功能 ==========

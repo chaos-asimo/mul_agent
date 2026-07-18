@@ -42,6 +42,18 @@ app = FastAPI(title="Multi-Agent Document Enhancer", version="1.0")
 
 app.add_middleware(SessionMiddleware, secret_key="mul_agent_secret_key_2026")
 
+# 启动定时任务调度器
+async def startup():
+    logger.info("Starting cron scheduler...")
+    await lobster_claw_router.cron_scheduler.start()
+
+async def shutdown():
+    logger.info("Stopping cron scheduler...")
+    await lobster_claw_router.cron_scheduler.stop()
+
+app.add_event_handler("startup", startup)
+app.add_event_handler("shutdown", shutdown)
+
 
 async def safe_send_json(websocket: WebSocket, data: dict):
     """安全发送 JSON，避免向已关闭的 WebSocket 连接发送消息"""
@@ -201,9 +213,9 @@ async def index(request: Request, user=Depends(get_current_user)):
     models = [m.to_dict() for m in model_manager.get_all()]
     
     agent_groups = {
-        'text': {'name': '文本模型', 'icon': 'fa-message-square', 'color': '#3b82f6', 'agents': []},
-        'image': {'name': '文生图', 'icon': 'fa-image', 'color': '#10b981', 'agents': []},
-        'video': {'name': '文生视频', 'icon': 'fa-video', 'color': '#f59e0b', 'agents': []}
+        'text': {'name': '文本模型', 'icon': 'fa-message-square', 'color': '#3b82f6', 'css_class': 'text-group', 'agents': []},
+        'image': {'name': '文生图', 'icon': 'fa-image', 'color': '#10b981', 'css_class': 'image-group', 'agents': []},
+        'video': {'name': '文生视频', 'icon': 'fa-video', 'color': '#f59e0b', 'css_class': 'video-group', 'agents': []}
     }
     
     for agent in agent_manager.get_all():

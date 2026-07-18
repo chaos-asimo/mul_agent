@@ -2,6 +2,7 @@ import os
 import json
 import random
 from datetime import datetime
+from typing import Optional
 from fastapi import APIRouter, Request, Depends, Form
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from utils.logger import logger
@@ -372,6 +373,93 @@ async def get_model_calls(limit: int = 20):
     from llm.model_call_logger import model_call_logger
     logs = model_call_logger.get_logs(limit)
     return {"logs": logs}
+
+
+@router.get("/api/model_calls/statistics")
+async def get_model_call_statistics(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """获取模型调用统计数据"""
+    from llm.model_call_logger import model_call_logger
+    from datetime import datetime
+    
+    logs = model_call_logger.call_logs
+    
+    if start_date or end_date:
+        filtered_logs = []
+        for log in logs:
+            log_date = log.timestamp.date()
+            if start_date:
+                try:
+                    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    if log_date < start:
+                        continue
+                except:
+                    pass
+            if end_date:
+                try:
+                    end = datetime.strptime(end_date, "%Y-%m-%d").date()
+                    if log_date > end:
+                        continue
+                except:
+                    pass
+            filtered_logs.append(log)
+        logs = filtered_logs
+    
+    if not logs:
+        return {
+            "total_calls": 0,
+            "total_tokens": 0,
+            "total_prompt_tokens": 0,
+            "total_completion_tokens": 0,
+            "total_duration": 0,
+            "models": {},
+            "daily_stats": []
+        }
+    
+    model_stats = {}
+    daily_stats = {}
+    
+    for log in logs:
+        date_str = log.timestamp.strftime("%Y-%m-%d")
+        
+        if log.model_name not in model_stats:
+            model_stats[log.model_name] = {
+                "calls": 0,
+                "total_tokens": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "duration": 0
+            }
+        
+        model_stats[log.model_name]["calls"] += 1
+        model_stats[log.model_name]["total_tokens"] += log.total_tokens
+        model_stats[log.model_name]["prompt_tokens"] += log.prompt_tokens
+        model_stats[log.model_name]["completion_tokens"] += log.completion_tokens
+        model_stats[log.model_name]["duration"] += log.duration
+        
+        if date_str not in daily_stats:
+            daily_stats[date_str] = {
+                "date": date_str,
+                "calls": 0,
+                "total_tokens": 0
+            }
+        
+        daily_stats[date_str]["calls"] += 1
+        daily_stats[date_str]["total_tokens"] += log.total_tokens
+    
+    total_tokens = sum(log.total_tokens for log in logs)
+    total_prompt_tokens = sum(log.prompt_tokens for log in logs)
+    total_completion_tokens = sum(log.completion_tokens for log in logs)
+    total_duration = sum(log.duration for log in logs)
+    
+    return {
+        "total_calls": len(logs),
+        "total_tokens": total_tokens,
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": total_completion_tokens,
+        "total_duration": round(total_duration, 2),
+        "models": model_stats,
+        "daily_stats": sorted(daily_stats.values(), key=lambda x: x["date"], reverse=True)[:7]
+    }
 
 
 @router.get("/api/model_calls/{log_id}")
