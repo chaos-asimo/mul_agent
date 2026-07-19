@@ -3648,8 +3648,38 @@ class App {
     }
 
     // ============ 龙虾Claw功能 ============
-    clawChatSessionId = null;
-    clawChatMessages = [];
+    clawTabs = {
+        'main': { id: 'main', name: '主会话', type: 'default', sessionId: null, messages: [] },
+        'feishu': { id: 'feishu', name: '飞书会话', type: 'default', sessionId: null, messages: [] }
+    };
+    currentClawTab = 'main';
+    clawTabCounter = 1;
+    
+    getCurrentClawSessionId() {
+        return this.clawTabs[this.currentClawTab]?.sessionId || null;
+    }
+    
+    getCurrentClawMessages() {
+        return this.clawTabs[this.currentClawTab]?.messages || [];
+    }
+    
+    setCurrentClawSessionId(sessionId) {
+        if (this.clawTabs[this.currentClawTab]) {
+            this.clawTabs[this.currentClawTab].sessionId = sessionId;
+        }
+    }
+    
+    addCurrentClawMessage(msgData) {
+        if (this.clawTabs[this.currentClawTab]) {
+            this.clawTabs[this.currentClawTab].messages.push(msgData);
+        }
+    }
+    
+    setCurrentClawMessages(messages) {
+        if (this.clawTabs[this.currentClawTab]) {
+            this.clawTabs[this.currentClawTab].messages = messages;
+        }
+    }
     
     initClawChat() {
         const sendBtn = document.getElementById('claw-chat-send-btn');
@@ -3723,7 +3753,7 @@ class App {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     message: message, 
-                    session_id: this.clawChatSessionId,
+                    session_id: this.getCurrentClawSessionId(),
                     model_name: modelName || undefined
                 }),
                 keepalive: true,
@@ -3750,7 +3780,7 @@ class App {
                             const data = JSON.parse(line.substring(6));
                             
                             if (data.success) {
-                                this.clawChatSessionId = data.session_id;
+                                    this.setCurrentClawSessionId(data.session_id);
                                 
                                 if (data.model_name) {
                                     modelInfo = data.model_name;
@@ -3794,6 +3824,90 @@ class App {
             sendBtn.disabled = false;
             sendBtn.innerHTML = '<i class="fas fa-send"></i> 发送';
         }
+    }
+    
+    renderClawChatMessage(role, content, timestamp = null, modelName = null, tokenStats = null) {
+        const messagesContainer = document.getElementById('claw-chat-messages');
+        
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `claw-chat-message ${role}`;
+        messageDiv.style.cssText = `
+            display: flex; flex-direction: column; margin-bottom: 15px; align-items: ${role === 'user' ? 'flex-end' : 'flex-start'};
+        `;
+        
+        const innerDiv = document.createElement('div');
+        innerDiv.style.cssText = `
+            display: flex;
+        `;
+        
+        const avatar = document.createElement('div');
+        avatar.style.cssText = `
+            width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            font-size: 18px; flex-shrink: 0; margin ${role === 'user' ? 'left' : 'right'}: 10px;
+        `;
+        
+        if (role === 'user') {
+            avatar.style.background = '#3b82f6';
+            avatar.innerHTML = '<i class="fas fa-user" style="color: white;"></i>';
+        } else if (role === 'assistant') {
+            avatar.style.background = '#10b981';
+            avatar.innerHTML = '<i class="fas fa-robot" style="color: white;"></i>';
+        } else {
+            avatar.style.background = '#64748b';
+            avatar.innerHTML = '<i class="fas fa-info-circle" style="color: white;"></i>';
+        }
+        
+        const contentDiv = document.createElement('div');
+        contentDiv.style.cssText = `
+            max-width: 90%; padding: 12px 15px; border-radius: 12px; font-size: 14px; line-height: 1.5;
+            ${role === 'user' 
+                ? 'background: #3b82f6; color: white; border-bottom-right-radius: 4px;' 
+                : role === 'assistant' 
+                    ? 'background: white; color: #1e293b; border-bottom-left-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);' 
+                    : 'background: #f1f5f9; color: #64748b; border-radius: 8px;'}
+        `;
+        
+        if (role === 'assistant') {
+            contentDiv.innerHTML = `<span class="claw-streaming-text">${this.renderMarkdown(content)}</span>`;
+        } else if (role === 'user') {
+            contentDiv.textContent = content;
+        } else {
+            contentDiv.innerHTML = content.replace(/\n/g, '<br>');
+        }
+        
+        innerDiv.appendChild(avatar);
+        innerDiv.appendChild(contentDiv);
+        messageDiv.appendChild(innerDiv);
+        
+        if (role === 'assistant' && (modelName || tokenStats || timestamp)) {
+            const infoParts = [];
+            if (modelName) {
+                infoParts.push(`模型: ${modelName}`);
+            }
+            if (tokenStats) {
+                const pt = tokenStats.prompt_tokens || 0;
+                const ct = tokenStats.completion_tokens || 0;
+                const tps = typeof tokenStats.tokens_per_second === 'number' && tokenStats.tokens_per_second >= 0
+                    ? tokenStats.tokens_per_second.toFixed(1)
+                    : '0.0';
+                infoParts.push(`输入 ${pt} → 输出 ${ct} tokens (${tps}/s)`);
+            }
+            if (timestamp) {
+                infoParts.push(this.formatTimestamp(timestamp));
+            }
+            if (infoParts.length > 0) {
+                const infoDiv = document.createElement('div');
+                infoDiv.style.cssText = `
+                    font-size: 11px; color: #94a3b8; margin-top: 4px; text-align: left;
+                `;
+                infoDiv.textContent = infoParts.join(' | ');
+                messageDiv.appendChild(infoDiv);
+            }
+        }
+        
+        messagesContainer.appendChild(messageDiv);
+        
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
     
     addClawChatMessage(role, content, isStreaming = false, timestamp = null) {
@@ -3866,6 +3980,9 @@ class App {
         
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
         
+        const msgData = { role, content, timestamp: timestamp || new Date().toISOString() };
+        this.addCurrentClawMessage(msgData);
+        
         return contentDiv.id;
     }
     
@@ -3899,6 +4016,19 @@ class App {
             
             if (indicator) {
                 indicator.remove();
+            }
+            
+            const rawText = element.dataset.rawText || '';
+            if (rawText) {
+                const currentTab = this.clawTabs[this.currentClawTab];
+                if (currentTab && currentTab.messages.length > 0) {
+                    const lastMsg = currentTab.messages[currentTab.messages.length - 1];
+                    if (lastMsg.role === 'assistant') {
+                        lastMsg.content = rawText;
+                        lastMsg.modelName = modelName;
+                        lastMsg.tokenStats = tokenStats;
+                    }
+                }
             }
             
             const messageDiv = element.parentElement.parentElement;
@@ -4040,12 +4170,148 @@ class App {
                 <p style="font-size: 14px; margin-top: 5px;">我是你的AI助手，可以回答问题、执行命令、操作文件等。</p>
             </div>
         `;
-        this.clawChatSessionId = null;
-        this.clawChatMessages = [];
+        this.setCurrentClawSessionId(null);
+        this.setCurrentClawMessages([]);
     }
     
     createNewClawSession() {
-        this.clearClawChat();
+        this.addClawTab();
+    }
+    
+    switchClawTab(tabId) {
+        if (tabId === this.currentClawTab) return;
+        
+        this.currentClawTab = tabId;
+        
+        document.querySelectorAll('.claw-tab').forEach(t => t.classList.remove('active'));
+        const activeTab = document.querySelector(`.claw-tab[data-tab-id="${tabId}"]`);
+        if (activeTab) activeTab.classList.add('active');
+        
+        const tab = this.clawTabs[tabId];
+        const messagesContainer = document.getElementById('claw-chat-messages');
+        
+        if (tab.messages && tab.messages.length > 0) {
+            messagesContainer.innerHTML = '';
+            tab.messages.forEach(msg => {
+                this.renderClawChatMessage(msg.role, msg.content, msg.timestamp, msg.modelName, msg.tokenStats);
+            });
+        } else if (tabId === 'feishu') {
+            this.loadFeishuChatMessages();
+        } else {
+            messagesContainer.innerHTML = `
+                <div style="text-align: center; color: #94a3b8; margin-top: 50px;">
+                    <i class="fas fa-robot" style="font-size: 48px; margin-bottom: 15px;"></i>
+                    <p>欢迎来到龙虾Claw！</p>
+                    <p style="font-size: 14px; margin-top: 5px;">我是你的AI助手，可以回答问题、执行命令、操作文件等。</p>
+                </div>
+            `;
+        }
+        
+        if (tabId === 'feishu' && !this.feishuPollingInterval) {
+            this.startFeishuPolling();
+        }
+    }
+    
+    addClawTab() {
+        const tabId = `tab_${++this.clawTabCounter}_${Date.now()}`;
+        const tabName = `会话 ${this.clawTabCounter}`;
+        
+        this.clawTabs[tabId] = {
+            id: tabId,
+            name: tabName,
+            type: 'custom',
+            sessionId: null,
+            messages: []
+        };
+        
+        const tabsContainer = document.getElementById('claw-tabs');
+        const newTab = document.createElement('div');
+        newTab.className = 'claw-tab';
+        newTab.dataset.tabId = tabId;
+        newTab.innerHTML = `
+            <i class="fas fa-comment"></i> ${tabName}
+            <i class="fas fa-times claw-tab-close" onclick="app.closeClawTab('${tabId}'); event.stopPropagation();"></i>
+        `;
+        newTab.onclick = () => this.switchClawTab(tabId);
+        tabsContainer.appendChild(newTab);
+        
+        this.switchClawTab(tabId);
+    }
+    
+    closeClawTab(tabId) {
+        const tab = this.clawTabs[tabId];
+        if (!tab || tab.type === 'default') return;
+        
+        delete this.clawTabs[tabId];
+        
+        const tabEl = document.querySelector(`.claw-tab[data-tab-id="${tabId}"]`);
+        if (tabEl) tabEl.remove();
+        
+        if (this.currentClawTab === tabId) {
+            const remainingTabs = Object.keys(this.clawTabs);
+            if (remainingTabs.length > 0) {
+                this.switchClawTab(remainingTabs[0]);
+            }
+        }
+    }
+    
+    async loadFeishuChatMessages() {
+        try {
+            const response = await fetch('/api/lobster-claw/feishu/messages?limit=50');
+            const data = await response.json();
+            const messagesContainer = document.getElementById('claw-chat-messages');
+            
+            if (data.success && data.messages && data.messages.length > 0) {
+                const feishuTab = this.clawTabs['feishu'];
+                feishuTab.messages = [];
+                
+                messagesContainer.innerHTML = '';
+                
+                const reversedMessages = [...data.messages].reverse();
+                
+                reversedMessages.forEach(m => {
+                    if (m.content) {
+                        const msg = { role: 'user', content: m.content, timestamp: m.timestamp };
+                        feishuTab.messages.push(msg);
+                        this.renderClawChatMessage(msg.role, msg.content, msg.timestamp);
+                    }
+                    if (m.response && m.status === 'success') {
+                        const msg = { role: 'assistant', content: m.response, timestamp: m.timestamp };
+                        feishuTab.messages.push(msg);
+                        this.renderClawChatMessage(msg.role, msg.content, msg.timestamp);
+                    }
+                });
+            } else {
+                messagesContainer.innerHTML = `
+                    <div style="text-align: center; color: #94a3b8; margin-top: 50px;">
+                        <i class="fas fa-paper-plane" style="font-size: 48px; margin-bottom: 15px;"></i>
+                        <p>飞书会话</p>
+                        <p style="font-size: 14px; margin-top: 5px;">飞书消息将在这里同步显示</p>
+                    </div>
+                `;
+                if (this.clawTabs['feishu']) {
+                    this.clawTabs['feishu'].messages = [];
+                }
+            }
+        } catch (e) {
+            console.error('加载飞书会话消息失败:', e);
+        }
+    }
+    
+    startFeishuPolling() {
+        if (this.feishuPollingInterval) return;
+        this.feishuPollingInterval = setInterval(() => {
+            if (this.currentClawTab === 'feishu') {
+                this.loadFeishuChatMessages();
+            }
+        }, 3000);
+    }
+    
+    stopFeishuPolling() {
+        if (this.feishuPollingInterval) {
+            clearInterval(this.feishuPollingInterval);
+            this.feishuPollingInterval = null;
+        }
     }
     
     async loadClawChatSessions() {
@@ -4097,7 +4363,7 @@ class App {
             
             if (result.success) {
                 this.clearClawChat();
-                this.clawChatSessionId = sessionId;
+                this.setCurrentClawSessionId(sessionId);
                 
                 const messagesContainer = document.getElementById('claw-chat-messages');
                 messagesContainer.innerHTML = '';
@@ -6015,6 +6281,328 @@ App.prototype.openImage = function(imageSrc) {
 // 将openImage挂载到window对象
 window.aiChatOpenImage = function(imageSrc) {
     window.app.openImage(imageSrc);
+};
+
+// ============ 飞书接入管理 ============
+
+App.prototype.showFeishuModal = async function() {
+    document.getElementById('claw-feishu-modal').style.display = 'block';
+    await this.loadFeishuStatus();
+    await this.loadFeishuConfig();
+    this.switchFeishuTab('config');
+};
+
+App.prototype.toggleFeishuMaximize = function() {
+    const content = document.getElementById('claw-feishu-modal-content');
+    content.classList.toggle('modal-maximized');
+    const icon = event.currentTarget.querySelector('i');
+    if (content.classList.contains('modal-maximized')) {
+        icon.className = 'fas fa-compress';
+    } else {
+        icon.className = 'fas fa-expand';
+    }
+};
+
+App.prototype.switchFeishuTab = function(tabName) {
+    // 隐藏所有面板
+    document.querySelectorAll('.feishu-tab-panel').forEach(p => p.style.display = 'none');
+    // 移除所有按钮的active
+    document.querySelectorAll('.feishu-tab-btn').forEach(b => b.classList.remove('active'));
+    // 显示当前面板
+    const panel = document.getElementById('feishu-' + tabName + '-panel');
+    if (panel) panel.style.display = 'block';
+    const btn = document.querySelector(`.feishu-tab-btn[data-tab="${tabName}"]`);
+    if (btn) btn.classList.add('active');
+    // 切换到消息日志时加载
+    if (tabName === 'messages') {
+        this.loadFeishuMessages();
+    }
+    // 切换到会话时加载
+    if (tabName === 'sessions') {
+        this.loadFeishuSessions();
+    }
+};
+
+App.prototype.loadFeishuStatus = async function() {
+    try {
+        const response = await fetch('/api/lobster-claw/feishu/status');
+        const data = await response.json();
+        if (data.success) {
+            const statusSection = document.getElementById('feishu-status-section');
+            const enabledBadge = data.enabled
+                ? '<span class="status-badge success">已启用</span>'
+                : '<span class="status-badge warning">未启用</span>';
+            const configBadge = data.is_configured
+                ? '<span class="status-badge success">已配置</span>'
+                : '<span class="status-badge error">未配置</span>';
+            statusSection.innerHTML = `
+                <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <strong>状态：</strong> ${enabledBadge} ${configBadge}
+                    <span style="color: #666;">机器人: ${data.bot_name || '-'}</span>
+                    <span style="color: #666;">域名: ${data.domain || '-'}</span>
+                </div>
+                <div style="margin-top: 8px; padding: 8px; background: #f5f5f5; border-radius: 4px;">
+                    <strong>Webhook URL:</strong>
+                    <code id="feishu-webhook-url-display">${data.webhook_url}</code>
+                    <button class="btn btn-secondary btn-sm" onclick="app.copyFeishuWebhookUrl()" style="margin-left: 8px;">
+                        <i class="fas fa-copy"></i> 复制
+                    </button>
+                </div>
+            `;
+            // 更新帮助页面的 webhook url
+            const helpUrl = document.getElementById('feishu-webhook-url-help');
+            if (helpUrl) helpUrl.textContent = data.webhook_url;
+        }
+    } catch (e) {
+        console.error('加载飞书状态失败:', e);
+    }
+};
+
+App.prototype.loadFeishuConfig = async function() {
+    try {
+        const response = await fetch('/api/lobster-claw/feishu/config');
+        const data = await response.json();
+        if (data.success && data.config) {
+            const c = data.config;
+            document.getElementById('feishu-app-id').value = c.app_id || '';
+            // 密码字段：脱敏显示为***时不填充，保持空让用户重新输入
+            if (c.app_secret && c.app_secret !== '***') {
+                document.getElementById('feishu-app-secret').value = c.app_secret;
+            } else {
+                document.getElementById('feishu-app-secret').value = '';
+                document.getElementById('feishu-app-secret').placeholder = c.app_secret === '***' ? '已配置 (重新输入可修改)' : '应用密钥';
+            }
+            if (c.encrypt_key && c.encrypt_key !== '***') {
+                document.getElementById('feishu-encrypt-key').value = c.encrypt_key;
+            } else {
+                document.getElementById('feishu-encrypt-key').value = '';
+                document.getElementById('feishu-encrypt-key').placeholder = c.encrypt_key === '***' ? '已配置 (重新输入可修改)' : '事件加密密钥';
+            }
+            document.getElementById('feishu-verification-token').value = c.verification_token || '';
+            document.getElementById('feishu-bot-name').value = c.bot_name || '';
+            document.getElementById('feishu-domain').value = c.domain || 'feishu';
+            document.getElementById('feishu-event-mode').value = c.event_mode || 'long_connection';
+            document.getElementById('feishu-enabled').checked = !!c.enabled;
+            document.getElementById('feishu-dm-policy').value = c.dm_policy || 'open';
+            document.getElementById('feishu-allow-list').value = (c.allow_list || []).join('\n');
+            document.getElementById('feishu-block-list').value = (c.block_list || []).join('\n');
+            document.getElementById('feishu-handle-groups').checked = c.handle_groups !== false;
+            document.getElementById('feishu-handle-dms').checked = c.handle_dms !== false;
+            document.getElementById('feishu-trigger-on-mention').checked = c.trigger_on_mention !== false;
+        }
+    } catch (e) {
+        console.error('加载飞书配置失败:', e);
+    }
+};
+
+App.prototype.saveFeishuConfig = async function() {
+    const allowList = document.getElementById('feishu-allow-list').value
+        .split('\n').map(s => s.trim()).filter(s => s);
+    const blockList = document.getElementById('feishu-block-list').value
+        .split('\n').map(s => s.trim()).filter(s => s);
+
+    const config = {
+        app_id: document.getElementById('feishu-app-id').value.trim(),
+        app_secret: document.getElementById('feishu-app-secret').value,
+        encrypt_key: document.getElementById('feishu-encrypt-key').value,
+        verification_token: document.getElementById('feishu-verification-token').value,
+        bot_name: document.getElementById('feishu-bot-name').value.trim(),
+        domain: document.getElementById('feishu-domain').value,
+        event_mode: document.getElementById('feishu-event-mode').value,
+        enabled: document.getElementById('feishu-enabled').checked,
+        dm_policy: document.getElementById('feishu-dm-policy').value,
+        allow_list: allowList,
+        block_list: blockList,
+        handle_groups: document.getElementById('feishu-handle-groups').checked,
+        handle_dms: document.getElementById('feishu-handle-dms').checked,
+        trigger_on_mention: document.getElementById('feishu-trigger-on-mention').checked
+    };
+
+    // 移除空字符串的密码字段（不修改）
+    if (!config.app_secret) delete config.app_secret;
+    if (!config.encrypt_key) delete config.encrypt_key;
+
+    const msgDiv = document.getElementById('feishu-config-message');
+    msgDiv.className = 'config-message-info';
+    msgDiv.textContent = '正在保存...';
+
+    try {
+        const response = await fetch('/api/lobster-claw/feishu/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(config)
+        });
+        const data = await response.json();
+        if (data.success) {
+            msgDiv.className = 'config-message-success';
+            msgDiv.textContent = '配置已保存';
+            await this.loadFeishuStatus();
+            setTimeout(() => { msgDiv.textContent = ''; }, 3000);
+        } else {
+            msgDiv.className = 'config-message-error';
+            msgDiv.textContent = '保存失败: ' + (data.error || '未知错误');
+        }
+    } catch (e) {
+        msgDiv.className = 'config-message-error';
+        msgDiv.textContent = '保存失败: ' + e.message;
+    }
+};
+
+App.prototype.testFeishuConnection = async function() {
+    const msgDiv = document.getElementById('feishu-config-message');
+    msgDiv.className = 'config-message-info';
+    msgDiv.textContent = '正在测试连接...';
+
+    try {
+        const response = await fetch('/api/lobster-claw/feishu/test-connection', {
+            method: 'POST'
+        });
+        const data = await response.json();
+        if (data.success) {
+            msgDiv.className = 'config-message-success';
+            msgDiv.textContent = '连接成功! Token: ' + (data.token_preview || '') + '...';
+        } else {
+            msgDiv.className = 'config-message-error';
+            msgDiv.textContent = '连接失败: ' + (data.error || '未知错误');
+        }
+    } catch (e) {
+        msgDiv.className = 'config-message-error';
+        msgDiv.textContent = '连接失败: ' + e.message;
+    }
+};
+
+App.prototype.loadFeishuMessages = async function() {
+    try {
+        const response = await fetch('/api/lobster-claw/feishu/messages?limit=50');
+        const data = await response.json();
+        const tbody = document.getElementById('feishu-messages-tbody');
+        if (data.success && data.messages && data.messages.length > 0) {
+            tbody.innerHTML = data.messages.map(m => `
+                <tr>
+                    <td>${this.formatTime(m.timestamp)}</td>
+                    <td title="${m.sender}">${(m.sender || '').substring(0, 12)}...</td>
+                    <td>${m.message_type}</td>
+                    <td title="${this.escapeHtml(m.content)}">${this.escapeHtml((m.content || '').substring(0, 50))}</td>
+                    <td title="${this.escapeHtml(m.response)}">${this.escapeHtml((m.response || '').substring(0, 50))}</td>
+                    <td><span class="status-badge ${m.status === 'success' ? 'success' : 'error'}">${m.status}</span></td>
+                    <td>${(m.duration || 0).toFixed(2)}s</td>
+                </tr>
+            `).join('');
+        } else {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #999;">暂无消息</td></tr>';
+        }
+    } catch (e) {
+        console.error('加载飞书消息失败:', e);
+    }
+};
+
+App.prototype.clearFeishuMessages = async function() {
+    if (!confirm('确定清空所有飞书消息日志?')) return;
+    try {
+        const response = await fetch('/api/lobster-claw/feishu/messages', {method: 'DELETE'});
+        const data = await response.json();
+        if (data.success) {
+            this.loadFeishuMessages();
+        }
+    } catch (e) {
+        console.error('清空飞书消息失败:', e);
+    }
+};
+
+App.prototype.copyFeishuWebhookUrl = function() {
+    const urlEl = document.getElementById('feishu-webhook-url-display');
+    if (urlEl) {
+        // 构造完整URL
+        const fullUrl = window.location.origin + urlEl.textContent;
+        navigator.clipboard.writeText(fullUrl).then(() => {
+            const btn = event.currentTarget;
+            const origHtml = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check"></i> 已复制';
+            setTimeout(() => { btn.innerHTML = origHtml; }, 2000);
+        });
+    }
+};
+
+App.prototype.loadFeishuSessions = async function() {
+    try {
+        const response = await fetch('/api/lobster-claw/feishu/sessions');
+        const data = await response.json();
+        const listEl = document.getElementById('feishu-sessions-list');
+        if (data.success && data.sessions && data.sessions.length > 0) {
+            listEl.innerHTML = `
+                <div style="display: grid; gap: 8px;">
+                    ${data.sessions.map(s => `
+                        <div class="feishu-session-item" onclick="app.loadFeishuSessionDetail('${s.session_id}')" style="padding: 12px; border: 1px solid #e0e0e0; border-radius: 8px; cursor: pointer; transition: all 0.2s;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <i class="fas ${s.is_group ? 'fa-users' : 'fa-user'}" style="color: ${s.is_group ? '#2196F3' : '#4CAF50'};"></i>
+                                    <span style="font-weight: 500;">${s.is_group ? '群聊' : '私聊'} - ${s.chat_id.substring(0, 16)}${s.chat_id.length > 16 ? '...' : ''}</span>
+                                </div>
+                                <span style="color: #999; font-size: 12px;">${s.message_count} 条消息</span>
+                            </div>
+                            <div style="margin-top: 4px; color: #999; font-size: 12px;">
+                                ${s.last_used ? '最后活跃: ' + this.formatTime(s.last_used) : '暂无活跃时间'}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        } else {
+            listEl.innerHTML = '<div style="text-align: center; color: #999; padding: 40px;">暂无飞书会话</div>';
+        }
+    } catch (e) {
+        console.error('加载飞书会话失败:', e);
+    }
+};
+
+App.prototype.loadFeishuSessionDetail = async function(sessionId) {
+    try {
+        const response = await fetch(`/api/lobster-claw/feishu/sessions/${sessionId}`);
+        const data = await response.json();
+        if (data.success) {
+            const detailEl = document.getElementById('feishu-session-detail');
+            const messagesEl = document.getElementById('feishu-session-messages');
+            
+            messagesEl.innerHTML = `
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                    ${data.messages.map(m => {
+                        const isUser = m.role === 'user';
+                        return `
+                            <div style="display: flex; gap: 8px;">
+                                <div style="width: 32px; height: 32px; border-radius: 50%; background: ${isUser ? '#2196F3' : '#4CAF50'}; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                                    <i class="fas ${isUser ? 'fa-user' : 'fa-robot'}" style="color: white; font-size: 14px;"></i>
+                                </div>
+                                <div style="flex: 1;">
+                                    <div style="font-weight: 500; font-size: 13px; margin-bottom: 4px;">${isUser ? '用户' : '火锅大侠'}</div>
+                                    <div style="background: ${isUser ? '#e3f2fd' : '#f1f8e9'}; padding: 8px 12px; border-radius: 8px; word-break: break-word;">${this.escapeHtml(m.content || '')}</div>
+                                    <div style="color: #999; font-size: 11px; margin-top: 4px;">${m.timestamp ? this.formatTime(m.timestamp) : ''}</div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+            
+            detailEl.style.display = 'block';
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+    } catch (e) {
+        console.error('加载飞书会话详情失败:', e);
+    }
+};
+
+App.prototype.closeFeishuSessionDetail = function() {
+    document.getElementById('feishu-session-detail').style.display = 'none';
+};
+
+App.prototype.formatTime = function(isoStr) {
+    if (!isoStr) return '-';
+    try {
+        const d = new Date(isoStr);
+        return d.toLocaleString('zh-CN');
+    } catch {
+        return isoStr;
+    }
 };
 
 // 页面加载完成后初始化

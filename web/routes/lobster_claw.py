@@ -1087,7 +1087,7 @@ async def generate_chat_response(session_id: str, message: str, model_name: Opti
     messages = adapter.create_prompt(system_prompt, message, context)
     
     try:
-        response = await adapter.chat(messages)
+        response = adapter.chat(messages)
         return {"success": True, "content": response.content, "session_id": session_id}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1705,3 +1705,170 @@ def extract_important_facts(user_message, ai_response):
                     facts.append(sentence.strip() + '。')
     
     return list(set(facts))[:5]
+
+
+# ============ 飞书接入管理 API ============
+# 说明：此处使用延迟导入，避免与 web.routes.feishu 产生循环导入。
+from web.routes.feishu import feishu_config, feishu_client, feishu_handler
+
+
+class FeishuConfigUpdate(BaseModel):
+    """飞书配置更新请求模型。
+
+    所有字段均为可选，仅更新请求体中提供的字段。
+    """
+    app_id: Optional[str] = None
+    app_secret: Optional[str] = None
+    encrypt_key: Optional[str] = None
+    verification_token: Optional[str] = None
+    bot_name: Optional[str] = None
+    domain: Optional[str] = None  # 'feishu' 或 'lark'
+    event_mode: Optional[str] = None  # 'long_connection' 或 'webhook'
+    dm_policy: Optional[str] = None  # 'open' / 'allowlist' / 'blocklist'
+    allow_list: Optional[List[str]] = None
+    block_list: Optional[List[str]] = None
+    handle_groups: Optional[bool] = None
+    handle_dms: Optional[bool] = None
+    trigger_on_mention: Optional[bool] = None
+    enabled: Optional[bool] = None
+
+
+@router.get("/feishu/config")
+async def get_feishu_config():
+    """获取飞书配置（脱敏后返回）。"""
+    try:
+        config = feishu_config.get()
+        return {
+            "success": True,
+            "config": config,
+            "is_configured": feishu_config.is_configured(),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/feishu/config")
+async def update_feishu_config(request: FeishuConfigUpdate):
+    """更新飞书配置（支持部分更新）。"""
+    try:
+        config_data = request.model_dump(exclude_none=True)
+        if not config_data:
+            return {"success": False, "error": "请求体未包含任何配置字段"}
+        updated = feishu_config.update(config_data)
+        return {
+            "success": True,
+            "config": updated,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/feishu/test-connection")
+async def test_feishu_connection():
+    """测试飞书连接（尝试获取 tenant_access_token）。"""
+    try:
+        if not feishu_config.is_configured():
+            return {"success": False, "error": "飞书配置未完整（app_id/app_secret 缺失）"}
+        token = feishu_client.get_tenant_access_token()
+        if token:
+            return {
+                "success": True,
+                "message": "连接成功",
+                "token_preview": token[:20],
+            }
+        return {
+            "success": False,
+            "error": "获取 tenant_access_token 失败，请检查 app_id/app_secret 是否正确",
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/feishu/status")
+async def get_feishu_status():
+    """获取飞书接入状态。"""
+    try:
+        config = feishu_config.get()
+        return {
+            "success": True,
+            "enabled": bool(config.get("enabled", False)),
+            "is_configured": feishu_config.is_configured(),
+            "webhook_url": "/api/feishu/webhook",
+            "bot_name": config.get("bot_name", "Lobster Bot"),
+            "domain": config.get("domain", "feishu"),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/feishu/messages")
+async def get_feishu_messages(limit: int = 50, offset: int = 0):
+    """获取飞书消息处理日志（倒序，最新在前）。"""
+    try:
+        messages = feishu_handler.get_message_logs(limit=limit, offset=offset)
+        total = len(feishu_handler.message_logs)
+        return {
+            "success": True,
+            "messages": messages,
+            "total": total,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/feishu/messages")
+async def clear_feishu_messages():
+    """清空飞书消息日志。"""
+    try:
+        cleared = feishu_handler.clear_message_logs()
+        return {"success": True, "cleared": cleared}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/feishu/sessions")
+async def get_feishu_sessions():
+    """获取飞书会话列表。"""
+    try:
+        feishu_sessions = []
+        for session_id, session in chat_sessions.items():
+            if session_id.startswith("feishu_"):
+                is_group = session_id.startswith("feishu_group_")
+                feishu_sessions.append({
+                    "session_id": session_id,
+                    "chat_id": session_id.replace("feishu_group_", "").replace("feishu_", ""),
+                    "chat_type": "group" if is_group else "p2p",
+                    "message_count": len(session.get("messages", [])),
+                    "last_used": session.get("last_used", ""),
+                    "is_group": is_group,
+                })
+        
+        feishu_sessions.sort(key=lambda x: x["last_used"] or "", reverse=True)
+        
+        return {
+            "success": True,
+            "sessions": feishu_sessions,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/feishu/sessions/{session_id}")
+async def get_feishu_session_detail(session_id: str):
+    """获取飞书会话详情（消息列表）。"""
+    try:
+        session = chat_sessions.get(session_id)
+        if not session or not session_id.startswith("feishu_"):
+            return {"success": False, "error": "会话不存在或不是飞书会话"}
+        
+        is_group = session_id.startswith("feishu_group_")
+        return {
+            "success": True,
+            "session_id": session_id,
+            "chat_id": session_id.replace("feishu_group_", "").replace("feishu_", ""),
+            "chat_type": "group" if is_group else "p2p",
+            "messages": session.get("messages", []),
+            "last_used": session.get("last_used", ""),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}

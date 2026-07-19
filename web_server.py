@@ -36,20 +36,27 @@ from web.routes import image as image_router
 from web.routes import video as video_router
 from web.routes import ai_chat as ai_chat_router
 from web.routes import lobster_claw as lobster_claw_router
+from web.routes import feishu as feishu_router
 
 logger.info("Initializing FastAPI app...")
 app = FastAPI(title="Multi-Agent Document Enhancer", version="1.0")
 
 app.add_middleware(SessionMiddleware, secret_key="mul_agent_secret_key_2026")
 
-# 启动定时任务调度器
+# 启动定时任务调度器和飞书长连接
 async def startup():
     logger.info("Starting cron scheduler...")
     await lobster_claw_router.cron_scheduler.start()
+    
+    logger.info("Starting Feishu long connection client...")
+    await feishu_router.start_feishu_ws_client()
 
 async def shutdown():
     logger.info("Stopping cron scheduler...")
     await lobster_claw_router.cron_scheduler.stop()
+    
+    logger.info("Stopping Feishu long connection client...")
+    feishu_router.stop_feishu_ws_client()
 
 app.add_event_handler("startup", startup)
 app.add_event_handler("shutdown", shutdown)
@@ -159,6 +166,7 @@ app.include_router(image_router.router, prefix="/api")
 app.include_router(video_router.router, prefix="/api")
 app.include_router(ai_chat_router.router, prefix="/api")
 app.include_router(lobster_claw_router.router, prefix="")
+app.include_router(feishu_router.router)
 
 # 初始化控制器
 controller = IterationController(

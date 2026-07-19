@@ -93,9 +93,23 @@
                             <button class="btn btn-outline-secondary btn-sm" onclick="app.loadCronTasks()">
                                 <i class="fas fa-clock"></i> 定时任务
                             </button>
-                            <button class="btn btn-outline-secondary btn-sm" onclick="app.createNewClawSession()">
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.showFeishuModal()" title="飞书接入">
+                                <i class="fas fa-paper-plane"></i> 飞书
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.addClawTab()" title="新建会话">
                                 <i class="fas fa-plus"></i> 新建会话
                             </button>
+                        </div>
+                    </div>
+                    
+                    <div class="claw-tabs-container" id="claw-tabs-container">
+                        <div class="claw-tabs" id="claw-tabs">
+                            <div class="claw-tab active default-tab" data-tab-id="main" onclick="app.switchClawTab('main')">
+                                <i class="fas fa-home"></i> 主会话
+                            </div>
+                            <div class="claw-tab default-tab" data-tab-id="feishu" onclick="app.switchClawTab('feishu')">
+                                <i class="fas fa-paper-plane"></i> 飞书会话
+                            </div>
                         </div>
                     </div>
                     
@@ -239,6 +253,216 @@
                                 <div style="display: flex; gap: 10px; margin-top: 15px;">
                                     <button class="btn btn-primary" onclick="app.addCronTask()">确认添加</button>
                                     <button class="btn btn-outline-secondary" onclick="app.hideAddCronTask()">取消</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="claw-feishu-modal" class="modal" style="display: none;">
+                    <div id="claw-feishu-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-paper-plane"></i> 飞书接入管理</h3>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="modal-close" onclick="app.toggleFeishuMaximize()" title="最大化" style="font-size: 14px;">
+                                    <i class="fas fa-expand"></i>
+                                </button>
+                                <button class="modal-close" onclick="document.getElementById('claw-feishu-modal').style.display='none'">&times;</button>
+                            </div>
+                        </div>
+                        <div class="modal-body" style="overflow-y: auto; max-height: calc(80vh - 60px); padding: 20px;">
+                            <!-- 状态指示器 -->
+                            <div id="feishu-status-section" style="margin-bottom: 16px;">
+                                <!-- 由JS动态渲染 -->
+                            </div>
+
+                            <!-- Tab切换 -->
+                            <div class="feishu-tabs" style="margin-bottom: 16px; border-bottom: 1px solid #ddd;">
+                                <button class="feishu-tab-btn active" onclick="app.switchFeishuTab('config')" data-tab="config">配置</button>
+                                <button class="feishu-tab-btn" onclick="app.switchFeishuTab('sessions')" data-tab="sessions">会话</button>
+                                <button class="feishu-tab-btn" onclick="app.switchFeishuTab('messages')" data-tab="messages">消息日志</button>
+                                <button class="feishu-tab-btn" onclick="app.switchFeishuTab('help')" data-tab="help">帮助说明</button>
+                            </div>
+
+                            <!-- 配置面板 -->
+                            <div id="feishu-config-panel" class="feishu-tab-panel">
+                                <div style="display: grid; gap: 12px;">
+                                    <!-- App ID -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">App ID <span style="color: #999; font-size: 12px;">(格式: cli_xxx)</span></label>
+                                        <input type="text" id="feishu-app-id" class="form-input" placeholder="cli_xxxxxxxxxxxx" style="width: 100%;">
+                                    </div>
+                                    <!-- App Secret -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">App Secret</label>
+                                        <input type="password" id="feishu-app-secret" class="form-input" placeholder="应用密钥" style="width: 100%;">
+                                    </div>
+                                    <!-- Encrypt Key -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">Encrypt Key <span style="color: #999; font-size: 12px;">(可选)</span></label>
+                                        <input type="password" id="feishu-encrypt-key" class="form-input" placeholder="事件加密密钥" style="width: 100%;">
+                                    </div>
+                                    <!-- Verification Token -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">Verification Token</label>
+                                        <input type="password" id="feishu-verification-token" class="form-input" placeholder="事件校验令牌" style="width: 100%;">
+                                    </div>
+                                    <!-- Bot Name -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">机器人名称</label>
+                                        <input type="text" id="feishu-bot-name" class="form-input" placeholder="Lobster Bot" style="width: 100%;">
+                                    </div>
+                                    <!-- Domain -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">域名</label>
+                                        <select id="feishu-domain" class="form-input" style="width: 100%;">
+                                            <option value="feishu">飞书 (中国版)</option>
+                                            <option value="lark">Lark (国际版)</option>
+                                        </select>
+                                    </div>
+                                    <!-- Event Mode -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">事件模式</label>
+                                        <select id="feishu-event-mode" class="form-input" style="width: 100%;">
+                                            <option value="long_connection">长连接 (推荐，无需公网)</option>
+                                            <option value="webhook">Webhook (需要公网地址)</option>
+                                        </select>
+                                    </div>
+                                    <!-- 启用开关 -->
+                                    <div>
+                                        <label style="display: flex; align-items: center; gap: 8px; font-weight: 500;">
+                                            <input type="checkbox" id="feishu-enabled"> 启用飞书接入
+                                        </label>
+                                    </div>
+
+                                    <hr style="border: none; border-top: 1px solid #eee; margin: 8px 0;">
+
+                                    <h4 style="margin: 0; color: #666;">访问控制</h4>
+                                    <!-- DM Policy -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">私聊策略</label>
+                                        <select id="feishu-dm-policy" class="form-input" style="width: 100%;">
+                                            <option value="open">开放 (所有用户可用)</option>
+                                            <option value="allowlist">允许名单</option>
+                                            <option value="blocklist">阻止名单</option>
+                                        </select>
+                                    </div>
+                                    <!-- Allow List -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">允许名单 <span style="color: #999; font-size: 12px;">(每行一个 open_id)</span></label>
+                                        <textarea id="feishu-allow-list" class="form-input" rows="3" placeholder="ou_xxx&#10;ou_yyy" style="width: 100%;"></textarea>
+                                    </div>
+                                    <!-- Block List -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">阻止名单 <span style="color: #999; font-size: 12px;">(每行一个 open_id)</span></label>
+                                        <textarea id="feishu-block-list" class="form-input" rows="3" placeholder="ou_xxx&#10;ou_yyy" style="width: 100%;"></textarea>
+                                    </div>
+
+                                    <hr style="border: none; border-top: 1px solid #eee; margin: 8px 0;">
+
+                                    <h4 style="margin: 0; color: #666;">群聊配置</h4>
+                                    <label style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="checkbox" id="feishu-handle-groups" checked> 处理群聊消息
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="checkbox" id="feishu-handle-dms" checked> 处理私聊消息
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="checkbox" id="feishu-trigger-on-mention" checked> 群聊仅在@机器人时触发
+                                    </label>
+
+                                    <div style="display: flex; gap: 8px; margin-top: 16px;">
+                                        <button class="btn btn-primary" onclick="app.saveFeishuConfig()">
+                                            <i class="fas fa-save"></i> 保存配置
+                                        </button>
+                                        <button class="btn btn-secondary" onclick="app.testFeishuConnection()">
+                                            <i class="fas fa-plug"></i> 测试连接
+                                        </button>
+                                    </div>
+                                    <div id="feishu-config-message" style="margin-top: 8px;"></div>
+                                </div>
+                            </div>
+
+                            <!-- 会话面板 -->
+                            <div id="feishu-sessions-panel" class="feishu-tab-panel" style="display: none;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                    <h4 style="margin: 0;">飞书会话</h4>
+                                    <button class="btn btn-primary btn-sm" onclick="app.loadFeishuSessions()">
+                                        <i class="fas fa-sync-alt"></i> 刷新
+                                    </button>
+                                </div>
+                                <div id="feishu-sessions-list" style="margin-bottom: 16px;">
+                                    <div style="text-align: center; color: #999; padding: 40px;">暂无飞书会话</div>
+                                </div>
+                                <div id="feishu-session-detail" style="display: none; border-top: 1px solid #eee; padding-top: 16px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                        <h4 style="margin: 0;">会话详情</h4>
+                                        <button class="btn btn-secondary btn-sm" onclick="app.closeFeishuSessionDetail()">
+                                            <i class="fas fa-times"></i> 关闭
+                                        </button>
+                                    </div>
+                                    <div id="feishu-session-messages" style="max-height: 400px; overflow-y: auto;">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 消息日志面板 -->
+                            <div id="feishu-messages-panel" class="feishu-tab-panel" style="display: none;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                    <h4 style="margin: 0;">消息日志</h4>
+                                    <button class="btn btn-danger btn-sm" onclick="app.clearFeishuMessages()">
+                                        <i class="fas fa-trash"></i> 清空日志
+                                    </button>
+                                </div>
+                                <div style="overflow-x: auto;">
+                                    <table class="table" style="width: 100%; font-size: 13px;">
+                                        <thead>
+                                            <tr>
+                                                <th>时间</th>
+                                                <th>发送者</th>
+                                                <th>类型</th>
+                                                <th>消息内容</th>
+                                                <th>响应</th>
+                                                <th>状态</th>
+                                                <th>耗时</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="feishu-messages-tbody">
+                                            <tr><td colspan="7" style="text-align: center; color: #999;">暂无消息</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- 帮助说明面板 -->
+                            <div id="feishu-help-panel" class="feishu-tab-panel" style="display: none;">
+                                <div style="line-height: 1.8; color: #555;">
+                                    <h4>飞书接入配置步骤</h4>
+                                    <ol>
+                                        <li>访问 <a href="https://open.feishu.cn/app" target="_blank">飞书开放平台</a> 创建企业自建应用</li>
+                                        <li>在"凭证与基础信息"页面复制 <strong>App ID</strong> 和 <strong>App Secret</strong></li>
+                                        <li>在"权限管理"页面添加权限：
+                                            <ul>
+                                                <li><code>im:message</code> - 发送消息</li>
+                                                <li><code>im:message:send_as_bot</code> - 以机器人身份发送</li>
+                                                <li><code>im:message.group_at_msg:readonly</code> - 读取群@消息</li>
+                                                <li><code>im:message.p2p_msg:readonly</code> - 读取私聊消息</li>
+                                            </ul>
+                                        </li>
+                                        <li>在"应用功能 > 机器人"页面启用机器人能力</li>
+                                        <li>在"事件订阅"页面：
+                                            <ul>
+                                                <li>配置 Webhook URL 为：<code id="feishu-webhook-url-help"></code></li>
+                                                <li>添加事件：<code>im.message.receive_v1</code></li>
+                                            </ul>
+                                        </li>
+                                        <li>在"加密策略"页面复制 <strong>Encrypt Key</strong> 和 <strong>Verification Token</strong></li>
+                                        <li>创建版本并发布应用，等待管理员审核通过</li>
+                                        <li>在本页面填写配置并保存，点击"测试连接"验证</li>
+                                    </ol>
+                                    <div style="background: #fff3cd; padding: 12px; border-radius: 4px; margin-top: 16px;">
+                                        <strong>注意：</strong>Webhook URL 需要公网可访问。如本地开发，可使用 <a href="https://ngrok.com" target="_blank">ngrok</a> 等工具做内网穿透。
+                                    </div>
                                 </div>
                             </div>
                         </div>

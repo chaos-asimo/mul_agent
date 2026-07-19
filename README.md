@@ -43,6 +43,89 @@
 - **运行历史**：完整记录任务执行状态、输出、错误和耗时
 - **服务恢复**：服务启动时自动恢复所有启用任务的调度
 
+### 飞书接入（Feishu）
+
+龙虾Claw支持通过飞书机器人接收消息，让AI助手可以脱离Web界面、通过飞书随时随地使用。参考 OpenClaw 飞书插件方案实现。
+
+#### 功能特性
+- 📨 **Webhook事件订阅** - 通过Webhook接收飞书消息事件
+- 🔒 **签名校验** - 支持 Verification Token 校验和 AES-256-CBC 事件加密解密
+- 💬 **私聊和群聊** - 支持私聊和群聊两种场景（群聊默认@机器人触发）
+- 🖼️ **多消息类型** - 支持文本和图片消息处理
+- 🛡️ **访问控制** - 允许名单/阻止名单两种策略
+- 🔄 **会话映射** - 飞书会话自动映射到龙虾Claw会话（`feishu_<chat_id>`格式）
+- 📝 **消息日志** - 完整记录消息处理日志，便于追踪和调试
+- 🌏 **飞书/Lark双支持** - 支持中国版飞书和国际版Lark
+
+#### 配置步骤
+
+##### 1. 创建飞书应用
+1. 访问 [飞书开放平台](https://open.feishu.cn/app) 创建企业自建应用
+   - 国际版用户访问 [https://open.larksuite.com/app](https://open.larksuite.com/app)
+2. 在 **凭证与基础信息** 页面复制 App ID 和 App Secret
+3. 在 **应用功能 > 机器人** 页面启用机器人能力
+
+##### 2. 配置权限
+在 **权限管理** 页面添加以下权限：
+- `im:message` - 发送消息
+- `im:message:send_as_bot` - 以机器人身份发送
+- `im:message.group_at_msg:readonly` - 读取群@消息
+- `im:message.p2p_msg:readonly` - 读取私聊消息
+- `im:resource` - 读取资源
+
+##### 3. 配置事件订阅
+1. 在 **事件订阅** 页面选择"使用长连接接收事件"或"Webhook模式"
+2. Webhook URL 配置为：`https://your-domain.com/api/feishu/webhook`
+3. 订阅事件：`im.message.receive_v1`
+4. 在 **加密策略** 页面复制 Encrypt Key 和 Verification Token
+
+##### 4. 发布应用
+1. 创建版本并提交审核
+2. 等待管理员审批通过
+
+##### 5. 配置龙虾Claw
+1. 启动服务后，打开龙虾Claw面板
+2. 点击"飞书"按钮打开飞书管理界面
+3. 填写 App ID、App Secret、Encrypt Key、Verification Token
+4. 选择域名（飞书或Lark）
+5. 配置访问控制策略
+6. 勾选"启用飞书接入"
+7. 点击"保存配置"
+8. 点击"测试连接"验证配置是否正确
+
+#### 访问控制策略
+
+| 策略 | 说明 |
+|------|------|
+| `open` | 允许所有用户使用机器人（默认） |
+| `allowlist` | 仅允许名单中的用户使用 |
+| `blocklist` | 阻止名单中的用户使用 |
+
+#### 会话映射规则
+- 私聊会话：`feishu_<chat_id>`
+- 群聊会话：`feishu_group_<chat_id>`
+- 复用龙虾Claw的 `chat_sessions` 字典，保持上下文连续
+
+#### 飞书接入 API
+
+| 接口 | 方法 | 描述 |
+|------|------|------|
+| `/api/feishu/webhook` | POST | 飞书Webhook回调入口 |
+| `/api/lobster-claw/feishu/config` | GET | 获取飞书配置（脱敏） |
+| `/api/lobster-claw/feishu/config` | POST | 保存飞书配置 |
+| `/api/lobster-claw/feishu/test-connection` | POST | 测试飞书连接 |
+| `/api/lobster-claw/feishu/status` | GET | 获取连接状态和Webhook URL |
+| `/api/lobster-claw/feishu/messages` | GET | 获取消息处理日志 |
+| `/api/lobster-claw/feishu/messages` | DELETE | 清空消息日志 |
+
+#### 配置文件
+配置文件存储在 `data/feishu_config.json`，可参考 `feishu.example.json` 创建。
+
+#### 注意事项
+- ⚠️ **Webhook URL 需要公网可访问**，本地开发可使用 ngrok 等工具做内网穿透
+- ⚠️ App Secret、Encrypt Key 等敏感信息会持久化存储到 `data/feishu_config.json`，请妥善保护此文件
+- ⚠️ 修改配置后需重新测试连接以验证有效性
+
 ### 龙虾Claw命令执行能力
 - **Shell命令执行**：基于白名单的安全命令执行（echo/ls/cat/grep等）
 - **文件操作**：支持读取、写入、编辑、列表目录（路径白名单限制）
