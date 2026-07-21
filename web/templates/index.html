@@ -6,7 +6,7 @@
     <title>多智能体协作平台</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="/static/css/style-pc.css?v=20260720a">
+    <link rel="stylesheet" href="/static/css/style-pc.css?v=20260721b">
     <script>
         (function() {
             var isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
@@ -14,7 +14,7 @@
             if (isMobile) {
                 var link = document.createElement('link');
                 link.rel = 'stylesheet';
-                link.href = '/static/css/style-mobile.css?v=20260720a';
+                link.href = '/static/css/style-mobile.css?v=20260721b';
                 document.head.appendChild(link);
             }
         })();
@@ -105,11 +105,17 @@
                             <button class="btn btn-outline-secondary btn-sm" onclick="app.loadCronTasks()">
                                 <i class="fas fa-clock"></i> 定时任务
                             </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.showScriptModal()" title="脚本管理">
+                                <i class="fas fa-code"></i> 脚本管理
+                            </button>
                             <button class="btn btn-outline-secondary btn-sm" onclick="app.showFeishuModal()" title="飞书接入">
                                 <i class="fas fa-paper-plane"></i> 飞书
                             </button>
                             <button class="btn btn-outline-secondary btn-sm" onclick="app.addClawTab()" title="新建会话">
                                 <i class="fas fa-plus"></i> 新建会话
+                            </button>
+                            <button id="collapse-all-btn" class="btn btn-outline-secondary btn-sm" onclick="app.toggleCollapseAll()" title="收缩所有菜单">
+                                <i class="fas fa-compress"></i>
                             </button>
                         </div>
                     </div>
@@ -265,6 +271,50 @@
                                 <div style="display: flex; gap: 10px; margin-top: 15px;">
                                     <button class="btn btn-primary" onclick="app.addCronTask()">确认添加</button>
                                     <button class="btn btn-outline-secondary" onclick="app.hideAddCronTask()">取消</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="claw-script-modal" class="modal" style="display: none;">
+                    <div id="claw-script-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-code"></i> 脚本管理</h3>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="btn btn-primary btn-sm" onclick="app.showAddScript()">
+                                    <i class="fas fa-plus"></i> 新建脚本
+                                </button>
+                                <button class="modal-close" onclick="document.getElementById('claw-script-modal').style.display='none'">&times;</button>
+                            </div>
+                        </div>
+                        <div id="claw-script-modal-body" class="modal-body" style="max-height: calc(80vh - 80px);">
+                            <div id="claw-script-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-code" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                                    <p>暂无脚本</p>
+                                    <p style="font-size: 14px; margin-top: 5px;">点击上方按钮创建新脚本</p>
+                                </div>
+                            </div>
+                            <div id="claw-script-add-form" style="display: none; margin-top: 20px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
+                                <h4 style="margin-bottom: 15px;">新建脚本</h4>
+                                <div style="display: grid; grid-template-columns: 1fr; gap: 15px;">
+                                    <div class="form-group">
+                                        <label>脚本名称</label>
+                                        <input type="text" id="script-name" class="form-control" placeholder="输入脚本名称">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>脚本描述</label>
+                                        <input type="text" id="script-description" class="form-control" placeholder="输入脚本描述（可选）">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>脚本代码</label>
+                                        <textarea id="script-code" class="form-control" rows="8" placeholder="输入Python脚本代码"></textarea>
+                                    </div>
+                                </div>
+                                <div style="display: flex; gap: 10px; margin-top: 15px;">
+                                    <button class="btn btn-primary" onclick="app.addScript()">确认创建</button>
+                                    <button class="btn btn-outline-secondary" onclick="app.hideAddScript()">取消</button>
                                 </div>
                             </div>
                         </div>
@@ -1451,7 +1501,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="/static/js/utils.js?v=20260706b"></script>
-    <script src="/static/js/app.js?v=20260706f"></script>
+    <script src="/static/js/app.js?v=20260722d"></script>
     <script>
         function closeSkillConfigModal() {
             const modal = document.getElementById('skill-config-modal');
@@ -1531,5 +1581,10 @@
             </div>
         </div>
     </div>
+    
+    <!-- 悬浮展开按钮 -->
+    <button id="expand-all-btn" class="expand-all-btn" onclick="app.toggleCollapseAll()" title="展开所有菜单">
+        <i class="fas fa-expand"></i>
+    </button>
 </body>
 </html>

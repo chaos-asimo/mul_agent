@@ -1026,3 +1026,24 @@
         height: 48px;
     }
 }
+
+@media (max-width: 768px) {
+    .header.collapsed {
+        height: 0 !important;
+        padding: 0 !important;
+        overflow: hidden;
+    }
+    
+    .toolbar.collapsed {
+        height: 0 !important;
+        padding: 0 !important;
+        overflow: hidden;
+    }
+    
+    .left-nav.collapsed {
+        height: 0 !important;
+        padding: 0 !important;
+        overflow: hidden;
+    }
+    
+}

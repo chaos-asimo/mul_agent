@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Any
 
 from memory import MemoryManager
 from cron import CronTaskManager, CronScheduler, CronParser, TaskExecutor
+from script_manager import script_manager
 
 memory_manager = MemoryManager()
 cron_task_manager = CronTaskManager()
@@ -1037,8 +1038,8 @@ async def get_chat_models():
 
 def detect_generation_type(message: str) -> str:
     message_lower = message.lower()
-    video_keywords = ["生成视频", "视频生成", "画视频", "制作视频", "视频制作", "视频内容", "video"]
-    image_keywords = ["画图", "画画", "绘图", "绘制", "生成图片", "图片生成", "生成图像", "图像生成", "生成图", "画一张", "画个", "picture", "image", "drawing", "painting"]
+    video_keywords = ["生成视频", "视频生成", "画视频", "制作视频", "视频制作", "视频内容"]
+    image_keywords = ["画图", "画画", "绘图", "绘制", "生成图片", "图片生成", "生成图像", "图像生成", "生成图", "画一张", "画个"]
     
     for keyword in video_keywords:
         if keyword in message_lower:
@@ -1260,7 +1261,9 @@ async def chat_stream(request: ChatStreamRequest):
     
     system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以帮助用户回答问题、分析信息、提供建议。当提供了工具执行结果时，请基于结果给出详细的解答和说明。
 
-你拥有记忆能力，可以记住用户的偏好、重要事实和历史对话。以下是与当前问题相关的记忆信息，请参考这些信息来回答用户的问题。"""
+你拥有记忆能力，可以记住用户的偏好、重要事实和历史对话。以下是与当前问题相关的记忆信息，请参考这些信息来回答用户的问题。
+
+重要规则：当你发现无法直接通过文字回答完成用户的任务时（例如需要计算、数据处理、文件操作、系统检查等），请在回复开头添加标记 [NEED_SCRIPT]，表示需要创建Python脚本来自动完成任务。系统会自动根据你的回复生成并执行脚本。"""
     
     tool_call = detect_tool_intent(request.message)
     
@@ -1271,7 +1274,7 @@ async def chat_stream(request: ChatStreamRequest):
         try:
             if tool_call:
                 tool_name = tool_call.get("tool")
-                tool_desc = {"exec": "执行命令", "read_file": "读取文件", "list_dir": "列出目录", "search": "网页搜索"}.get(tool_name, tool_name)
+                tool_desc = {"exec": "执行命令", "read_file": "读取文件", "list_dir": "列出目录", "search": "网页搜索", "script_create": "创建脚本", "script_execute": "执行脚本", "script_list": "列出脚本"}.get(tool_name, tool_name)
                 tool_header = "\n🔧 正在执行工具: " + tool_desc + "...\n\n"
                 yield f"data: {json.dumps({'success': True, 'content': tool_header, 'session_id': session_id})}\n\n"
                 
@@ -1307,13 +1310,15 @@ async def chat_stream(request: ChatStreamRequest):
 
 {memory_context}
 
-请基于上述工具执行结果和记忆信息，为用户提供详细的分析和解答。"""
+请基于上述工具执行结果和记忆信息，为用户提供详细的分析和解答。
+如果你无法直接通过文字完成用户的任务，请在回复开头添加 [NEED_SCRIPT] 标记。"""
             else:
                 user_content = f"""用户问题: {request.message}
 
 {memory_context}
 
-请基于上述记忆信息，为用户提供详细的解答。"""
+请基于上述记忆信息，为用户提供详细的解答。
+如果你无法直接通过文字完成用户的任务（例如需要计算、数据处理、文件操作、系统检查等），请在回复开头添加 [NEED_SCRIPT] 标记，系统会自动生成并执行Python脚本来完成任务。"""
             
             messages = adapter.create_prompt(system_prompt, user_content, context)
             
@@ -1342,6 +1347,57 @@ async def chat_stream(request: ChatStreamRequest):
                     "total_tokens": latest_log.total_tokens,
                     "tokens_per_second": latest_log.tokens_per_second
                 }
+            
+            # 检测是否需要创建脚本
+            need_script = "[NEED_SCRIPT]" in full_response
+            if need_script:
+                # 移除标记，不展示给用户
+                full_response = full_response.replace("[NEED_SCRIPT]", "").strip()
+                # 从LLM回复中提取任务描述，用于生成脚本
+                script_task = request.message
+                
+                yield "data: " + json.dumps({'success': True, 'content': '\n\n🔧 检测到需要编写脚本完成任务，正在生成...\n', 'session_id': session_id}) + "\n\n"
+                
+                # 调用脚本生成
+                script_code, script_name, script_desc = generate_script_code(script_task)
+                
+                if script_code:
+                    syntax_result = check_script_syntax(script_code)
+                    if syntax_result["success"]:
+                        save_script_to_file(script_name, script_code)
+                        script_manager.create_script(script_name, script_code, description=script_desc, is_approved=True)
+                        
+                        script_info = '✅ 脚本已生成并保存到脚本库\n📝 脚本: ' + script_name + '（' + script_desc + '）\n\n正在执行...\n'
+                        yield "data: " + json.dumps({'success': True, 'content': script_info, 'session_id': session_id}) + "\n\n"
+                        
+                        # 执行脚本
+                        exec_result = execute_python_script(script_code)
+                        
+                        # 将执行结果交给LLM解读
+                        yield "data: " + json.dumps({'success': True, 'content': '📋 执行结果:\n\n', 'session_id': session_id}) + "\n\n"
+                        
+                        # 调用LLM解读执行结果
+                        interpret_prompt = '用户问题: ' + request.message + '\n\n我编写并执行了一个Python脚本来完成这个任务。\n\n脚本名称: ' + script_name + '\n脚本描述: ' + script_desc + '\n\n执行结果:\n' + exec_result + '\n\n请基于执行结果，为用户提供详细的分析和解答。'
+                        
+                        interpret_messages = adapter.create_prompt(
+                            "你是龙虾Claw，一个强大的AI智能体助手。请基于脚本执行结果为用户提供详细的解读。",
+                            interpret_prompt, []
+                        )
+                        
+                        for chunk in adapter.chat_stream(interpret_messages):
+                            if isinstance(chunk, dict):
+                                content = chunk.get("content", "")
+                            else:
+                                content = str(chunk)
+                            if content and not content.startswith("{\"__stats__\""):
+                                yield "data: " + json.dumps({'success': True, 'content': content, 'session_id': session_id}) + "\n\n"
+                        
+                        full_response = full_response + "\n\n📋 脚本执行结果:\n" + exec_result
+                    else:
+                        error_msg = '❌ 脚本语法错误:\n\n' + syntax_result["error"]
+                        yield "data: " + json.dumps({'success': True, 'content': error_msg, 'session_id': session_id}) + "\n\n"
+                else:
+                    yield "data: " + json.dumps({'success': True, 'content': '❌ 脚本生成失败，请重试', 'session_id': session_id}) + "\n\n"
             
             final_response = full_response
             if tool_result:
@@ -1558,6 +1614,28 @@ def detect_tool_intent(message: str) -> dict:
         r'(?:搜索|联网搜索|网上搜索|查一下|查询|search)[：:\s]*(.+)',
         r'(?:搜索|查一下|查询)\s+(.+)',
     ]
+    script_patterns = [
+        r'(?:编写|写一个|创建|保存)\s*(.+?)\s*(?:脚本|python脚本)',
+        r'(?:写一个|创建)(?:脚本)?[：:\s]*(.+)',
+        r'(?:执行|运行|运行脚本)(?:脚本)?[：:\s]*(\d+)',
+        r'(?:执行|运行)\s*(脚本)',
+        r'(?:运行|执行)\s*python\s+(.+)',
+        r'(?:python)\s+(.+)',
+    ]
+    
+    # 优先匹配脚本模式
+    for pattern in script_patterns:
+        m = re.search(pattern, msg_lower)
+        if m:
+            if "编写" in msg_lower or "写一个" in msg_lower or "创建" in msg_lower or "保存" in msg_lower:
+                return {"tool": "script_create", "code": message}
+            elif m.group(1).isdigit():
+                return {"tool": "script_execute", "script_id": int(m.group(1))}
+            else:
+                code = message.replace("执行脚本", "").replace("运行脚本", "").replace("执行", "").replace("运行", "").strip()
+                if code.startswith("python"):
+                    code = code[6:].strip()
+                return {"tool": "script_execute", "code": code}
     
     for pattern in exec_patterns:
         m = re.search(pattern, msg_lower)
@@ -1593,6 +1671,8 @@ def detect_tool_intent(message: str) -> dict:
         "search": ["搜索一下", "帮我搜", "网上查", "联网查", "最新信息", "search for"],
         "read_file": ["读取文件", "看下文件", "文件内容"],
         "exec": ["执行命令", "运行命令", "shell命令"],
+        "script_list": ["列出脚本", "查看脚本", "有哪些脚本"],
+        "script_execute": ["运行脚本", "执行脚本"],
     }
     
     for tool, keywords in keywords_map.items():
@@ -1606,6 +1686,10 @@ def detect_tool_intent(message: str) -> dict:
                     return {"tool": "exec", "command": message}
                 elif tool == "read_file":
                     return {"tool": "read_file", "path": message}
+                elif tool == "script_list":
+                    return {"tool": "script_list"}
+                elif tool == "script_execute":
+                    return {"tool": "script_execute", "code": message}
     
     return None
 
@@ -1621,6 +1705,49 @@ def execute_tool_call(tool_call: dict) -> str:
         return list_dir(tool_call.get("path", "."))
     elif tool == "search":
         return web_search(tool_call.get("query", ""), int(tool_call.get("num", 5)))
+    elif tool == "script_create":
+        code = tool_call.get("code", "")
+        
+        # 调用LLM生成脚本代码、英文名称和中文描述
+        script_code, script_name, script_desc = generate_script_code(code)
+        
+        if not script_code:
+            return "❌ 脚本生成失败，请重试"
+        
+        # 检查语法
+        syntax_result = check_script_syntax(script_code)
+        
+        if syntax_result["success"]:
+            # 保存到文件系统和脚本库
+            save_script_to_file(script_name, script_code)
+            script_manager.create_script(script_name, script_code, description=script_desc, is_approved=True)
+            
+            # 执行并返回结果
+            return execute_python_script(script_code)
+        else:
+            return f"❌ 脚本语法错误:\n\n{syntax_result['error']}\n\n请修改需求后重新尝试。"
+    elif tool == "script_execute":
+        script_id = tool_call.get("script_id")
+        code = tool_call.get("code", "")
+        
+        if script_id:
+            script = script_manager.get_script(script_id)
+            if script:
+                return execute_python_script(script["code"])
+            else:
+                return f"❌ 脚本不存在，ID: {script_id}"
+        elif code:
+            return execute_python_script(code)
+        else:
+            return "❌ 请提供脚本ID或脚本代码"
+    elif tool == "script_list":
+        scripts = script_manager.list_scripts()
+        if not scripts:
+            return "📋 暂无脚本"
+        result = "📋 脚本列表:\n"
+        for script in scripts:
+            result += f"\nID: {script['id']}\n名称: {script['name']}\n描述: {script.get('description', '无')}\n创建时间: {script['created_at'][:19].replace('T', ' ')}\n"
+        return result
     
     return ""
 
@@ -1673,6 +1800,268 @@ async def memory_search(request: MemorySearchRequest):
 async def memory_clear(memory_type: str):
     count = memory_manager.clear(memory_type)
     return {"success": True, "message": f"已清空 {count} 条记忆"}
+
+
+# ============ 脚本管理功能 ============
+import tempfile
+import sys
+from io import StringIO
+
+class ScriptCreateRequest(BaseModel):
+    name: str
+    code: str
+    description: str = ""
+
+class ScriptExecuteRequest(BaseModel):
+    script_id: Optional[int] = None
+    code: Optional[str] = None
+
+@router.post("/script/create")
+async def script_create(request: ScriptCreateRequest):
+    script = script_manager.create_script(request.name, request.code, request.description)
+    result = {"success": True, "message": "脚本创建成功", "script": script}
+    add_to_history(f"script_create {request.name}", result)
+    return result
+
+@router.get("/script/list")
+async def script_list():
+    scripts = script_manager.list_scripts()
+    return {"success": True, "scripts": scripts}
+
+@router.get("/script/{script_id}")
+async def script_get(script_id: int):
+    script = script_manager.get_script(script_id)
+    if script:
+        return {"success": True, "script": script}
+    return {"success": False, "error": "脚本不存在"}
+
+@router.put("/script/{script_id}")
+async def script_update(script_id: int, request: ScriptCreateRequest):
+    script = script_manager.update_script(script_id, request.name, request.code, request.description)
+    if script:
+        result = {"success": True, "message": "脚本更新成功", "script": script}
+        add_to_history(f"script_update {script_id}", result)
+        return result
+    return {"success": False, "error": "脚本不存在"}
+
+@router.delete("/script/{script_id}")
+async def script_delete(script_id: int):
+    success = script_manager.delete_script(script_id)
+    if success:
+        result = {"success": True, "message": "脚本删除成功"}
+        add_to_history(f"script_delete {script_id}", result)
+        return result
+    return {"success": False, "error": "脚本不存在"}
+
+@router.post("/script/{script_id}/approve")
+async def script_approve(script_id: int):
+    """审批脚本，允许执行包含危险操作的脚本"""
+    script = script_manager.approve_script(script_id)
+    if script:
+        result = {"success": True, "message": "脚本审批成功，已授权执行"}
+        add_to_history(f"script_approve {script_id}", result)
+        return result
+    return {"success": False, "error": "脚本不存在"}
+
+@router.post("/script/{script_id}/revoke")
+async def script_revoke(script_id: int):
+    """撤销脚本审批"""
+    script = script_manager.revoke_script(script_id)
+    if script:
+        result = {"success": True, "message": "脚本审批已撤销"}
+        add_to_history(f"script_revoke {script_id}", result)
+        return result
+    return {"success": False, "error": "脚本不存在"}
+
+def check_script_syntax(code: str) -> dict:
+    """检查脚本语法是否正确"""
+    try:
+        compile(code, '<string>', 'exec')
+        return {"success": True}
+    except SyntaxError as e:
+        return {"success": False, "error": f"{e.msg} (行 {e.lineno})\n\n{e.text}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def save_script_to_file(script_name: str, script_code: str) -> str:
+    """保存脚本到文件系统"""
+    # 创建脚本目录（如果不存在）
+    scripts_dir = Path(BASE_DIR) / "web" / "static" / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 生成文件名（去除特殊字符）
+    safe_name = re.sub(r'[\\/:*?"<>|]', '', script_name)
+    if not safe_name:
+        safe_name = "unnamed"
+    
+    # 检查文件名是否已存在，添加序号
+    base_name = safe_name
+    counter = 1
+    while True:
+        file_name = f"{safe_name}.py"
+        file_path = scripts_dir / file_name
+        if not file_path.exists():
+            break
+        safe_name = f"{base_name}_{counter}"
+        counter += 1
+    
+    # 写入文件
+    with open(file_path, 'w', encoding='utf-8') as f:
+        f.write(script_code)
+    
+    return str(file_path)
+
+def generate_script_code(requirements: str) -> tuple:
+    """根据用户需求调用LLM生成Python脚本代码，返回(脚本代码, 英文名称, 中文描述)"""
+    try:
+        adapter = get_default_llm_adapter("shineyue")
+        if not adapter:
+            return None, None, None
+        
+        system_prompt = """你是一个专业的Python脚本生成器。请根据用户的需求，生成一个完整、可运行的Python脚本。
+
+要求：
+1. 只返回Python代码，不要包含任何解释性文字
+2. 代码必须完整，可以直接运行
+3. 如果需要输出结果，请使用print()函数
+4. 代码应该简洁明了，遵循Python最佳实践
+5. 如果需要使用外部库，请在代码中添加注释说明"""
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"用户需求: {requirements}"}
+        ]
+        
+        response = adapter.chat(messages)
+        
+        # 提取代码
+        content = response.content if hasattr(response, 'content') else str(response)
+        
+        # 从markdown中提取代码
+        import re
+        code = None
+        code_match = re.search(r'```python\n(.*?)```', content, re.DOTALL)
+        if code_match:
+            code = code_match.group(1).strip()
+        
+        if not code:
+            code_match = re.search(r'```\n(.*?)```', content, re.DOTALL)
+            if code_match:
+                code = code_match.group(1).strip()
+        
+        if not code and content.strip():
+            code = content.strip()
+        
+        if not code:
+            return None, None, None
+        
+        # 调用LLM生成英文脚本名称和中文描述
+        name_prompt = f"""根据以下Python脚本和用户需求，生成一个简短的英文脚本名称（用下划线连接单词，如 hello_world、check_system_info）和一句中文描述。
+
+用户需求: {requirements}
+
+脚本代码:
+```python
+{code}
+```
+
+请按以下格式返回（不要包含其他内容）:
+ENGLISH_NAME: 英文脚本名称
+CHINESE_DESC: 中文描述"""
+        
+        name_messages = [
+            {"role": "system", "content": "你是一个命名助手，请严格按照格式返回。"},
+            {"role": "user", "content": name_prompt}
+        ]
+        
+        name_response = adapter.chat(name_messages)
+        name_content = name_response.content if hasattr(name_response, 'content') else str(name_response)
+        
+        # 解析英文名称和中文描述
+        script_name = "unnamed_script"
+        script_desc = requirements[:50]
+        
+        name_match = re.search(r'ENGLISH_NAME:\s*(.+)', name_content)
+        if name_match:
+            script_name = name_match.group(1).strip()
+        
+        desc_match = re.search(r'CHINESE_DESC:\s*(.+)', name_content)
+        if desc_match:
+            script_desc = desc_match.group(1).strip()
+        
+        return code, script_name, script_desc
+        
+    except Exception as e:
+        print(f"生成脚本代码失败: {e}")
+        return None, None, None
+
+def execute_python_script(code: str) -> str:
+    """执行Python脚本，返回执行结果"""
+    # 保存临时文件执行
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
+            f.write(code)
+            temp_file = f.name
+        
+        # 设置环境变量，确保子进程使用UTF-8编码
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PYTHONUTF8'] = '1'
+        
+        # 使用subprocess执行脚本，捕获输出
+        result = subprocess.run(
+            ['python', '-B', temp_file],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            timeout=30,
+            cwd=os.path.dirname(__file__),
+            env=env
+        )
+        
+        stdout_output = result.stdout
+        stderr_output = result.stderr
+        
+        # 删除临时文件
+        os.unlink(temp_file)
+        
+        # 构建结果
+        result_str = ""
+        if stdout_output:
+            result_str += stdout_output
+        if stderr_output:
+            result_str += stderr_output
+        if not stdout_output and not stderr_output:
+            result_str += "脚本执行完成，无输出\n"
+        
+        return result_str
+        
+    except SyntaxError as e:
+        return f"❌ 语法错误: {e.msg} (行 {e.lineno})\n\n{e.text}"
+    except Exception as e:
+        import traceback
+        return f"❌ 执行错误: {str(e)}\n\n{traceback.format_exc()}"
+
+@router.post("/script/execute")
+async def script_execute(request: ScriptExecuteRequest):
+    try:
+        code = ""
+        if request.script_id:
+            script = script_manager.get_script(request.script_id)
+            if not script:
+                return {"success": False, "error": "脚本不存在"}
+            code = script["code"]
+        elif request.code:
+            code = request.code
+        else:
+            return {"success": False, "error": "请提供脚本ID或脚本代码"}
+        
+        result = execute_python_script(code)
+        response = {"success": True, "result": result}
+        add_to_history(f"script_execute", response)
+        return response
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def extract_important_facts(user_message, ai_response):

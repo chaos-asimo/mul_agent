@@ -29,6 +29,13 @@ body {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     position: relative;
     z-index: 100;
+    transition: height 0.3s ease;
+}
+
+.header.collapsed {
+    height: 0;
+    padding: 0;
+    overflow: hidden;
 }
 
 .header-content {
@@ -580,6 +587,15 @@ body {
     background: white;
     border-radius: 12px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    transition: all 0.3s ease;
+    overflow: hidden;
+}
+
+.toolbar.collapsed {
+    height: 0;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
 }
 
 .toolbar-left {
@@ -1468,6 +1484,15 @@ body {
     flex-direction: column;
     align-items: center;
     gap: 8px;
+    transition: width 0.3s ease, min-width 0.3s ease;
+    position: relative;
+}
+
+.left-nav.collapsed {
+    width: 0;
+    min-width: 0;
+    padding: 0;
+    overflow: hidden;
 }
 
 .nav-btn {
@@ -3279,4 +3304,48 @@ body {
     max-width: 95vw !important;
     max-height: 95vh !important;
     height: 95vh !important;
+}
+
+/* 悬浮展开按钮 */
+.expand-all-btn {
+    position: fixed !important;
+    top: 24px !important;
+    right: 24px !important;
+    width: 56px !important;
+    height: 56px !important;
+    border-radius: 50% !important;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+    color: white !important;
+    border: none !important;
+    cursor: pointer !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 20px !important;
+    box-shadow: 0 4px 16px rgba(102, 126, 234, 0.4) !important;
+    z-index: 9999 !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    transition: all 0.3s ease !important;
+}
+
+.expand-all-btn.show {
+    opacity: 1 !important;
+    visibility: visible !important;
+}
+
+.expand-all-btn:hover {
+    transform: scale(1.1);
+    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+}
+
+/* 手机端悬浮按钮调整 */
+@media (max-width: 768px) {
+    .expand-all-btn {
+        top: 80px !important;
+        right: 16px !important;
+        width: 48px !important;
+        height: 48px !important;
+        font-size: 18px !important;
+    }
 }

@@ -4728,6 +4728,286 @@ class App {
         }
     }
 
+    // ============ 脚本管理 ============
+    async showScriptModal() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/script/list`);
+            const result = await response.json();
+            this.renderScriptList(result);
+            document.getElementById('claw-script-modal').style.display = 'flex';
+        } catch (error) {
+            alert('获取脚本列表失败: ' + error.message);
+        }
+    }
+
+    renderScriptList(result) {
+        const listContainer = document.getElementById('claw-script-list');
+        
+        if (result.success && result.scripts.length > 0) {
+            listContainer.innerHTML = result.scripts.map(script => {
+                const codePreview = script.code.length > 100 ? script.code.substring(0, 100) + '...' : script.code;
+                const createdAt = new Date(script.created_at).toLocaleString('zh-CN');
+                const desc = script.description || '';
+                
+                return `
+                    <div style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                <strong style="font-size: 15px; font-family: monospace;">${script.name}</strong>
+                                ${desc ? `<span style="font-size: 13px; color: #0369a1; background: #e0f2fe; padding: 2px 8px; border-radius: 4px;">${desc}</span>` : ''}
+                                <span style="font-size: 12px; color: #64748b;">ID: ${script.id}</span>
+                            </div>
+                            <div style="display: flex; gap: 5px;">
+                                <button class="btn btn-outline-secondary btn-sm" onclick="app.executeScript(${script.id})" title="执行脚本">
+                                    <i class="fas fa-play"></i>
+                                </button>
+                                <button class="btn btn-outline-secondary btn-sm" onclick="app.deleteScript(${script.id})" title="删除脚本">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div style="font-size: 12px; color: #94a3b8;">创建时间: ${createdAt}</div>
+                        <div style="font-size: 13px; color: #1e293b; margin-top: 6px; padding: 6px; background: #f1f5f9; border-radius: 4px; font-family: monospace; white-space: pre-wrap; max-height: 60px; overflow-y: auto;">${codePreview}</div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            listContainer.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-code" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                    <p>暂无脚本</p>
+                    <p style="font-size: 14px; margin-top: 5px;">点击上方按钮创建新脚本</p>
+                </div>
+            `;
+        }
+    }
+
+    showAddScript() {
+        document.getElementById('claw-script-add-form').style.display = 'block';
+        document.getElementById('script-name').value = '';
+        document.getElementById('script-description').value = '';
+        document.getElementById('script-code').value = '';
+    }
+
+    hideAddScript() {
+        document.getElementById('claw-script-add-form').style.display = 'none';
+    }
+
+    async addScript() {
+        const name = document.getElementById('script-name').value.trim();
+        const description = document.getElementById('script-description').value.trim();
+        const code = document.getElementById('script-code').value.trim();
+        
+        if (!name) {
+            alert('请输入脚本名称');
+            return;
+        }
+        if (!code) {
+            alert('请输入脚本代码');
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/script/create`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, description, code })
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                alert('脚本创建成功！');
+                this.hideAddScript();
+                this.showScriptModal();
+            } else {
+                alert('创建失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('创建脚本失败: ' + error.message);
+        }
+    }
+
+    async executeScript(scriptId) {
+        try {
+            const scriptList = await fetch(`${this.baseUrl}/api/lobster-claw/script/list`).then(r => r.json());
+            const script = scriptList.scripts.find(s => s.id === scriptId);
+            const scriptName = script ? script.name : `脚本#${scriptId}`;
+
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/script/execute`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ script_id: scriptId })
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                // 关闭脚本管理弹窗
+                document.getElementById('claw-script-modal').style.display = 'none';
+
+                // 将结果传给大模型美化输出
+                const sendBtn = document.getElementById('claw-chat-send-btn');
+                const modelSelect = document.getElementById('claw-model-select');
+                const modelName = modelSelect ? modelSelect.value : '';
+
+                this.clawChatAbortController = new AbortController();
+                sendBtn.disabled = true;
+                sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 分析中...';
+
+                const beautifyPrompt = `我执行了一个名为"${scriptName}"的Python脚本，以下是脚本的原始执行结果。请帮我分析解读这个执行结果，用简洁美观的Markdown格式总结关键信息，指出需要注意的异常或问题。如果结果本身已经清晰，直接整理排版即可，不要编造不存在的信息。\n\n执行结果：\n\`\`\`\n${result.result}\n\`\`\``;
+
+                try {
+                    const chatResponse = await fetch(`${this.baseUrl}/api/lobster-claw/chat/stream`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            message: beautifyPrompt, 
+                            session_id: this.getCurrentClawSessionId(),
+                            model_name: modelName || undefined
+                        }),
+                        keepalive: true,
+                        signal: this.clawChatAbortController?.signal
+                    });
+                    
+                    const reader = chatResponse.body.getReader();
+                    const decoder = new TextDecoder();
+                    let assistantMessageId = null;
+                    let isDone = false;
+                    let modelInfo = null;
+                    let tokenStats = null;
+                    
+                    while (!isDone) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n');
+                        
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.substring(6));
+                                    
+                                    if (data.success) {
+                                        if (data.session_id) {
+                                            this.setCurrentClawSessionId(data.session_id);
+                                        }
+                                        if (data.model_name) {
+                                            modelInfo = data.model_name;
+                                        }
+                                        if (data.token_stats) {
+                                            tokenStats = data.token_stats;
+                                        }
+                                        
+                                        if (data.content) {
+                                            if (!assistantMessageId) {
+                                                assistantMessageId = this.addClawChatMessage('assistant', data.content, true);
+                                            } else {
+                                                this.updateClawChatMessage(assistantMessageId, data.content);
+                                            }
+                                        }
+                                        
+                                        if (data.done) {
+                                            isDone = true;
+                                            if (assistantMessageId) {
+                                                this.finishClawChatMessage(assistantMessageId, modelInfo, tokenStats);
+                                            }
+                                        }
+                                    } else {
+                                        this.addClawChatMessage('system', `<span style="color: #ef4444;">分析失败: ${data.error}</span>`);
+                                    }
+                                } catch (e) {
+                                    console.error('解析SSE数据失败:', e);
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (assistantMessageId && !isDone) {
+                        this.finishClawChatMessage(assistantMessageId);
+                    }
+                } catch (error) {
+                    this.addClawChatMessage('system', `<span style="color: #ef4444;">大模型分析失败: ${error.message}</span>`);
+                } finally {
+                    const indicators = document.querySelectorAll('.claw-typing-indicator');
+                    indicators.forEach(ind => ind.remove());
+                    sendBtn.disabled = false;
+                    sendBtn.innerHTML = '<i class="fas fa-send"></i> 发送';
+                }
+            } else {
+                alert('执行失败: ' + result.error);
+            }
+        } catch (error) {
+            console.error('Execute script error:', error);
+            alert('执行脚本失败: ' + error.message);
+        }
+    }
+
+    async deleteScript(scriptId) {
+        if (!confirm('确定要删除这个脚本吗？')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/script/${scriptId}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                alert('脚本删除成功');
+                this.showScriptModal();
+            } else {
+                alert('删除失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('删除脚本失败: ' + error.message);
+        }
+    }
+
+    async approveScript(scriptId) {
+        if (!confirm('确定要审批此脚本吗？审批后脚本将允许执行包含危险操作的代码（如文件操作、系统命令等）。请确保您信任此脚本的内容。')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/script/${scriptId}/approve`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                alert('脚本审批成功！');
+                this.showScriptModal();
+            } else {
+                alert('审批失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('审批脚本失败: ' + error.message);
+        }
+    }
+
+    async revokeScript(scriptId) {
+        if (!confirm('确定要撤销此脚本的审批吗？撤销后脚本将不再允许执行危险操作。')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/script/${scriptId}/revoke`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                alert('脚本审批已撤销');
+                this.showScriptModal();
+            } else {
+                alert('撤销失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('撤销审批失败: ' + error.message);
+        }
+    }
+
     // ============ AI聊天功能 ============
     aiChatRoles = [];
     aiChatMessages = [];
@@ -6602,6 +6882,44 @@ App.prototype.formatTime = function(isoStr) {
         return d.toLocaleString('zh-CN');
     } catch {
         return isoStr;
+    }
+};
+
+App.prototype.toggleCollapseAll = function() {
+    const header = document.querySelector('.header');
+    const toolbar = document.querySelector('#lobster-claw-panel .toolbar');
+    const leftNav = document.querySelector('.left-nav');
+    const collapseBtn = document.getElementById('collapse-all-btn');
+    const expandBtn = document.getElementById('expand-all-btn');
+    
+    const isCollapsed = header.classList.contains('collapsed');
+    
+    if (isCollapsed) {
+        header.classList.remove('collapsed');
+        toolbar.classList.remove('collapsed');
+        leftNav.classList.remove('collapsed');
+        if (collapseBtn) {
+            const icon = collapseBtn.querySelector('i');
+            icon.classList.remove('fa-expand');
+            icon.classList.add('fa-compress');
+            collapseBtn.title = '收缩所有菜单';
+        }
+        if (expandBtn) {
+            expandBtn.classList.remove('show');
+        }
+    } else {
+        header.classList.add('collapsed');
+        toolbar.classList.add('collapsed');
+        leftNav.classList.add('collapsed');
+        if (collapseBtn) {
+            const icon = collapseBtn.querySelector('i');
+            icon.classList.remove('fa-compress');
+            icon.classList.add('fa-expand');
+            collapseBtn.title = '展开所有菜单';
+        }
+        if (expandBtn) {
+            expandBtn.classList.add('show');
+        }
     }
 };
 
