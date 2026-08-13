@@ -254,6 +254,22 @@ def create_llm_adapter(model_config: ModelConfig) -> Optional[LLMAdapter]:
     return None
 
 
+def create_embedding_adapter(model_config: ModelConfig) -> Optional[LLMAdapter]:
+    """Factory function to create embedding adapter based on model config"""
+    if model_config.api_type == "local":
+        from llm.local_embedding_adapter import LocalEmbeddingAdapter
+        return LocalEmbeddingAdapter(
+            model_name=model_config.model_name
+        )
+    if model_config.api_type in ("openai", "deepseek", "custom"):
+        return OpenAIAdapter(
+            api_key=model_config.api_key,
+            model_name=model_config.model_name,
+            api_url=model_config.api_url
+        )
+    return None
+
+
 def create_image_adapter(model_config: ModelConfig) -> Optional[ImageAdapter]:
     """Factory function to create image generation adapter based on model config"""
     if model_config.api_type == "dall-e" or model_config.api_type == "openai":
@@ -290,10 +306,12 @@ def create_video_adapter(model_config: ModelConfig) -> Optional[VideoAdapter]:
 
 
 def create_adapter(model_config: ModelConfig):
-    """Factory function to create adapter based on model config (generic)"""
+    """Factory function to create adapter based on model type (generic)"""
     if model_config.model_type == "image":
         return create_image_adapter(model_config)
     elif model_config.model_type == "video":
         return create_video_adapter(model_config)
+    elif model_config.model_type == "embedding":
+        return create_embedding_adapter(model_config)
     else:
         return create_llm_adapter(model_config)

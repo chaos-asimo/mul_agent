@@ -5,6 +5,11 @@ import sys
 import json
 from datetime import datetime
 
+# Add packages directory to sys.path for third-party dependencies
+_packages_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'packages')
+if _packages_dir not in sys.path:
+    sys.path.insert(0, _packages_dir)
+
 from utils.logger import setup_logging, logger
 setup_logging()
 
@@ -91,6 +96,7 @@ jinja_env = Environment(
 )
 app.mount("/static", StaticFiles(directory="web/static"), name="static")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/v2/assets", StaticFiles(directory="web/static/v2/assets"), name="v2-assets")
 
 # 全局管理器
 logger.info("Initializing managers...")
@@ -270,6 +276,20 @@ async def chat_history_viewer(request: Request, session_id: str):
     """独立访问聊天记录页面"""
     template = jinja_env.get_template("chat_history_viewer.html")
     return HTMLResponse(content=template.render({"session_id": session_id}))
+
+# ============ React v2 前端路由 ============
+@app.get("/v2", response_class=HTMLResponse)
+@app.get("/v2/{path:path}", response_class=HTMLResponse)
+async def v2_index(request: Request):
+    """React v2 前端入口"""
+    import os
+    index_path = os.path.join("web", "static", "v2", "index.html")
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return HTMLResponse(content=content)
+    else:
+        return HTMLResponse(content="<h1>React v2 应用尚未构建</h1><p>请运行 pnpm install && pnpm build</p>", status_code=503)
 
 # ============ 文档处理 API（保留在 web_server.py） ============
 

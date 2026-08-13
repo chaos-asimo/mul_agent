@@ -3,9 +3,12 @@ import subprocess
 import asyncio
 import json
 import httpx
+import re
+import sys
+import threading
 from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
@@ -15,9 +18,29 @@ from cron import CronTaskManager, CronScheduler, CronParser, TaskExecutor
 from script_manager import script_manager
 
 memory_manager = MemoryManager()
+
+from rag.knowledge_base import KnowledgeBase
+knowledge_base = KnowledgeBase()
+
 cron_task_manager = CronTaskManager()
 cron_executor = TaskExecutor(cron_task_manager)
 cron_scheduler = CronScheduler(cron_task_manager, cron_executor.execute)
+
+# 依赖安装状态管理
+installation_state = {
+    'in_progress': False,
+    'package': '',
+    'progress': 0,
+    'output': '',
+    'success': False
+}
+
+# 文件存储配置
+LOBSTER_CLAW_FILES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static', 'lobster-claw-files')
+os.makedirs(LOBSTER_CLAW_FILES_DIR, exist_ok=True)
+
+# 允许的文件扩展名（安全白名单）
+ALLOWED_FILE_EXTENSIONS = {'.pdf', '.txt', '.csv', '.json', '.xlsx', '.xls', '.docx', '.doc', '.md', '.html', '.zip', '.rar', '.jpg', '.jpeg', '.png', '.gif'}
 
 router = APIRouter(prefix="/api/lobster-claw")
 
@@ -983,6 +1006,7 @@ class ChatStreamRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     model_name: Optional[str] = None
+    files: Optional[List[Dict[str, Any]]] = None
 
 def get_default_llm_adapter(model_name: Optional[str] = None):
     try:
@@ -1110,11 +1134,337 @@ async def chat_message(request: ChatMessageRequest):
     add_to_history(f"chat {request.message[:50]}", result)
     return result
 
+# 存储上传的文件信息
+uploaded_files = {}
+
+@router.post("/upload")
+async def upload_files(files: List[UploadFile] = File(...)):
+    """上传文件到服务器"""
+    results = []
+    upload_dir = BASE_DIR / "web" / "static" / "uploads" / "claw"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    for file in files:
+        try:
+            # 生成唯一文件名
+            file_ext = Path(file.filename).suffix
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_name = f"{timestamp}_{os.urandom(8).hex()}{file_ext}"
+            file_path = upload_dir / unique_name
+            
+            # 保存文件
+            content = await file.read()
+            with open(file_path, 'wb') as f:
+                f.write(content)
+            
+            # 提取文本内容
+            text_content = ""
+            try:
+                if file_ext.lower() in ['.txt', '.md', '.json', '.py', '.js', '.html', '.css', '.xml', '.csv']:
+                    text_content = content.decode('utf-8')
+                elif file_ext.lower() in ['.doc', '.docx']:
+                    try:
+                        from docx import Document
+                        doc = Document(file_path)
+                        text_content = '\n'.join([para.text for para in doc.paragraphs])
+                    except ImportError:
+                        text_content = f"[需要安装 python-docx 库来解析Word文档]"
+                    except Exception as e:
+                        text_content = f"[解析Word文档失败: {str(e)}]"
+                elif file_ext.lower() == '.pdf':
+                    try:
+                        import fitz
+                        doc = fitz.open(file_path)
+                        text_content = '\n'.join([page.get_text() for page in doc])
+                    except ImportError:
+                        text_content = f"[需要安装 PyMuPDF(fitz) 库来解析PDF文档]"
+                    except Exception as e:
+                        text_content = f"[解析PDF文档失败: {str(e)}]"
+                elif file_ext.lower() in ['.xls', '.xlsx']:
+                    try:
+                        import pandas as pd
+                        df = pd.read_excel(file_path)
+                        text_content = df.to_string()
+                    except ImportError:
+                        text_content = f"[需要安装 pandas 和 openpyxl 库来解析Excel文件]"
+                    except Exception as e:
+                        text_content = f"[解析Excel文件失败: {str(e)}]"
+                elif file_ext.lower() in ['.ppt', '.pptx']:
+                    try:
+                        from pptx import Presentation
+                        prs = Presentation(file_path)
+                        text_content = ''
+                        for slide in prs.slides:
+                            for shape in slide.shapes:
+                                if hasattr(shape, 'text'):
+                                    text_content += shape.text + '\n'
+                    except ImportError:
+                        text_content = f"[需要安装 python-pptx 库来解析PowerPoint文件]"
+                    except Exception as e:
+                        text_content = f"[解析PowerPoint文件失败: {str(e)}]"
+                else:
+                    text_content = f"[不支持的文件类型 {file_ext}]"
+            except Exception as e:
+                text_content = f"[提取文件内容失败: {str(e)}]"
+            
+            file_id = os.urandom(16).hex()
+            uploaded_files[file_id] = {
+                'id': file_id,
+                'filename': file.filename,
+                'path': str(file_path),
+                'content': text_content,
+                'size': len(content),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            results.append({
+                'success': True,
+                'id': file_id,
+                'filename': file.filename,
+                'size': len(content),
+                'content_preview': text_content[:200] if text_content else ""
+            })
+        except Exception as e:
+            results.append({
+                'success': False,
+                'filename': file.filename,
+                'error': str(e)
+            })
+    
+    return {'results': results}
+
+@router.post("/upload/text")
+async def upload_text_file(file: UploadFile = File(...)):
+    """上传文件并返回解析后的文本内容"""
+    try:
+        content = await file.read()
+        file_ext = Path(file.filename).suffix.lower()
+        upload_dir = BASE_DIR / "web" / "static" / "uploads" / "claw"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        
+        print(f"[DEBUG] 上传文件: {file.filename}, 大小: {len(content)} bytes, 扩展名: {file_ext}")
+        
+        # 保存文件到上传目录（持久化）
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_filename = f"{timestamp}_{os.urandom(4).hex()}{file_ext}"
+        file_path = upload_dir / safe_filename
+        with open(file_path, 'wb') as f:
+            f.write(content)
+        
+        print(f"[DEBUG] 文件已保存到: {file_path}")
+        
+        # 根据文件类型解析内容
+        text_content = ""
+        try:
+            print(f"[DEBUG] 文件类型判断: file_ext={file_ext}")
+            if file_ext in ['.txt', '.md', '.json', '.py', '.js', '.html', '.css', '.xml', '.csv']:
+                text_content = content.decode('utf-8')
+                print(f"[DEBUG] 文本文件解析完成，长度: {len(text_content)}")
+            elif file_ext in ['.doc', '.docx']:
+                try:
+                    from docx import Document
+                    doc = Document(file_path)
+                    text_content = '\n'.join([para.text for para in doc.paragraphs])
+                except ImportError:
+                    text_content = f"[需要安装 python-docx 库来解析Word文档]"
+                except Exception as e:
+                    text_content = f"[解析Word文档失败: {str(e)}]"
+            elif file_ext == '.pdf':
+                print(f"[DEBUG] 进入PDF解析分支")
+                try:
+                    import fitz  # PyMuPDF（优先使用）
+                    print(f"[DEBUG] fitz导入成功")
+                    doc = fitz.open(file_path)
+                    text_content = '\n'.join([page.get_text() for page in doc])
+                    print(f"[DEBUG] PyMuPDF提取文本长度: {len(text_content)}")
+                    
+                    # 如果提取的文本很少，可能是扫描件PDF，尝试OCR
+                    if len(text_content.strip()) < 100:
+                        print("[DEBUG] 文本内容过少，尝试OCR识别...")
+                        # 优先尝试pytesseract
+                        try:
+                            import pytesseract
+                            from PIL import Image
+                            
+                            ocr_text = ""
+                            for page in doc:
+                                pix = page.get_pixmap()
+                                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                                ocr_text += pytesseract.image_to_string(img, lang='chi_sim') + '\n'
+                            
+                            text_content = ocr_text
+                            print(f"[DEBUG] PyTesseract OCR识别文本长度: {len(text_content)}")
+                        except ImportError:
+                                print("[DEBUG] 未安装pytesseract，尝试PaddleOCR...")
+                                # 备选方案：PaddleOCR 3.x
+                                try:
+                                    from paddleocr import PaddleOCR
+                                    import numpy as np
+                                    
+                                    ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False)
+                                    ocr_text = ""
+                                    for page in doc:
+                                        pix = page.get_pixmap()
+                                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                                        img_array = np.array(img)
+                                        result = ocr.predict(img_array)
+                                        if result and len(result) > 0:
+                                            for item in result:
+                                                if isinstance(item, dict) and 'text' in item:
+                                                    ocr_text += item['text'] + '\n'
+                                                elif isinstance(item, list) and len(item) > 1:
+                                                    ocr_text += str(item[1]) + '\n'
+                                    
+                                    text_content = ocr_text
+                                    print(f"[DEBUG] PaddleOCR识别文本长度: {len(text_content)}")
+                                except ImportError as e:
+                                    print(f"[DEBUG] 未安装PaddleOCR相关库: {str(e)}")
+                                except Exception as e:
+                                    print(f"[DEBUG] PaddleOCR识别失败: {str(e)}")
+                        except Exception as e:
+                            print(f"[DEBUG] PyTesseract OCR识别失败，尝试PaddleOCR...")
+                            # pytesseract失败，尝试PaddleOCR 3.x
+                            try:
+                                from paddleocr import PaddleOCR
+                                import numpy as np
+                                
+                                ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False)
+                                ocr_text = ""
+                                for page in doc:
+                                    pix = page.get_pixmap()
+                                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                                    img_array = np.array(img)
+                                    result = ocr.predict(img_array)
+                                    if result and len(result) > 0:
+                                        for item in result:
+                                            if isinstance(item, dict) and 'text' in item:
+                                                ocr_text += item['text'] + '\n'
+                                            elif isinstance(item, list) and len(item) > 1:
+                                                ocr_text += str(item[1]) + '\n'
+                                
+                                text_content = ocr_text
+                                print(f"[DEBUG] PaddleOCR识别文本长度: {len(text_content)}")
+                            except Exception as e:
+                                print(f"[DEBUG] PaddleOCR也失败: {str(e)}")
+                            
+                except ImportError:
+                    try:
+                        from PyPDF2 import PdfReader
+                        reader = PdfReader(file_path)
+                        text_content = '\n'.join([page.extract_text() or '' for page in reader.pages])
+                        print(f"[DEBUG] PyPDF2提取文本长度: {len(text_content)}")
+                        
+                        # 如果提取的文本很少，尝试OCR
+                        if len(text_content.strip()) < 100:
+                            print("[DEBUG] 文本内容过少，尝试OCR识别...")
+                            try:
+                                import pytesseract
+                                from PIL import Image
+                                import fitz
+                                
+                                doc = fitz.open(file_path)
+                                ocr_text = ""
+                                for page in doc:
+                                    pix = page.get_pixmap()
+                                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                                    ocr_text += pytesseract.image_to_string(img, lang='chi_sim') + '\n'
+                                
+                                text_content = ocr_text
+                                print(f"[DEBUG] PyTesseract OCR识别文本长度: {len(text_content)}")
+                            except ImportError:
+                                print("[DEBUG] 未安装pytesseract，尝试PaddleOCR...")
+                                try:
+                                    from paddleocr import PaddleOCR
+                                    import fitz
+                                    import numpy as np
+                                    
+                                    ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False)
+                                    doc = fitz.open(file_path)
+                                    ocr_text = ""
+                                    for page in doc:
+                                        pix = page.get_pixmap()
+                                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                                        img_array = np.array(img)
+                                        result = ocr.predict(img_array)
+                                        if result and len(result) > 0:
+                                            for item in result:
+                                                if isinstance(item, dict) and 'text' in item:
+                                                    ocr_text += item['text'] + '\n'
+                                                elif isinstance(item, list) and len(item) > 1:
+                                                    ocr_text += str(item[1]) + '\n'
+                                    
+                                    text_content = ocr_text
+                                    print(f"[DEBUG] PaddleOCR识别文本长度: {len(text_content)}")
+                                except ImportError:
+                                    print("[DEBUG] 未安装OCR相关库")
+                                except Exception as e:
+                                    print(f"[DEBUG] OCR识别失败: {str(e)}")
+                            except Exception as e:
+                                print(f"[DEBUG] OCR识别失败: {str(e)}")
+                                
+                    except ImportError:
+                        text_content = f"[需要安装 PyMuPDF(fitz) 或 PyPDF2 库来解析PDF文档]"
+                    except Exception as e:
+                        text_content = f"[使用PyPDF2解析PDF失败: {str(e)}]"
+                except Exception as e:
+                    text_content = f"[解析PDF文档失败: {str(e)}]"
+            elif file_ext in ['.xls', '.xlsx']:
+                try:
+                    import pandas as pd
+                    df = pd.read_excel(file_path)
+                    text_content = df.to_string()
+                except ImportError:
+                    text_content = f"[需要安装 pandas 和 openpyxl 库来解析Excel文件]"
+                except Exception as e:
+                    text_content = f"[解析Excel文件失败: {str(e)}]"
+            elif file_ext in ['.ppt', '.pptx']:
+                try:
+                    from pptx import Presentation
+                    prs = Presentation(file_path)
+                    text_content = ''
+                    for slide in prs.slides:
+                        for shape in slide.shapes:
+                            if hasattr(shape, 'text'):
+                                text_content += shape.text + '\n'
+                except ImportError:
+                    text_content = f"[需要安装 python-pptx 库来解析PowerPoint文件]"
+                except Exception as e:
+                    text_content = f"[解析PowerPoint文件失败: {str(e)}]"
+            else:
+                text_content = f"[不支持的文件类型 {file_ext}]"
+        except Exception as e:
+            text_content = f"[解析文件失败: {str(e)}]"
+        
+        print(f"[DEBUG] 解析内容长度: {len(text_content)}")
+        
+        return {'success': True, 'filename': file.filename, 'content': text_content}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
 @router.post("/chat/stream")
 async def chat_stream(request: ChatStreamRequest):
     session_id = get_or_create_session(request.session_id)
     session = chat_sessions[session_id]
-    session["messages"].append({"role": "user", "content": request.message, "timestamp": datetime.now().isoformat()})
+    
+    # 构建包含文件信息的消息内容
+    full_message = request.message
+    if request.files:
+        print(f"[DEBUG] 收到 {len(request.files)} 个文件")
+        file_info = []
+        for i, file_item in enumerate(request.files):
+            filename = file_item.get('filename', '')
+            content = file_item.get('content', '')
+            print(f"[DEBUG] 文件 {i+1}: {filename}, 内容长度: {len(content) if content else 0}")
+            if filename:
+                if content:
+                    file_info.append(f"\n📄 文件: {filename}\n```\n{content}\n```")
+                else:
+                    file_info.append(f"\n📄 文件: {filename} (已上传但无法提取内容)")
+        
+        if file_info:
+            full_message = request.message + "\n\n" + "".join(file_info)
+    
+    session["messages"].append({"role": "user", "content": full_message, "timestamp": datetime.now().isoformat()})
     session["last_used"] = datetime.now().isoformat()
     
     generation_type = detect_generation_type(request.message)
@@ -1259,13 +1609,25 @@ async def chat_stream(request: ChatStreamRequest):
             yield f"data: {json.dumps({'success': False, 'error': '未找到可用的LLM适配器'})}\n\n"
         return StreamingResponse(error_generator(), media_type="text/event-stream")
     
-    system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以帮助用户回答问题、分析信息、提供建议。当提供了工具执行结果时，请基于结果给出详细的解答和说明。
+    # 根据是否有文件上传，使用不同的系统提示词
+    if request.files:
+        system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以帮助用户回答问题、分析信息、提供建议。当提供了工具执行结果时，请基于结果给出详细的解答和说明。
 
 你拥有记忆能力，可以记住用户的偏好、重要事实和历史对话。以下是与当前问题相关的记忆信息，请参考这些信息来回答用户的问题。
 
-重要规则：当你发现无法直接通过文字回答完成用户的任务时（例如需要计算、数据处理、文件操作、系统检查等），请在回复开头添加标记 [NEED_SCRIPT]，表示需要创建Python脚本来自动完成任务。系统会自动根据你的回复生成并执行脚本。"""
+重要规则：用户已上传文件，请直接分析文件内容并给出回答，不需要创建脚本。"""
+    else:
+        system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以帮助用户回答问题、分析信息、提供建议。当提供了工具执行结果时，请基于结果给出详细的解答和说明。
+
+你拥有记忆能力，可以记住用户的偏好、重要事实和历史对话。以下是与当前问题相关的记忆信息，请参考这些信息来回答用户的问题。
+
+你具备以下特殊能力：
+- 生成中文PDF文档：当用户要求生成PDF时，你可以通过编写Python脚本来生成。系统已安装fpdf2库，并且会自动查找系统中文字体（微软雅黑等）来确保中文正确显示。生成的PDF文件会自动保存并提供下载链接。
+
+重要规则：当你发现无法直接通过文字回答完成用户的任务时（例如需要计算、数据处理、文件操作、系统检查、生成PDF等），请在回复开头添加标记 [NEED_SCRIPT]，表示需要创建Python脚本来自动完成任务。系统会自动根据你的回复生成并执行脚本。"""
     
-    tool_call = detect_tool_intent(request.message)
+    # 当有文件上传时，跳过工具检测，直接将文件内容传给大模型
+    tool_call = None if request.files else detect_tool_intent(request.message)
     
     def sync_stream_generator():
         full_response = ""
@@ -1274,7 +1636,7 @@ async def chat_stream(request: ChatStreamRequest):
         try:
             if tool_call:
                 tool_name = tool_call.get("tool")
-                tool_desc = {"exec": "执行命令", "read_file": "读取文件", "list_dir": "列出目录", "search": "网页搜索", "script_create": "创建脚本", "script_execute": "执行脚本", "script_list": "列出脚本"}.get(tool_name, tool_name)
+                tool_desc = {"exec": "执行命令", "read_file": "读取文件", "list_dir": "列出目录", "search": "网页搜索", "script_create": "创建脚本", "script_execute": "执行脚本", "script_list": "列出脚本", "generate_pdf": "生成PDF"}.get(tool_name, tool_name)
                 tool_header = "\n🔧 正在执行工具: " + tool_desc + "...\n\n"
                 yield f"data: {json.dumps({'success': True, 'content': tool_header, 'session_id': session_id})}\n\n"
                 
@@ -1300,7 +1662,21 @@ async def chat_stream(request: ChatStreamRequest):
                         mem_type = {"long_term": "长期记忆", "short_term": "短期记忆"}.get(memory['type'], memory['type'])
                         weight_info = f" (权重: {memory.get('weight', 1.0):.1f})" if memory.get('weight') else ""
                         memory_context += f"{i}. [{mem_type}{weight_info}] {memory['content']}\n"
-            
+
+            # 知识库RAG检索
+            knowledge_context = ""
+            try:
+                kb_results = knowledge_base.search(request.message, top_k=5, threshold=0.3)
+                if kb_results:
+                    knowledge_context = "\n\n📄 知识库参考：\n"
+                    for i, result in enumerate(kb_results, 1):
+                        source = result.get('filename', '未知文档')
+                        score = result.get('score', 0)
+                        content = result.get('content', '')
+                        knowledge_context += f"{i}. [来源: {source} | 相似度: {score:.2f}] {content}\n"
+            except Exception as e:
+                print(f"[RAG] 知识库检索失败: {e}")
+
             if tool_result:
                 user_content = f"""用户问题: {request.message}
 
@@ -1308,16 +1684,16 @@ async def chat_stream(request: ChatStreamRequest):
 
 {tool_result}
 
-{memory_context}
+{memory_context}{knowledge_context}
 
-请基于上述工具执行结果和记忆信息，为用户提供详细的分析和解答。
+请基于上述工具执行结果、记忆信息和知识库参考，为用户提供详细的分析和解答。
 如果你无法直接通过文字完成用户的任务，请在回复开头添加 [NEED_SCRIPT] 标记。"""
             else:
                 user_content = f"""用户问题: {request.message}
 
-{memory_context}
+{memory_context}{knowledge_context}
 
-请基于上述记忆信息，为用户提供详细的解答。
+请基于上述记忆信息和知识库参考，为用户提供详细的解答。
 如果你无法直接通过文字完成用户的任务（例如需要计算、数据处理、文件操作、系统检查等），请在回复开头添加 [NEED_SCRIPT] 标记，系统会自动生成并执行Python脚本来完成任务。"""
             
             messages = adapter.create_prompt(system_prompt, user_content, context)
@@ -1348,56 +1724,58 @@ async def chat_stream(request: ChatStreamRequest):
                     "tokens_per_second": latest_log.tokens_per_second
                 }
             
-            # 检测是否需要创建脚本
-            need_script = "[NEED_SCRIPT]" in full_response
-            if need_script:
-                # 移除标记，不展示给用户
-                full_response = full_response.replace("[NEED_SCRIPT]", "").strip()
-                # 从LLM回复中提取任务描述，用于生成脚本
-                script_task = request.message
-                
-                yield "data: " + json.dumps({'success': True, 'content': '\n\n🔧 检测到需要编写脚本完成任务，正在生成...\n', 'session_id': session_id}) + "\n\n"
-                
-                # 调用脚本生成
-                script_code, script_name, script_desc = generate_script_code(script_task)
-                
-                if script_code:
-                    syntax_result = check_script_syntax(script_code)
-                    if syntax_result["success"]:
-                        save_script_to_file(script_name, script_code)
-                        script_manager.create_script(script_name, script_code, description=script_desc, is_approved=True)
-                        
-                        script_info = '✅ 脚本已生成并保存到脚本库\n📝 脚本: ' + script_name + '（' + script_desc + '）\n\n正在执行...\n'
-                        yield "data: " + json.dumps({'success': True, 'content': script_info, 'session_id': session_id}) + "\n\n"
-                        
-                        # 执行脚本
-                        exec_result = execute_python_script(script_code)
-                        
-                        # 将执行结果交给LLM解读
-                        yield "data: " + json.dumps({'success': True, 'content': '📋 执行结果:\n\n', 'session_id': session_id}) + "\n\n"
-                        
-                        # 调用LLM解读执行结果
-                        interpret_prompt = '用户问题: ' + request.message + '\n\n我编写并执行了一个Python脚本来完成这个任务。\n\n脚本名称: ' + script_name + '\n脚本描述: ' + script_desc + '\n\n执行结果:\n' + exec_result + '\n\n请基于执行结果，为用户提供详细的分析和解答。'
-                        
-                        interpret_messages = adapter.create_prompt(
-                            "你是龙虾Claw，一个强大的AI智能体助手。请基于脚本执行结果为用户提供详细的解读。",
-                            interpret_prompt, []
-                        )
-                        
-                        for chunk in adapter.chat_stream(interpret_messages):
-                            if isinstance(chunk, dict):
-                                content = chunk.get("content", "")
-                            else:
-                                content = str(chunk)
-                            if content and not content.startswith("{\"__stats__\""):
-                                yield "data: " + json.dumps({'success': True, 'content': content, 'session_id': session_id}) + "\n\n"
-                        
-                        full_response = full_response + "\n\n📋 脚本执行结果:\n" + exec_result
+            # 检测是否需要创建脚本（有文件上传时不生成脚本）
+            if not request.files:
+                need_script = "[NEED_SCRIPT]" in full_response
+                if need_script:
+                    # 移除标记，不展示给用户
+                    full_response = full_response.replace("[NEED_SCRIPT]", "").strip()
+                    # 从LLM回复中提取任务描述，用于生成脚本
+                    script_task = request.message
+                    
+                    yield "data: " + json.dumps({'success': True, 'content': '\n\n🔧 检测到需要编写脚本完成任务，正在生成...\n', 'session_id': session_id}) + "\n\n"
+                    
+                    # 调用脚本生成
+                    script_code, script_name, script_desc = generate_script_code(script_task)
+                    
+                    if script_code:
+                        syntax_result = check_script_syntax(script_code)
+                        if syntax_result["success"]:
+                            save_script_to_file(script_name, script_code)
+                            script_manager.create_script(script_name, script_code, description=script_desc, is_approved=True)
+                            
+                            script_info = '✅ 脚本已生成并保存到脚本库\n📝 脚本: ' + script_name + '（' + script_desc + '）\n\n正在执行...\n'
+                            yield "data: " + json.dumps({'success': True, 'content': script_info, 'session_id': session_id}) + "\n\n"
+                            
+                            # 执行脚本
+                            exec_result = execute_python_script(script_code)
+                            exec_result_str = exec_result.get("result", "") if isinstance(exec_result, dict) else str(exec_result)
+                            
+                            # 将执行结果交给LLM解读
+                            yield "data: " + json.dumps({'success': True, 'content': '📋 执行结果:\n\n', 'session_id': session_id}) + "\n\n"
+                            
+                            # 调用LLM解读执行结果
+                            interpret_prompt = '用户问题: ' + request.message + '\n\n我编写并执行了一个Python脚本来完成这个任务。\n\n脚本名称: ' + script_name + '\n脚本描述: ' + script_desc + '\n\n执行结果:\n' + exec_result_str + '\n\n请基于执行结果，为用户提供详细的分析和解答。'
+                            
+                            interpret_messages = adapter.create_prompt(
+                                "你是龙虾Claw，一个强大的AI智能体助手。请基于脚本执行结果为用户提供详细的解读。",
+                                interpret_prompt, []
+                            )
+                            
+                            for chunk in adapter.chat_stream(interpret_messages):
+                                if isinstance(chunk, dict):
+                                    content = chunk.get("content", "")
+                                else:
+                                    content = str(chunk)
+                                if content and not content.startswith("{\"__stats__\""):
+                                    yield "data: " + json.dumps({'success': True, 'content': content, 'session_id': session_id}) + "\n\n"
+                            
+                            full_response = full_response + "\n\n📋 脚本执行结果:\n" + exec_result_str
+                        else:
+                            error_msg = '❌ 脚本语法错误:\n\n' + syntax_result["error"]
+                            yield "data: " + json.dumps({'success': True, 'content': error_msg, 'session_id': session_id}) + "\n\n"
                     else:
-                        error_msg = '❌ 脚本语法错误:\n\n' + syntax_result["error"]
-                        yield "data: " + json.dumps({'success': True, 'content': error_msg, 'session_id': session_id}) + "\n\n"
-                else:
-                    yield "data: " + json.dumps({'success': True, 'content': '❌ 脚本生成失败，请重试', 'session_id': session_id}) + "\n\n"
+                        yield "data: " + json.dumps({'success': True, 'content': '❌ 脚本生成失败，请重试', 'session_id': session_id}) + "\n\n"
             
             final_response = full_response
             if tool_result:
@@ -1593,6 +1971,19 @@ def detect_tool_intent(message: str) -> dict:
     """检测用户消息中的工具调用意图，返回工具调用信息"""
     msg_lower = message.lower()
     
+    # PDF生成模式（优先检测）
+    pdf_patterns = [
+        r'(?:生成|创建|制作)(?:pdf|文档)(?:文件)?[：:\s]*(.+)',
+        r'(?:生成|创建|制作)(?:pdf|文档)(?:文件)?',
+        r'(?:pdf|文档)(?:生成|创建|制作)(?:文件)?',
+    ]
+    
+    for pattern in pdf_patterns:
+        m = re.search(pattern, msg_lower)
+        if m:
+            content = m.group(1).strip() if m.lastindex else message
+            return {"tool": "generate_pdf", "content": content}
+    
     exec_patterns = [
         r'执行(?:命令|shell|cmd)[：:\s]*(.+)',
         r'运行(?:命令)?[：:\s]*(.+)',
@@ -1697,6 +2088,94 @@ def execute_tool_call(tool_call: dict) -> str:
     """执行工具调用，返回结果字符串"""
     tool = tool_call.get("tool")
     
+    if tool == "generate_pdf":
+        content = tool_call.get("content", "")
+        title = "文档"
+        
+        # 从内容中提取标题
+        lines = content.split('\n')
+        if lines:
+            first_line = lines[0].strip()
+            # 如果第一行较短，可能是标题
+            if len(first_line) < 30 and len(lines) > 1:
+                title = first_line
+                content = '\n'.join(lines[1:]).strip()
+        
+        # 调用PDF生成函数
+        try:
+            # 检查fpdf2是否安装
+            try:
+                import fpdf
+            except ImportError:
+                packages_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'packages')
+                os.makedirs(packages_dir, exist_ok=True)
+                
+                subprocess.run(
+                    [sys.executable, '-m', 'pip', 'install', '--target', packages_dir, 
+                     '--index-url', 'https://pypi.tuna.tsinghua.edu.cn/simple',
+                     '--trusted-host', 'pypi.tuna.tsinghua.edu.cn', 'fpdf2'],
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    timeout=120
+                )
+                
+                if packages_dir not in sys.path:
+                    sys.path.insert(0, packages_dir)
+            
+            from fpdf import FPDF
+            
+            def find_chinese_font():
+                font_paths = [
+                    'C:/Windows/Fonts/msyh.ttc',
+                    'C:/Windows/Fonts/simsun.ttc',
+                    'C:/Windows/Fonts/simhei.ttf',
+                    'C:/Windows/Fonts/kaiu.ttf',
+                    'C:/Windows/Fonts/arialuni.ttf',
+                    '/Library/Fonts/Noto Sans CJK SC.ttc',
+                    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+                    '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+                ]
+                for font_path in font_paths:
+                    if os.path.exists(font_path):
+                        return font_path
+                return None
+            
+            font_path = find_chinese_font()
+            pdf = FPDF()
+            pdf.add_page()
+            
+            if font_path:
+                font_name = 'ChineseFont'
+                pdf.add_font(font_name, '', font_path, uni=True)
+                pdf.set_font(font_name, '', 12)
+            else:
+                font_name = 'Arial'
+            
+            pdf.set_font(font_name, '', 18)
+            pdf.cell(0, 20, title, ln=True, align='C')
+            pdf.set_font(font_name, '', 12)
+            pdf.ln(10)
+            
+            paragraphs = content.split('\n')
+            for para in paragraphs:
+                para = para.strip()
+                if para:
+                    pdf.multi_cell(0, 12, para, align='L')
+                    pdf.ln(5)
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"document_{timestamp}.pdf"
+            filepath = os.path.join(LOBSTER_CLAW_FILES_DIR, filename)
+            pdf.output(filepath)
+            
+            download_url = f"/api/lobster-claw/script/files/download/{filename}"
+            
+            return f"✅ PDF文件已生成！\n\n📄 文件名: {filename}\n📝 标题: {title}\n📥 下载链接: http://localhost:8888{download_url}\n🔤 使用字体: {font_path if font_path else 'Arial (无中文字体)'}"
+        
+        except Exception as e:
+            return f"❌ PDF生成失败: {str(e)}"
+    
     if tool == "exec":
         return exec_cmd(tool_call.get("command", ""))
     elif tool == "read_file":
@@ -1723,7 +2202,9 @@ def execute_tool_call(tool_call: dict) -> str:
             script_manager.create_script(script_name, script_code, description=script_desc, is_approved=True)
             
             # 执行并返回结果
-            return execute_python_script(script_code)
+            exec_result = execute_python_script(script_code)
+            exec_result_str = exec_result.get("result", "") if isinstance(exec_result, dict) else str(exec_result)
+            return exec_result_str
         else:
             return f"❌ 脚本语法错误:\n\n{syntax_result['error']}\n\n请修改需求后重新尝试。"
     elif tool == "script_execute":
@@ -1733,11 +2214,13 @@ def execute_tool_call(tool_call: dict) -> str:
         if script_id:
             script = script_manager.get_script(script_id)
             if script:
-                return execute_python_script(script["code"])
+                exec_result = execute_python_script(script["code"])
+                return exec_result.get("result", "") if isinstance(exec_result, dict) else str(exec_result)
             else:
                 return f"❌ 脚本不存在，ID: {script_id}"
         elif code:
-            return execute_python_script(code)
+            exec_result = execute_python_script(code)
+            return exec_result.get("result", "") if isinstance(exec_result, dict) else str(exec_result)
         else:
             return "❌ 请提供脚本ID或脚本代码"
     elif tool == "script_list":
@@ -1800,6 +2283,78 @@ async def memory_search(request: MemorySearchRequest):
 async def memory_clear(memory_type: str):
     count = memory_manager.clear(memory_type)
     return {"success": True, "message": f"已清空 {count} 条记忆"}
+
+
+# ============ 知识库管理 API ============
+
+class KnowledgeSearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    threshold: float = 0.3
+
+@router.post("/knowledge/upload")
+async def knowledge_upload(files: List[UploadFile] = File(...)):
+    """上传文档到知识库"""
+    from models.model_manager import ModelManager
+    knowledge_base.set_model_manager(ModelManager())
+
+    results = []
+    for file in files:
+        try:
+            file_ext = Path(file.filename).suffix
+            upload_dir = BASE_DIR / "web" / "static" / "uploads" / "claw"
+            upload_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_name = f"{timestamp}_{os.urandom(8).hex()}{file_ext}"
+            file_path = upload_dir / unique_name
+
+            content = await file.read()
+            with open(file_path, 'wb') as f:
+                f.write(content)
+
+            result = knowledge_base.add_document(str(file_path), file.filename, len(content))
+            results.append({
+                'success': True,
+                'doc_id': result['doc_id'],
+                'filename': file.filename,
+                'chunk_count': result['chunk_count'],
+                'file_size': result['file_size']
+            })
+        except ValueError as e:
+            results.append({'success': False, 'filename': file.filename, 'error': str(e)})
+        except Exception as e:
+            results.append({'success': False, 'filename': file.filename, 'error': str(e)})
+
+    return {"success": all(r.get('success') for r in results), "results": results}
+
+@router.get("/knowledge/list")
+async def knowledge_list():
+    """获取知识库文档列表"""
+    return {"success": True, "data": knowledge_base.list_documents()}
+
+@router.delete("/knowledge/{doc_id}")
+async def knowledge_delete(doc_id: str):
+    """删除知识库文档"""
+    deleted = knowledge_base.delete_document(doc_id)
+    return {"success": True, "message": f"已删除文档，清理了 {deleted} 个分块"}
+
+@router.post("/knowledge/search")
+async def knowledge_search(request: KnowledgeSearchRequest):
+    """语义搜索知识库"""
+    from models.model_manager import ModelManager
+    knowledge_base.set_model_manager(ModelManager())
+
+    try:
+        results = knowledge_base.search(request.query, top_k=request.top_k, threshold=request.threshold)
+        return {"success": True, "data": results}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.get("/knowledge/stats")
+async def knowledge_stats():
+    """获取知识库统计信息"""
+    return {"success": True, "data": knowledge_base.get_stats()}
 
 
 # ============ 脚本管理功能 ============
@@ -1925,7 +2480,54 @@ def generate_script_code(requirements: str) -> tuple:
 2. 代码必须完整，可以直接运行
 3. 如果需要输出结果，请使用print()函数
 4. 代码应该简洁明了，遵循Python最佳实践
-5. 如果需要使用外部库，请在代码中添加注释说明"""
+5. 如果需要使用外部库，请在代码中添加注释说明
+
+特殊能力 - 生成中文PDF文档：
+当用户需要生成PDF文档时，请使用fpdf2库生成。系统已安装fpdf2库，支持中文显示。
+生成PDF的代码模板如下：
+
+```python
+from fpdf import FPDF
+import os
+
+# 创建PDF对象
+pdf = FPDF()
+pdf.add_page()
+
+# 注册中文字体（系统会自动查找微软雅黑、宋体等中文字体）
+font_paths = [
+    'C:/Windows/Fonts/msyh.ttc',      # 微软雅黑
+    'C:/Windows/Fonts/simsun.ttc',    # 宋体
+    'C:/Windows/Fonts/simhei.ttf',    # 黑体
+]
+font_path = None
+for fp in font_paths:
+    if os.path.exists(fp):
+        font_path = fp
+        break
+
+if font_path:
+    pdf.add_font('ChineseFont', '', font_path, uni=True)
+    pdf.set_font('ChineseFont', '', 12)
+else:
+    pdf.set_font('Arial', '', 12)
+
+# 设置标题
+pdf.set_font('ChineseFont' if font_path else 'Arial', '', 18)
+pdf.cell(0, 20, '文档标题', ln=True, align='C')
+
+# 设置正文
+pdf.set_font('ChineseFont' if font_path else 'Arial', '', 12)
+pdf.ln(10)
+pdf.multi_cell(0, 10, '这是正文内容')
+pdf.ln(5)
+
+# 保存文件
+pdf.output('output.pdf')
+print("PDF已生成: output.pdf")
+```
+
+注意：生成PDF时务必注册中文字体，否则中文会显示为乱码。"""
         
         messages = [
             {"role": "system", "content": system_prompt},
@@ -1995,8 +2597,210 @@ CHINESE_DESC: 中文描述"""
         print(f"生成脚本代码失败: {e}")
         return None, None, None
 
-def execute_python_script(code: str) -> str:
-    """执行Python脚本，返回执行结果"""
+# import名到pip包名的映射
+IMPORT_TO_PIP = {
+    'cv2': 'opencv-python',
+    'PIL': 'Pillow',
+    'bs4': 'beautifulsoup4',
+    'sklearn': 'scikit-learn',
+    'tensorflow': 'tensorflow',
+    'torch': 'torch',
+    'keras': 'keras',
+    'matplotlib': 'matplotlib',
+    'numpy': 'numpy',
+    'pandas': 'pandas',
+    'requests': 'requests',
+    'flask': 'flask',
+    'django': 'django',
+    'sqlalchemy': 'sqlalchemy',
+    'selenium': 'selenium',
+    'pytest': 'pytest',
+    'unittest': None,  # 内置模块
+    'argparse': None,  # 内置模块
+    'configparser': None,  # 内置模块
+    'sqlite3': None,  # 内置模块
+    'xml': None,  # 内置模块
+}
+
+
+def get_pip_package_name(import_name: str) -> str:
+    """将import名转换为pip包名"""
+    return IMPORT_TO_PIP.get(import_name, import_name)
+
+
+def detect_missing_dependencies(code: str) -> List[str]:
+    """检测脚本中缺失的第三方依赖"""
+    # 添加packages目录到sys.path，确保能检测到安装的包
+    packages_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'packages')
+    if packages_dir not in sys.path:
+        sys.path.insert(0, packages_dir)
+    
+    # 提取import语句中的包名
+    import_patterns = [
+        r'^import (\w+)',                    # import package
+        r'^from (\w+) import',                # from package import
+        r'^from (\w+)\.\w+ import',           # from package.sub import
+    ]
+    
+    # 内置模块列表（不需要安装）
+    builtin_modules = set(sys.builtin_module_names) | {
+        'os', 'sys', 're', 'json', 'datetime', 'time', 'math', 
+        'random', 'collections', 'itertools', 'functools', 'threading',
+        'subprocess', 'tempfile', 'pathlib', 'http', 'urllib', 'socket',
+        'hashlib', 'base64', 'pickle', 'csv', 'logging', 'traceback',
+        'typing', 'abc', 'enum', 'dataclasses', 'asyncio',
+        'ssl', 'io', 'contextlib', 'warnings', 'statistics', 'numbers',
+        'unittest', 'argparse', 'configparser', 'sqlite3', 'xml',
+        'email', 'cgi', 'cgitb', 'getopt', 'getpass', 'glob', 'gzip',
+        'io', 'ipaddress', 'json', 'keyword', 'linecache', 'locale',
+        'msilib', 'netrc', 'nntplib', 'optparse', 'os', 'pathlib',
+        'platform', 'plistlib', 'poplib', 'posix', 'pwd', 'py_compile',
+        'pyclbr', 'pydoc', 'queue', 'quopri', 'random', 're', 'runpy',
+        'sched', 'secrets', 'select', 'shlex', 'shutil', 'signal',
+        'smtpd', 'smtplib', 'socket', 'socketserver', 'spwd', 'sqlite3',
+        'ssl', 'statistics', 'string', 'struct', 'subprocess', 'sunau',
+        'symbol', 'symtable', 'sys', 'sysconfig', 'tabnanny', 'tarfile',
+        'telnetlib', 'tempfile', 'textwrap', 'threading', 'time',
+        'timeit', 'trace', 'traceback', 'tracemalloc', 'tty', 'turtle',
+        'types', 'typing', 'unicodedata', 'unittest', 'urllib', 'uu',
+        'uuid', 'venv', 'warnings', 'wave', 'weakref', 'webbrowser',
+        'winreg', 'winsound', 'wsgiref', 'xdrlib', 'xml', 'xmlrpc',
+        'zipapp', 'zipfile', 'zlib'
+    }
+    
+    found_packages = set()
+    
+    for pattern in import_patterns:
+        matches = re.findall(pattern, code, re.MULTILINE)
+        for match in matches:
+            found_packages.add(match)
+    
+    # 检测哪些包未安装
+    missing = []
+    for package in found_packages:
+        if package in builtin_modules or IMPORT_TO_PIP.get(package) is None:
+            continue
+        try:
+            __import__(package)
+        except ImportError:
+            missing.append(package)
+    
+    return missing
+
+
+def install_package_sync(package_name: str) -> Dict[str, Any]:
+    """同步安装Python包（用于后台线程）"""
+    global installation_state
+    
+    installation_state.update({
+        'in_progress': True,
+        'package': package_name,
+        'progress': 0,
+        'output': '',
+        'success': False
+    })
+    
+    try:
+        # 执行安装（增加超时时间到300秒，支持大库安装）
+        # 使用 --target 参数安装到项目目录下的 packages 文件夹，避免权限不足问题
+        packages_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'packages')
+        os.makedirs(packages_dir, exist_ok=True)
+        
+        # 使用多个国内镜像源加速安装，依次尝试
+        mirror_sources = [
+            ('https://pypi.tuna.tsinghua.edu.cn/simple', 'pypi.tuna.tsinghua.edu.cn'),
+            ('https://mirrors.aliyun.com/pypi/simple/', 'mirrors.aliyun.com'),
+            ('https://pypi.mirrors.ustc.edu.cn/simple/', 'pypi.mirrors.ustc.edu.cn'),
+            ('https://pypi.douban.com/simple/', 'pypi.douban.com'),
+        ]
+        
+        result = None
+        last_error = None
+        
+        for index_url, trusted_host in mirror_sources:
+            pip_args = [
+                sys.executable, '-m', 'pip', 'install', 
+                '--target', packages_dir, 
+                '--no-warn-script-location',
+                '--index-url', index_url,
+                '--trusted-host', trusted_host,
+                package_name
+            ]
+            
+            try:
+                result = subprocess.run(
+                    pip_args,
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    timeout=600  # 增加超时时间到10分钟
+                )
+                
+                if result.returncode == 0:
+                    break  # 安装成功，退出循环
+                
+                last_error = result.stderr
+                installation_state['output'] = f"镜像源 {index_url} 安装失败，尝试下一个...\n{result.stderr}"
+                
+            except subprocess.TimeoutExpired:
+                last_error = f"镜像源 {index_url} 超时，尝试下一个..."
+                installation_state['output'] = last_error
+                continue
+        
+        if result is None:
+            # 所有镜像源都失败了
+            installation_state['output'] = f"所有镜像源安装失败: {last_error}"
+            return {
+                'success': False,
+                'message': f'包 {package_name} 安装失败，所有镜像源均无法使用',
+                'output': last_error or '未知错误'
+            }
+        
+        installation_state['output'] = result.stdout + result.stderr
+        
+        if result.returncode == 0:
+            installation_state['success'] = True
+            installation_state['progress'] = 100
+            return {
+                'success': True,
+                'message': f'包 {package_name} 安装成功',
+                'output': result.stdout + result.stderr
+            }
+        else:
+            return {
+                'success': False,
+                'message': f'包 {package_name} 安装失败',
+                'output': result.stderr or result.stdout
+            }
+    except subprocess.TimeoutExpired:
+        installation_state['output'] = '安装超时'
+        return {
+            'success': False,
+            'message': f'包 {package_name} 安装超时',
+            'output': '安装超时（超过120秒）'
+        }
+    except Exception as e:
+        installation_state['output'] = str(e)
+        return {
+            'success': False,
+            'message': f'包 {package_name} 安装出错: {str(e)}',
+            'output': str(e)
+        }
+    finally:
+        installation_state['in_progress'] = False
+
+
+def install_package_async_thread(package_name: str, callback=None):
+    """异步安装Python包（后台线程）"""
+    def worker():
+        result = install_package_sync(package_name)
+        if callback:
+            callback(result)
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def execute_python_script(code: str) -> Dict[str, Any]:
+    """执行Python脚本，返回执行结果和生成的文件信息"""
     # 保存临时文件执行
     try:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
@@ -2008,6 +2812,26 @@ def execute_python_script(code: str) -> str:
         env['PYTHONIOENCODING'] = 'utf-8'
         env['PYTHONUTF8'] = '1'
         
+        # 添加packages目录到PYTHONPATH，使安装的包能被脚本找到
+        packages_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'packages')
+        if packages_dir not in sys.path:
+            sys.path.insert(0, packages_dir)
+        
+        # 设置PYTHONPATH环境变量，供子进程使用
+        current_pythonpath = env.get('PYTHONPATH', '')
+        if current_pythonpath:
+            env['PYTHONPATH'] = packages_dir + os.pathsep + current_pythonpath
+        else:
+            env['PYTHONPATH'] = packages_dir
+        
+        # 记录执行前目录中的文件
+        script_dir = os.path.dirname(__file__)
+        before_files = set()
+        for entry in os.listdir(script_dir):
+            entry_path = os.path.join(script_dir, entry)
+            if os.path.isfile(entry_path):
+                before_files.add(entry)
+        
         # 使用subprocess执行脚本，捕获输出
         result = subprocess.run(
             ['python', '-B', temp_file],
@@ -2015,7 +2839,7 @@ def execute_python_script(code: str) -> str:
             text=True,
             encoding='utf-8',
             timeout=30,
-            cwd=os.path.dirname(__file__),
+            cwd=script_dir,
             env=env
         )
         
@@ -2024,6 +2848,25 @@ def execute_python_script(code: str) -> str:
         
         # 删除临时文件
         os.unlink(temp_file)
+        
+        # 检测脚本执行后新生成的文件
+        generated_files = []
+        for entry in os.listdir(script_dir):
+            entry_path = os.path.join(script_dir, entry)
+            if os.path.isfile(entry_path) and entry not in before_files:
+                ext = os.path.splitext(entry)[1].lower()
+                if ext in ALLOWED_FILE_EXTENSIONS:
+                    # 移动文件到指定目录
+                    new_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{entry}"
+                    new_filepath = os.path.join(LOBSTER_CLAW_FILES_DIR, new_filename)
+                    os.rename(entry_path, new_filepath)
+                    
+                    generated_files.append({
+                        "name": new_filename,
+                        "original_name": entry,
+                        "size": os.path.getsize(new_filepath),
+                        "download_url": f"/api/lobster-claw/script/files/download/{new_filename}"
+                    })
         
         # 构建结果
         result_str = ""
@@ -2034,13 +2877,140 @@ def execute_python_script(code: str) -> str:
         if not stdout_output and not stderr_output:
             result_str += "脚本执行完成，无输出\n"
         
-        return result_str
+        return {
+            "success": True,
+            "result": result_str,
+            "generated_files": generated_files
+        }
         
     except SyntaxError as e:
-        return f"❌ 语法错误: {e.msg} (行 {e.lineno})\n\n{e.text}"
+        return {
+            "success": False,
+            "result": f"❌ 语法错误: {e.msg} (行 {e.lineno})\n\n{e.text}",
+            "generated_files": []
+        }
     except Exception as e:
         import traceback
-        return f"❌ 执行错误: {str(e)}\n\n{traceback.format_exc()}"
+        return {
+            "success": False,
+            "result": f"❌ 执行错误: {str(e)}\n\n{traceback.format_exc()}",
+            "generated_files": []
+        }
+
+@router.post("/script/check-dependencies")
+async def script_check_dependencies(request: ScriptExecuteRequest):
+    """检测脚本所需的依赖是否已安装"""
+    try:
+        code = ""
+        if request.script_id:
+            script = script_manager.get_script(request.script_id)
+            if not script:
+                return {"success": False, "error": "脚本不存在"}
+            code = script["code"]
+        elif request.code:
+            code = request.code
+        else:
+            return {"success": False, "error": "请提供脚本ID或脚本代码"}
+        
+        missing = detect_missing_dependencies(code)
+        return {
+            "success": True,
+            "missing_dependencies": missing,
+            "has_missing": len(missing) > 0
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/script/install-dependency")
+async def script_install_dependency(package_name: str = Form(...)):
+    """安装指定的Python依赖包（异步，不阻塞事件循环）"""
+    try:
+        if not package_name:
+            return {"success": False, "error": "请提供包名"}
+        
+        # 使用asyncio.to_thread避免阻塞事件循环
+        result = await asyncio.to_thread(install_package_sync, package_name)
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/script/install-dependency-async")
+async def script_install_dependency_async(package_name: str = Form(...)):
+    """异步安装指定的Python依赖包（后台执行）"""
+    try:
+        if not package_name:
+            return {"success": False, "error": "请提供包名"}
+        
+        install_package_async_thread(package_name)
+        return {"success": True, "message": f"正在后台安装包 {package_name}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/script/installation-status")
+async def script_installation_status():
+    """获取依赖安装状态"""
+    return installation_state
+
+
+@router.get("/script/files/download/{file_name}")
+async def download_script_file(file_name: str):
+    """下载脚本生成的文件"""
+    try:
+        # 安全检查：防止路径穿越
+        safe_file_name = os.path.basename(file_name)
+        file_path = os.path.join(LOBSTER_CLAW_FILES_DIR, safe_file_name)
+        
+        # 检查文件是否存在
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="文件不存在")
+        
+        # 检查文件扩展名是否在白名单中
+        ext = os.path.splitext(safe_file_name)[1].lower()
+        if ext not in ALLOWED_FILE_EXTENSIONS:
+            raise HTTPException(status_code=403, detail="不允许下载此类型的文件")
+        
+        # 返回文件下载响应
+        return StreamingResponse(
+            open(file_path, "rb"),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{safe_file_name}"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"下载失败: {str(e)}")
+
+
+@router.get("/script/files/list")
+async def list_script_files():
+    """列出所有脚本生成的文件"""
+    try:
+        files = []
+        if os.path.exists(LOBSTER_CLAW_FILES_DIR):
+            for filename in os.listdir(LOBSTER_CLAW_FILES_DIR):
+                filepath = os.path.join(LOBSTER_CLAW_FILES_DIR, filename)
+                if os.path.isfile(filepath):
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext in ALLOWED_FILE_EXTENSIONS:
+                        files.append({
+                            "name": filename,
+                            "size": os.path.getsize(filepath),
+                            "created_at": os.path.getctime(filepath),
+                            "download_url": f"/api/lobster-claw/script/files/download/{filename}"
+                        })
+        
+        # 按创建时间倒序排列
+        files.sort(key=lambda x: x["created_at"], reverse=True)
+        
+        return {"success": True, "files": files}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 
 @router.post("/script/execute")
 async def script_execute(request: ScriptExecuteRequest):
@@ -2056,12 +3026,136 @@ async def script_execute(request: ScriptExecuteRequest):
         else:
             return {"success": False, "error": "请提供脚本ID或脚本代码"}
         
-        result = execute_python_script(code)
-        response = {"success": True, "result": result}
+        # 检测依赖
+        missing = detect_missing_dependencies(code)
+        if missing:
+            return {
+                "success": False,
+                "error": "缺少依赖",
+                "missing_dependencies": missing,
+                "message": f"脚本需要安装以下依赖: {', '.join(missing)}"
+            }
+        
+        script_result = execute_python_script(code)
+        
+        response = {
+            "success": script_result["success"],
+            "result": script_result["result"],
+            "generated_files": script_result.get("generated_files", [])
+        }
         add_to_history(f"script_execute", response)
         return response
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+class PdfGenerateRequest(BaseModel):
+    content: str
+    title: str = "文档"
+
+
+@router.post("/script/generate-pdf")
+async def script_generate_pdf(request: PdfGenerateRequest):
+    content = request.content
+    title = request.title
+    """生成中文PDF文档"""
+    try:
+        # 检查fpdf2是否安装
+        try:
+            import fpdf
+        except ImportError:
+            # 自动安装fpdf2
+            packages_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'packages')
+            os.makedirs(packages_dir, exist_ok=True)
+            
+            subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', '--target', packages_dir, 
+                 '--index-url', 'https://pypi.tuna.tsinghua.edu.cn/simple',
+                 '--trusted-host', 'pypi.tuna.tsinghua.edu.cn', 'fpdf2'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                timeout=120
+            )
+            
+            # 添加到sys.path
+            if packages_dir not in sys.path:
+                sys.path.insert(0, packages_dir)
+        
+        from fpdf import FPDF
+        
+        # 查找系统中文字体
+        def find_chinese_font():
+            font_paths = [
+                'C:/Windows/Fonts/msyh.ttc',
+                'C:/Windows/Fonts/simsun.ttc',
+                'C:/Windows/Fonts/simhei.ttf',
+                'C:/Windows/Fonts/kaiu.ttf',
+                'C:/Windows/Fonts/arialuni.ttf',
+                '/Library/Fonts/Noto Sans CJK SC.ttc',
+                '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+                '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+            ]
+            for font_path in font_paths:
+                if os.path.exists(font_path):
+                    return font_path
+            return None
+        
+        font_path = find_chinese_font()
+        
+        # 创建PDF对象
+        pdf = FPDF()
+        pdf.add_page()
+        
+        if font_path:
+            font_name = 'ChineseFont'
+            # 注册常规字体
+            pdf.add_font(font_name, '', font_path, uni=True)
+            # 尝试注册粗体字体（如果是ttc文件，需要指定索引）
+            try:
+                # 对于ttc字体文件，尝试用索引1作为粗体
+                pdf.add_font(font_name, 'B', font_path, uni=True)
+            except:
+                # 如果注册粗体失败，标题就用常规字体
+                pass
+        else:
+            font_name = 'Arial'
+        
+        # 设置标题（使用常规字体，避免粗体字体未注册的问题）
+        pdf.set_font(font_name, '', 18)
+        pdf.cell(0, 20, title, ln=True, align='C')
+        
+        # 设置正文
+        pdf.set_font(font_name, '', 12)
+        pdf.ln(10)
+        
+        # 处理内容
+        paragraphs = content.split('\n')
+        for para in paragraphs:
+            para = para.strip()
+            if para:
+                pdf.multi_cell(0, 12, para, align='L')
+                pdf.ln(5)
+        
+        # 保存到文件（使用英文文件名，避免中文路径问题）
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"document_{timestamp}.pdf"
+        filepath = os.path.join(LOBSTER_CLAW_FILES_DIR, filename)
+        
+        pdf.output(filepath)
+        
+        return {
+            "success": True,
+            "message": f"PDF文件已生成",
+            "filename": filename,
+            "original_title": title,
+            "download_url": f"/api/lobster-claw/script/files/download/{filename}",
+            "font_used": font_path if font_path else "Arial (无中文字体)"
+        }
+        
+    except Exception as e:
+        import traceback
+        return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
 
 
 def extract_important_facts(user_message, ai_response):

@@ -149,3 +149,15 @@ class OpenAIAdapter(LLMAdapter):
         except Exception:
             # Fallback: rough estimate
             return len(text) // 4
+
+    def embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings using OpenAI API"""
+        try:
+            response = self.client.embeddings.create(
+                model=self.model_name,
+                input=texts
+            )
+            return [data.embedding for data in response.data]
+        except Exception as e:
+            print(f"Embedding API error: {e}")
+            raise

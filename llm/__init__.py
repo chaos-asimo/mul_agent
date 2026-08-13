@@ -7,8 +7,9 @@ from .claude_adapter import ClaudeAdapter
 from .deepseek_adapter import DeepSeekAdapter
 from .dalle_adapter import DALLEAdapter
 from .sd_adapter import StableDiffusionAdapter
+from .local_embedding_adapter import LocalEmbeddingAdapter
 
-__all__ = ["LLMAdapter", "LLMResponse", "ImageAdapter", "ImageResponse", 
+__all__ = ["LLMAdapter", "LLMResponse", "ImageAdapter", "ImageResponse",
            "VideoAdapter", "VideoResponse", "OpenAIVideoAdapter",
-           "OpenAIAdapter", "ClaudeAdapter", "DeepSeekAdapter", 
-           "DALLEAdapter", "StableDiffusionAdapter"]
+           "OpenAIAdapter", "ClaudeAdapter", "DeepSeekAdapter",
+           "DALLEAdapter", "StableDiffusionAdapter", "LocalEmbeddingAdapter"]

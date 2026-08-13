@@ -145,3 +145,7 @@ class ClaudeAdapter(LLMAdapter):
         """Count tokens - Claude uses different method"""
         # Rough estimate: Claude tokenizes roughly at 3-4 chars per token
         return len(text) // 4
+
+    def embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings - Claude does not support embeddings API"""
+        raise NotImplementedError("Claude does not support embeddings API. Please use an OpenAI-compatible model for embedding.")

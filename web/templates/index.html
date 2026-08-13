@@ -81,9 +81,6 @@
                 <button class="nav-btn" data-tab="statistics" title="统计分析">
                     <i class="fas fa-chart-bar"></i>
                 </button>
-                <button class="nav-btn" data-tab="settings" title="系统设置">
-                    <i class="fas fa-sliders-h"></i>
-                </button>
             </nav>
 
             <!-- 右侧工作区 -->
@@ -107,6 +104,9 @@
                             </button>
                             <button class="btn btn-outline-secondary btn-sm" onclick="app.showScriptModal()" title="脚本管理">
                                 <i class="fas fa-code"></i> 脚本管理
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.showKnowledgeBaseModal()" title="知识库管理">
+                                <i class="fas fa-book"></i> 知识库
                             </button>
                             <button class="btn btn-outline-secondary btn-sm" onclick="app.showFeishuModal()" title="飞书接入">
                                 <i class="fas fa-paper-plane"></i> 飞书
@@ -142,11 +142,16 @@
                         
                         <div style="flex: 0 0 auto;">
                             <div style="display: flex; gap: 8px;">
-                                <div style="flex: 1; position: relative;">
+                                <div style="flex: 1; position: relative; display: flex; flex-direction: column; min-width: 0;">
                                     <textarea id="claw-chat-input" 
                                         placeholder="输入你的问题或命令..." 
-                                        style="width: 100%; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 14px; resize: none; min-height: 44px; max-height: 120px; font-family: inherit;"></textarea>
+                                        style="width: 100%; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 14px; resize: vertical; min-height: 80px; max-height: 200px; font-family: inherit; flex: 1;"></textarea>
+                                    <div id="claw-chat-files" style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; margin-top: 4px;"></div>
                                 </div>
+                                <label class="btn btn-outline-secondary btn-sm" style="padding: 10px 12px;">
+                                    <i class="fas fa-paperclip"></i>
+                                    <input type="file" id="claw-chat-file" class="file-input" multiple accept=".txt,.md,.json,.py,.js,.html,.css,.xml,.csv,.doc,.docx,.pdf,.xls,.xlsx,.ppt,.pptx,.jpg,.jpeg,.png,.gif,.webp" style="display: none;">
+                                </label>
                                 <button id="claw-chat-send-btn" class="btn btn-primary" style="padding: 10px 20px;">
                                     <i class="fas fa-send"></i> 发送
                                 </button>
@@ -274,52 +279,101 @@
                                 </div>
                             </div>
                         </div>
-                    </div>
-                </div>
+            </div>
+        </div>
 
-                <div id="claw-script-modal" class="modal" style="display: none;">
-                    <div id="claw-script-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
-                        <div class="modal-header">
-                            <h3><i class="fas fa-code"></i> 脚本管理</h3>
-                            <div style="display: flex; gap: 8px;">
-                                <button class="btn btn-primary btn-sm" onclick="app.showAddScript()">
-                                    <i class="fas fa-plus"></i> 新建脚本
-                                </button>
-                                <button class="modal-close" onclick="document.getElementById('claw-script-modal').style.display='none'">&times;</button>
-                            </div>
-                        </div>
-                        <div id="claw-script-modal-body" class="modal-body" style="max-height: calc(80vh - 80px);">
-                            <div id="claw-script-list">
-                                <div class="empty-state">
-                                    <i class="fas fa-code" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
-                                    <p>暂无脚本</p>
-                                    <p style="font-size: 14px; margin-top: 5px;">点击上方按钮创建新脚本</p>
-                                </div>
-                            </div>
-                            <div id="claw-script-add-form" style="display: none; margin-top: 20px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
-                                <h4 style="margin-bottom: 15px;">新建脚本</h4>
-                                <div style="display: grid; grid-template-columns: 1fr; gap: 15px;">
-                                    <div class="form-group">
-                                        <label>脚本名称</label>
-                                        <input type="text" id="script-name" class="form-control" placeholder="输入脚本名称">
-                                    </div>
-                                    <div class="form-group">
-                                        <label>脚本描述</label>
-                                        <input type="text" id="script-description" class="form-control" placeholder="输入脚本描述（可选）">
-                                    </div>
-                                    <div class="form-group">
-                                        <label>脚本代码</label>
-                                        <textarea id="script-code" class="form-control" rows="8" placeholder="输入Python脚本代码"></textarea>
-                                    </div>
-                                </div>
-                                <div style="display: flex; gap: 10px; margin-top: 15px;">
-                                    <button class="btn btn-primary" onclick="app.addScript()">确认创建</button>
-                                    <button class="btn btn-outline-secondary" onclick="app.hideAddScript()">取消</button>
-                                </div>
-                            </div>
+        <!-- 知识库管理模态框 -->
+        <div id="claw-knowledge-modal" class="modal" style="display: none;">
+            <div class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-book"></i> 知识库管理</h3>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <label class="btn btn-primary btn-sm" style="margin: 0; cursor: pointer;">
+                            <i class="fas fa-upload"></i> 上传文档
+                            <input type="file" id="knowledge-file-input" multiple style="display: none;" accept=".txt,.md,.json,.py,.js,.html,.css,.xml,.csv,.doc,.docx,.pdf,.xls,.xlsx,.ppt,.pptx">
+                        </label>
+                        <button class="modal-close" onclick="document.getElementById('claw-knowledge-modal').style.display='none'">&times;</button>
+                    </div>
+                </div>
+                <div class="modal-body" style="max-height: calc(80vh - 80px);">
+                    <div style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center;">
+                        <input type="text" id="knowledge-search-input" placeholder="语义搜索知识库..." class="form-control" style="flex: 1;" onkeypress="if(event.key==='Enter') app.searchKnowledgeBase()">
+                        <button class="btn btn-primary btn-sm" onclick="app.searchKnowledgeBase()">
+                            <i class="fas fa-search"></i> 搜索
+                        </button>
+                    </div>
+                    <div id="knowledge-stats" style="margin-bottom: 10px; padding: 8px 12px; background: #f1f5f9; border-radius: 6px; font-size: 13px; color: #64748b;"></div>
+                    <div id="knowledge-search-results" style="display: none; margin-bottom: 15px;"></div>
+                    <div id="knowledge-doc-list">
+                        <div class="empty-state">
+                            <i class="fas fa-book" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                            <p>知识库为空</p>
+                            <p style="font-size: 14px; margin-top: 5px;">点击上方按钮上传文档</p>
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- 脚本管理模态框 -->
+        <div id="claw-script-modal" class="modal" style="display: none;">
+            <div id="claw-script-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-code"></i> 脚本管理</h3>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-primary btn-sm" onclick="app.showScriptEditor()">
+                            <i class="fas fa-plus"></i> 新建脚本
+                        </button>
+                        <button class="modal-close" onclick="document.getElementById('claw-script-modal').style.display='none'">&times;</button>
+                    </div>
+                </div>
+                <div id="claw-script-modal-body" class="modal-body" style="max-height: calc(80vh - 80px);">
+                    <div id="claw-script-list">
+                        <div class="empty-state">
+                            <i class="fas fa-code" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                            <p>暂无脚本</p>
+                            <p style="font-size: 14px; margin-top: 5px;">点击上方按钮创建新脚本</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 脚本编辑器模态框（大尺寸，支持语法高亮） -->
+        <div id="claw-script-editor-modal" class="modal" style="display: none;">
+            <div id="claw-script-editor-modal-content" class="modal-content" style="width: 95%; max-width: none; max-height: 95vh; height: 95vh;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-code"></i> <span id="script-editor-title">编辑脚本</span></h3>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-primary" onclick="app.saveScriptEditor()">
+                            <i class="fas fa-save"></i> 保存脚本
+                        </button>
+                        <button class="btn btn-outline-secondary" onclick="app.closeScriptEditor()">
+                            <i class="fas fa-times"></i> 关闭
+                        </button>
+                    </div>
+                </div>
+                <div class="modal-body" style="padding: 20px; max-height: calc(95vh - 120px); height: calc(95vh - 120px); display: flex; flex-direction: column; gap: 15px;">
+                    <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 15px;">
+                        <div class="form-group">
+                            <label>脚本名称</label>
+                            <input type="text" id="script-editor-name" class="form-control" placeholder="输入脚本名称">
+                        </div>
+                        <div class="form-group">
+                            <label>脚本描述</label>
+                            <input type="text" id="script-editor-description" class="form-control" placeholder="输入脚本描述（可选）">
+                        </div>
+                    </div>
+                    <div class="form-group" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                        <label>脚本代码</label>
+                        <div style="flex: 1; position: relative; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: #1e1e1e;">
+                            <pre id="script-editor-highlight" class="python-highlight" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; margin: 0; padding: 12px; overflow: auto; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 14px; line-height: 1.6; color: #d4d4d4; white-space: pre-wrap; word-wrap: break-word;"></pre>
+                            <textarea id="script-editor-code" class="form-control" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; margin: 0; padding: 12px; border: none; background: transparent; color: transparent; caret-color: white; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 14px; line-height: 1.6; resize: none; overflow: auto; z-index: 1;"></textarea>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
                 <div id="claw-feishu-modal" class="modal" style="display: none;">
                     <div id="claw-feishu-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
@@ -1008,6 +1062,22 @@
                                 <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">输出Token</div>
                                 <div style="font-size: 24px; font-weight: 600; color: #f59e0b;" id="stat-completion-tokens">0</div>
                             </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">平均耗时</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #8b5cf6;" id="stat-average-duration">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">平均Token/s</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #06b6d4;" id="stat-average-tps">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">成功率</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #22c55e;" id="stat-success-rate">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">错误数</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #ef4444;" id="stat-total-errors">0</div>
+                            </div>
                         </div>
 
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
@@ -1182,33 +1252,6 @@
                     </div>
                 </div>
 
-                <!-- ========== 设置内容 ========== -->
-                <div class="tab-panel" id="settings-panel">
-                    <div class="panel-header">
-                        <h2><i class="fas fa-sliders-h"></i> 系统设置</h2>
-                    </div>
-                    <div class="panel-section">
-                        <div class="section-header">
-                            <h3><i class="fas fa-tools"></i> 运行设置</h3>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label>迭代次数</label>
-                                <input type="number" id="iterations-setting" class="form-control" value="{{ settings.iterations }}" min="1" max="10">
-                            </div>
-                        </div>
-                        <div class="form-group checkbox-group">
-                            <label>
-                                <input type="checkbox" id="enable-search-setting" checked>
-                                启用联网搜索
-                            </label>
-                        </div>
-                        <button id="save-settings-btn" class="btn btn-primary" style="margin-top: 15px;">
-                            <i class="fas fa-save"></i> 保存设置
-                        </button>
-                    </div>
-                </div>
-
                 <!-- ========== 周易卜卦内容 ========== -->
                 <div class="tab-panel" id="yijing-panel">
                     <div class="panel-header">
@@ -1223,6 +1266,9 @@
                             </button>
                             <button id="yijing-history-btn" class="btn btn-outline divination-btn">
                                 <i class="fas fa-history"></i> 历史记录
+                            </button>
+                            <button id="export-divination-btn" class="btn btn-outline divination-btn" disabled title="请先完成摇卦和AI解卦">
+                                <i class="fas fa-download"></i> 导出结果
                             </button>
                             <div class="divination-hint">摒除杂念，集中注意力默想自己所求之事，然后点击"开始摇卦"，即可生成卦象。</div>
                         </div>
@@ -1403,6 +1449,7 @@
                                 <option value="text">文本模型</option>
                                 <option value="image">文生图模型</option>
                                 <option value="video">文生视频模型</option>
+                                <option value="embedding">向量嵌入模型</option>
                             </select>
                         </div>
                         <div class="form-group">

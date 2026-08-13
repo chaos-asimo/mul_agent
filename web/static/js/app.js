@@ -5,6 +5,7 @@ class App {
         this.currentEditId = null;
         this.statusInterval = null;
         this.statusIntervalTime = 3000;
+        this.editingScriptId = null;
         this.init();
     }
 
@@ -84,9 +85,6 @@ class App {
         }
         document.getElementById('clear-attachments-btn').addEventListener('click', () => this.clearAttachments());
 
-        // 设置相关
-        document.getElementById('save-settings-btn').addEventListener('click', () => this.saveSettings());
-
         // 处理相关
         document.getElementById('start-btn').addEventListener('click', () => this.startProcessing());
         document.getElementById('stop-btn').addEventListener('click', () => this.stopProcessing());
@@ -112,6 +110,7 @@ class App {
         document.getElementById('start-divination-btn').addEventListener('click', () => this.startDivination());
         document.getElementById('reset-divination-btn').addEventListener('click', () => this.resetDivination());
         document.getElementById('ai-explain-btn').addEventListener('click', () => this.startAiExplain());
+        document.getElementById('export-divination-btn').addEventListener('click', () => this.exportDivination());
         document.getElementById('yijing-history-btn').addEventListener('click', () => this.openYijingHistory());
         
         // 龙虾Claw相关
@@ -1475,32 +1474,6 @@ class App {
         setTimeout(() => msgEl.remove(), 3000);
     }
 
-    async saveSettings() {
-        const settings = {
-            iterations: parseInt(document.getElementById('setting-iterations').value),
-            enable_search: document.getElementById('setting-enable-search').checked,
-            max_search_per_iter: parseInt(document.getElementById('setting-max-search').value),
-            default_log_level: document.getElementById('setting-log-level').value
-        };
-
-        try {
-            const response = await fetch(`${this.baseUrl}/api/settings`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(settings)
-            });
-            const result = await response.json();
-            
-            if (result.status === 'success') {
-                this.addLog(result.message);
-            } else {
-                alert(result.message);
-            }
-        } catch (error) {
-            alert(`保存设置失败: ${error.message}`);
-        }
-    }
-
     async startProcessing() {
         const content = document.getElementById('input-content').value.trim();
         if (!content) {
@@ -1509,7 +1482,7 @@ class App {
         }
 
         const iterations = parseInt(document.getElementById('iterations').value) || 10;
-        const enableSearch = document.getElementById('enable-search-setting')?.checked || false;
+        const enableSearch = true;
 
         // 先分析是否需要调用Skill
         try {
@@ -3116,6 +3089,12 @@ class App {
                 aiExplainBtn.disabled = false;
             }
 
+            const exportBtn = document.getElementById('export-divination-btn');
+            if (exportBtn) {
+                exportBtn.disabled = true;
+                exportBtn.title = '请先完成AI解卦';
+            }
+
             resetBtn.disabled = false;
             startBtn.innerHTML = '<i class="fas fa-play"></i> 开始摇卦';
         } catch (error) {
@@ -3300,6 +3279,12 @@ class App {
         startBtn.disabled = false;
         aiExplainBtn.disabled = true;
 
+        const exportBtn = document.getElementById('export-divination-btn');
+        if (exportBtn) {
+            exportBtn.disabled = true;
+            exportBtn.title = '请先完成摇卦和AI解卦';
+        }
+
         divinationContent.value = '';
 
         coinsContainer.innerHTML = `
@@ -3404,6 +3389,12 @@ class App {
                                 </div>
                             </div>
                             <div style="display: flex; align-items: center; margin-left: 10px;">
+                                <button onclick="event.stopPropagation(); window.app.exportYijingHistory('${item.session_id}')" 
+                                        style="border: none; background: none; color: #94a3b8; cursor: pointer; padding: 4px 8px; border-radius: 4px;"
+                                        onmouseover="this.style.color='#3b82f6';this.style.background='#dbeafe'"
+                                        onmouseout="this.style.color='#94a3b8';this.style.background='none'">
+                                    <i class="fas fa-download"></i>
+                                </button>
                                 <button onclick="event.stopPropagation(); window.app.deleteYijingRecord('${item.session_id}')" 
                                         style="border: none; background: none; color: #94a3b8; cursor: pointer; padding: 4px 8px; border-radius: 4px;"
                                         onmouseover="this.style.color='#ef4444';this.style.background='#fee2e2'"
@@ -3470,6 +3461,17 @@ class App {
                 const aiExplainBtn = document.getElementById('ai-explain-btn');
                 if (aiExplainBtn) {
                     aiExplainBtn.disabled = false;
+                }
+
+                const exportBtn = document.getElementById('export-divination-btn');
+                if (exportBtn) {
+                    if (data.ai_solution) {
+                        exportBtn.disabled = false;
+                        exportBtn.title = '导出卜卦结果';
+                    } else {
+                        exportBtn.disabled = true;
+                        exportBtn.title = '请先完成AI解卦';
+                    }
                 }
                 
                 const resetBtn = document.getElementById('reset-divination-btn');
@@ -3600,6 +3602,12 @@ class App {
                                 promptText = result.prompt || promptText;
                                 aiExplainBtn.disabled = false;
                                 aiExplainBtn.innerHTML = '<i class="fas fa-robot"></i> AI 深度解卦';
+
+                                const exportBtn = document.getElementById('export-divination-btn');
+                                if (exportBtn) {
+                                    exportBtn.disabled = false;
+                                    exportBtn.title = '导出卜卦结果';
+                                }
                                 
                                 const loadingHeader = document.querySelector('.ai-solution-loading-header');
                                 if (loadingHeader) {
@@ -3647,6 +3655,283 @@ class App {
         }
     }
 
+    async exportDivination() {
+        if (!this.currentDivinationData) {
+            alert('请先完成摇卦');
+            return;
+        }
+
+        const aiSolutionContainer = document.getElementById('ai-solution-container');
+        let aiSolution = '';
+        if (aiSolutionContainer) {
+            aiSolution = aiSolutionContainer.innerText || aiSolutionContainer.textContent || '';
+            if (!aiSolution.trim()) {
+                alert('请先完成AI解卦');
+                return;
+            }
+        } else {
+            alert('请先完成AI解卦');
+            return;
+        }
+
+        const exportBtn = document.getElementById('export-divination-btn');
+        try {
+            if (exportBtn) {
+                exportBtn.disabled = true;
+                exportBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 导出中...';
+            }
+
+            const requestData = {
+                content: this.currentDivinationData.content || '',
+                date: this.currentDivinationData.date || new Date().toLocaleString('zh-CN'),
+                original_hexagram: this.currentDivinationData.original_hexagram,
+                changed_hexagram: this.currentDivinationData.changed_hexagram,
+                yao_results: this.currentDivinationData.yao_results,
+                change_count: this.currentDivinationData.change_count || 0,
+                change_yao_positions: this.currentDivinationData.change_yao_positions || [],
+                solution_text: this.currentDivinationData.solution_text || '',
+                ai_solution: aiSolution
+            };
+
+            const response = await fetch(`${this.baseUrl}/api/yijing/export`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(requestData)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.message || '导出失败');
+            }
+
+            const blob = await response.blob();
+            const disposition = response.headers.get('Content-Disposition');
+            let filename = '卜卦结果.md';
+            if (disposition) {
+                const filenameMatch = disposition.match(/filename\*=UTF-8''(.+)/);
+                if (filenameMatch) {
+                    filename = decodeURIComponent(filenameMatch[1]);
+                }
+            }
+
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+
+        } catch (error) {
+            console.error('导出失败:', error);
+            alert('导出失败: ' + error.message);
+        } finally {
+            if (exportBtn) {
+                exportBtn.disabled = false;
+                exportBtn.innerHTML = '<i class="fas fa-download"></i> 导出结果';
+            }
+        }
+    }
+
+    async exportYijingHistory(sessionId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/yijing/history/${sessionId}/export`);
+            
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.message || '导出失败');
+            }
+
+            const blob = await response.blob();
+            const disposition = response.headers.get('Content-Disposition');
+            let filename = '卜卦结果.md';
+            if (disposition) {
+                const filenameMatch = disposition.match(/filename\*=UTF-8''(.+)/);
+                if (filenameMatch) {
+                    filename = decodeURIComponent(filenameMatch[1]);
+                }
+            }
+
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+
+        } catch (error) {
+            console.error('导出历史记录失败:', error);
+            alert('导出失败: ' + error.message);
+        }
+    }
+
+    // ============ 知识库管理 ============
+    async showKnowledgeBaseModal() {
+        document.getElementById('claw-knowledge-modal').style.display = 'flex';
+        await this.loadKnowledgeDocs();
+        const fileInput = document.getElementById('knowledge-file-input');
+        if (fileInput && !fileInput.dataset.bound) {
+            fileInput.dataset.bound = 'true';
+            fileInput.addEventListener('change', (e) => this.uploadKnowledgeFiles(e));
+        }
+    }
+
+    async loadKnowledgeDocs() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/knowledge/list`);
+            const result = await response.json();
+            const listEl = document.getElementById('knowledge-doc-list');
+            const statsEl = document.getElementById('knowledge-stats');
+            const searchResultsEl = document.getElementById('knowledge-search-results');
+            searchResultsEl.style.display = 'none';
+
+            if (result.success && result.data.length > 0) {
+                listEl.innerHTML = result.data.map(doc => `
+                    <div style="padding: 12px; margin-bottom: 8px; background: white; border-radius: 6px; border: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;">
+                        <div style="flex: 1; min-width: 0;">
+                            <div style="font-weight: 600; color: #1e293b; margin-bottom: 4px;">
+                                <i class="fas fa-file-alt" style="color: #3b82f6; margin-right: 6px;"></i>${this.escapeHtml(doc.filename)}
+                            </div>
+                            <div style="font-size: 12px; color: #64748b;">
+                                分块: ${doc.chunk_count} | 大小: ${(doc.file_size / 1024).toFixed(1)}KB | 上传: ${doc.uploaded_at ? doc.uploaded_at.substring(0, 19).replace('T', ' ') : '未知'}
+                            </div>
+                        </div>
+                        <button onclick="app.deleteKnowledgeDoc('${doc.id}')" style="border: none; background: none; color: #94a3b8; cursor: pointer; padding: 4px 8px; border-radius: 4px;" onmouseover="this.style.color='#ef4444';this.style.background='#fee2e2'" onmouseout="this.style.color='#94a3b8';this.style.background='none'">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
+                `).join('');
+            } else {
+                listEl.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-book" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                        <p>知识库为空</p>
+                        <p style="font-size: 14px; margin-top: 5px;">点击上方按钮上传文档</p>
+                    </div>
+                `;
+            }
+
+            try {
+                const statsResp = await fetch(`${this.baseUrl}/api/lobster-claw/knowledge/stats`);
+                const statsResult = await statsResp.json();
+                if (statsResult.success) {
+                    const s = statsResult.data;
+                    statsEl.innerHTML = `<i class="fas fa-database"></i> 文档: ${s.total_documents} | 分块: ${s.total_chunks} | 存储: ${(s.db_size_bytes / 1024).toFixed(1)}KB`;
+                }
+            } catch(e) {}
+        } catch (error) {
+            console.error('加载知识库失败:', error);
+        }
+    }
+
+    async uploadKnowledgeFiles(event) {
+        const files = event.target.files;
+        if (!files || files.length === 0) return;
+
+        const formData = new FormData();
+        for (let file of files) {
+            formData.append('files', file);
+        }
+
+        const listEl = document.getElementById('knowledge-doc-list');
+        listEl.innerHTML = `
+            <div style="text-align: center; padding: 30px; color: #64748b;">
+                <i class="fas fa-spinner fa-spin" style="font-size: 32px; margin-bottom: 15px;"></i>
+                <p>正在上传并处理文档...</p>
+            </div>
+        `;
+
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/knowledge/upload`, {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                alert(`成功上传 ${result.results.filter(r => r.success).length} 个文档`);
+            } else {
+                const failed = result.results.filter(r => !r.success);
+                if (failed.length > 0 && failed[0].error) {
+                    alert('上传失败: ' + failed[0].error);
+                }
+            }
+            await this.loadKnowledgeDocs();
+        } catch (error) {
+            alert('上传失败: ' + error.message);
+            await this.loadKnowledgeDocs();
+        }
+        event.target.value = '';
+    }
+
+    async deleteKnowledgeDoc(docId) {
+        if (!confirm('确定要删除这个文档吗？所有相关的向量数据将被清除。')) return;
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/knowledge/${docId}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            if (result.success) {
+                await this.loadKnowledgeDocs();
+            } else {
+                alert('删除失败: ' + (result.error || '未知错误'));
+            }
+        } catch (error) {
+            alert('删除失败: ' + error.message);
+        }
+    }
+
+    async searchKnowledgeBase() {
+        const query = document.getElementById('knowledge-search-input').value.trim();
+        if (!query) return;
+
+        const resultsEl = document.getElementById('knowledge-search-results');
+        resultsEl.style.display = 'block';
+        resultsEl.innerHTML = `
+            <div style="text-align: center; padding: 15px; color: #64748b;">
+                <i class="fas fa-spinner fa-spin"></i> 搜索中...
+            </div>
+        `;
+
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/knowledge/search`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: query, top_k: 5, threshold: 0.3 })
+            });
+            const result = await response.json();
+
+            if (result.success && result.data.length > 0) {
+                resultsEl.innerHTML = `
+                    <div style="margin-bottom: 8px; font-weight: 600; color: #1e293b;">
+                        <i class="fas fa-search"></i> 搜索结果 (${result.data.length}条)
+                    </div>
+                    ${result.data.map((r, i) => `
+                        <div style="padding: 10px; margin-bottom: 6px; background: #f8fafc; border-radius: 6px; border-left: 3px solid #3b82f6;">
+                            <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">
+                                ${i+1}. 来源: ${this.escapeHtml(r.filename || '未知')} | 相似度: ${(r.score * 100).toFixed(1)}%
+                            </div>
+                            <div style="font-size: 13px; color: #334155; line-height: 1.5;">${this.escapeHtml(r.content.substring(0, 200))}${r.content.length > 200 ? '...' : ''}</div>
+                        </div>
+                    `).join('')}
+                `;
+            } else {
+                resultsEl.innerHTML = `
+                    <div style="padding: 15px; text-align: center; color: #94a3b8;">
+                        <i class="fas fa-info-circle"></i> 未找到相关内容
+                    </div>
+                `;
+            }
+        } catch (error) {
+            resultsEl.innerHTML = `<div style="padding: 15px; color: #ef4444;">搜索失败: ${error.message}</div>`;
+        }
+    }
+
     // ============ 龙虾Claw功能 ============
     clawTabs = {
         'main': { id: 'main', name: '主会话', type: 'default', sessionId: null, messages: [] },
@@ -3685,6 +3970,10 @@ class App {
         const sendBtn = document.getElementById('claw-chat-send-btn');
         const input = document.getElementById('claw-chat-input');
         const clearBtn = document.getElementById('claw-chat-clear-btn');
+        const fileInput = document.getElementById('claw-chat-file');
+        
+        // 初始化上传文件列表
+        this.clawChatFiles = [];
         
         if (sendBtn) {
             sendBtn.onclick = () => this.sendClawChatMessage();
@@ -3701,6 +3990,10 @@ class App {
         
         if (clearBtn) {
             clearBtn.onclick = () => this.clearClawChat();
+        }
+        
+        if (fileInput) {
+            fileInput.addEventListener('change', (e) => this.handleClawChatFileUpload(e));
         }
         
         this.loadClawChatModels();
@@ -3727,6 +4020,101 @@ class App {
         }
     }
     
+    async handleClawChatFileUpload(event) {
+        const files = event.target.files;
+        if (!files || files.length === 0) return;
+        
+        const filesContainer = document.getElementById('claw-chat-files');
+        
+        for (const file of files) {
+            // 限制文件大小（10MB）
+            if (file.size > 10 * 1024 * 1024) {
+                alert(`${file.name} 文件过大，请上传小于10MB的文件`);
+                continue;
+            }
+            
+            // 读取文件内容（文本文件直接读取，PDF/Word等上传到后端解析）
+            const content = await this.readFileContent(file);
+            
+            this.clawChatFiles.push({
+                filename: file.name,
+                content: content,
+                size: file.size
+            });
+            
+            // 显示文件标签
+            const fileTag = document.createElement('span');
+            fileTag.className = 'claw-chat-file-tag';
+            fileTag.innerHTML = `<i class="fas fa-file"></i> ${file.name} <i class="fas fa-times" style="margin-left: 4px; cursor: pointer;"></i>`;
+            fileTag.onclick = () => this.removeClawChatFile(fileTag, file.name);
+            filesContainer.appendChild(fileTag);
+        }
+        
+        // 重置文件输入
+        event.target.value = '';
+    }
+    
+    async readFileContent(file) {
+        const ext = file.name.split('.').pop().toLowerCase();
+        console.log(`[DEBUG] 读取文件: ${file.name}, 类型: ${ext}, 大小: ${file.size}`);
+        
+        // 文本文件直接读取
+        if (['txt', 'md', 'json', 'py', 'js', 'html', 'css', 'xml', 'csv'].includes(ext)) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const content = e.target.result;
+                    console.log(`[DEBUG] 文本文件读取成功，内容长度: ${content.length}`);
+                    resolve(content);
+                };
+                reader.onerror = () => {
+                    console.error('[DEBUG] 文本文件读取失败');
+                    resolve('');
+                };
+                reader.readAsText(file, 'utf-8');
+            });
+        }
+        
+        // PDF、Word等文件上传到后端解析
+        if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext)) {
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                const uploadUrl = `${this.baseUrl}/api/lobster-claw/upload/text`;
+                console.log(`[DEBUG] 开始上传文件到后端解析... URL: ${uploadUrl}`);
+                console.log(`[DEBUG] 文件大小: ${file.size} bytes`);
+                
+                const response = await fetch(uploadUrl, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                console.log(`[DEBUG] 上传响应状态: ${response.status}`);
+                const result = await response.json();
+                console.log(`[DEBUG] 上传解析结果:`, result);
+                if (result.success && result.content) {
+                    console.log(`[DEBUG] 解析成功，内容长度: ${result.content.length}`);
+                    return result.content;
+                } else {
+                    console.error('[DEBUG] 解析失败:', result.error || '无内容');
+                }
+            } catch (error) {
+                console.error('上传文件解析失败:', error);
+            }
+            return '';
+        }
+        
+        // 其他文件类型返回空内容
+        console.log(`[DEBUG] 不支持的文件类型: ${ext}`);
+        return '';
+    }
+    
+    removeClawChatFile(tagElement, filename) {
+        tagElement.remove();
+        this.clawChatFiles = this.clawChatFiles.filter(f => f.filename !== filename);
+    }
+    
     async sendClawChatMessage() {
         const input = document.getElementById('claw-chat-input');
         const sendBtn = document.getElementById('claw-chat-send-btn');
@@ -3735,7 +4123,7 @@ class App {
         const message = input.value.trim();
         const modelName = modelSelect ? modelSelect.value : '';
         
-        if (!message) {
+        if (!message && this.clawChatFiles.length === 0) {
             return;
         }
         
@@ -3745,20 +4133,49 @@ class App {
         sendBtn.disabled = true;
         sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 发送中...';
         
-        this.addClawChatMessage('user', message, false, new Date().toISOString());
+        // 显示用户消息（包含文件信息）
+        let displayMessage = message;
+        if (this.clawChatFiles.length > 0) {
+            const fileNames = this.clawChatFiles.map(f => f.filename).join(', ');
+            displayMessage = `${message}\n\n📎 已上传文件: ${fileNames}`;
+        }
+        this.addClawChatMessage('user', displayMessage, false, new Date().toISOString());
         
         try {
-            const response = await fetch(`${this.baseUrl}/api/lobster-claw/chat/stream`, {
+            const requestUrl = `${this.baseUrl}/api/lobster-claw/chat/stream`;
+            
+            const requestData = { 
+                message: message || '请分析我上传的文件', 
+                session_id: this.getCurrentClawSessionId(),
+                model_name: modelName || undefined,
+                files: this.clawChatFiles.length > 0 ? this.clawChatFiles : undefined
+            };
+            
+            let requestBody;
+            try {
+                requestBody = JSON.stringify(requestData);
+                console.log(`[DEBUG] 发送请求: ${requestUrl}`);
+                console.log(`[DEBUG] 请求体长度: ${requestBody.length}`);
+                console.log(`[DEBUG] 文件数量: ${this.clawChatFiles.length}`);
+            } catch (stringifyError) {
+                console.error('[DEBUG] JSON.stringify失败:', stringifyError);
+                throw new Error('序列化请求体失败');
+            }
+            
+            const response = await fetch(requestUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    message: message, 
-                    session_id: this.getCurrentClawSessionId(),
-                    model_name: modelName || undefined
-                }),
-                keepalive: true,
+                body: requestBody,
                 signal: this.clawChatAbortController?.signal
             });
+            
+            console.log(`[DEBUG] 响应状态: ${response.status}`);
+            if (!response.ok) {
+                console.log(`[DEBUG] 响应失败，状态码: ${response.status}`);
+                const errorText = await response.text();
+                console.log(`[DEBUG] 错误响应内容:`, errorText);
+                throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 200)}`);
+            }
             
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -3817,6 +4234,9 @@ class App {
                 this.finishClawChatMessage(assistantMessageId);
             }
         } catch (error) {
+            console.error('[DEBUG] 发送请求失败:', error);
+            console.error('[DEBUG] 错误类型:', error.name);
+            console.error('[DEBUG] 错误详情:', error);
             this.addClawChatMessage('system', `<span style="color: #ef4444;">发送失败: ${error.message}</span>`);
         } finally {
             const indicators = document.querySelectorAll('.claw-typing-indicator');
@@ -4749,17 +5169,25 @@ class App {
                 const createdAt = new Date(script.created_at).toLocaleString('zh-CN');
                 const desc = script.description || '';
                 
+                // 转义 HTML 特殊字符，防止破坏页面结构
+                const escapedName = this.escapeHtml(script.name);
+                const escapedDesc = this.escapeHtml(desc);
+                const escapedCodePreview = this.escapeHtml(codePreview);
+                
                 return `
                     <div style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                                <strong style="font-size: 15px; font-family: monospace;">${script.name}</strong>
-                                ${desc ? `<span style="font-size: 13px; color: #0369a1; background: #e0f2fe; padding: 2px 8px; border-radius: 4px;">${desc}</span>` : ''}
+                                <strong style="font-size: 15px; font-family: monospace;">${escapedName}</strong>
+                                ${desc ? `<span style="font-size: 13px; color: #0369a1; background: #e0f2fe; padding: 2px 8px; border-radius: 4px;">${escapedDesc}</span>` : ''}
                                 <span style="font-size: 12px; color: #64748b;">ID: ${script.id}</span>
                             </div>
                             <div style="display: flex; gap: 5px;">
                                 <button class="btn btn-outline-secondary btn-sm" onclick="app.executeScript(${script.id})" title="执行脚本">
                                     <i class="fas fa-play"></i>
+                                </button>
+                                <button class="btn btn-outline-secondary btn-sm" onclick="app.editScript(${script.id})" title="编辑脚本">
+                                    <i class="fas fa-edit"></i>
                                 </button>
                                 <button class="btn btn-outline-secondary btn-sm" onclick="app.deleteScript(${script.id})" title="删除脚本">
                                     <i class="fas fa-trash"></i>
@@ -4767,7 +5195,7 @@ class App {
                             </div>
                         </div>
                         <div style="font-size: 12px; color: #94a3b8;">创建时间: ${createdAt}</div>
-                        <div style="font-size: 13px; color: #1e293b; margin-top: 6px; padding: 6px; background: #f1f5f9; border-radius: 4px; font-family: monospace; white-space: pre-wrap; max-height: 60px; overflow-y: auto;">${codePreview}</div>
+                        <div style="font-size: 13px; color: #1e293b; margin-top: 6px; padding: 6px; background: #f1f5f9; border-radius: 4px; font-family: monospace; white-space: pre-wrap; max-height: 60px; overflow-y: auto;">${escapedCodePreview}</div>
                     </div>
                 `;
             }).join('');
@@ -4783,48 +5211,24 @@ class App {
     }
 
     showAddScript() {
-        document.getElementById('claw-script-add-form').style.display = 'block';
-        document.getElementById('script-name').value = '';
-        document.getElementById('script-description').value = '';
-        document.getElementById('script-code').value = '';
+        this.showScriptEditor();
     }
 
     hideAddScript() {
-        document.getElementById('claw-script-add-form').style.display = 'none';
+        this.closeScriptEditor();
     }
 
     async addScript() {
-        const name = document.getElementById('script-name').value.trim();
-        const description = document.getElementById('script-description').value.trim();
-        const code = document.getElementById('script-code').value.trim();
-        
-        if (!name) {
-            alert('请输入脚本名称');
-            return;
-        }
-        if (!code) {
-            alert('请输入脚本代码');
-            return;
-        }
-        
-        try {
-            const response = await fetch(`${this.baseUrl}/api/lobster-claw/script/create`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, description, code })
-            });
-            const result = await response.json();
-            
-            if (result.success) {
-                alert('脚本创建成功！');
-                this.hideAddScript();
-                this.showScriptModal();
-            } else {
-                alert('创建失败: ' + result.error);
-            }
-        } catch (error) {
-            alert('创建脚本失败: ' + error.message);
-        }
+        // 已被 showScriptEditor 和 saveScriptEditor 替代
+    }
+
+    async editScript(scriptId) {
+        this.showScriptEditor(scriptId);
+    }
+
+    async saveEditedScript() {
+        // 已被 saveScriptEditor 替代
+        await this.saveScriptEditor();
     }
 
     async executeScript(scriptId) {
@@ -4840,9 +5244,26 @@ class App {
             });
             const result = await response.json();
             
+            // 处理缺少依赖的情况
+            if (!result.success && result.error === '缺少依赖' && result.missing_dependencies) {
+                await this.handleMissingDependencies(result.missing_dependencies, scriptId, scriptName);
+                return;
+            }
+            
             if (result.success) {
                 // 关闭脚本管理弹窗
                 document.getElementById('claw-script-modal').style.display = 'none';
+
+                // 处理生成的文件
+                const generatedFiles = result.generated_files || [];
+                let fileDownloadLinks = '';
+                if (generatedFiles.length > 0) {
+                    fileDownloadLinks = '\n\n📁 **生成的文件：**\n';
+                    generatedFiles.forEach(file => {
+                        const sizeKB = (file.size / 1024).toFixed(1);
+                        fileDownloadLinks += `- [${file.name}](${this.baseUrl}${file.download_url}) (${sizeKB} KB)\n`;
+                    });
+                }
 
                 // 将结果传给大模型美化输出
                 const sendBtn = document.getElementById('claw-chat-send-btn');
@@ -4853,7 +5274,7 @@ class App {
                 sendBtn.disabled = true;
                 sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 分析中...';
 
-                const beautifyPrompt = `我执行了一个名为"${scriptName}"的Python脚本，以下是脚本的原始执行结果。请帮我分析解读这个执行结果，用简洁美观的Markdown格式总结关键信息，指出需要注意的异常或问题。如果结果本身已经清晰，直接整理排版即可，不要编造不存在的信息。\n\n执行结果：\n\`\`\`\n${result.result}\n\`\`\``;
+                const beautifyPrompt = `我执行了一个名为"${scriptName}"的Python脚本，以下是脚本的原始执行结果。请帮我分析解读这个执行结果，用简洁美观的Markdown格式总结关键信息，指出需要注意的异常或问题。如果结果本身已经清晰，直接整理排版即可，不要编造不存在的信息。\n\n执行结果：\n\`\`\`\n${result.result}\n\`\`\`${fileDownloadLinks}`;
 
                 try {
                     const chatResponse = await fetch(`${this.baseUrl}/api/lobster-claw/chat/stream`, {
@@ -4939,6 +5360,192 @@ class App {
         } catch (error) {
             console.error('Execute script error:', error);
             alert('执行脚本失败: ' + error.message);
+        }
+    }
+
+    async handleMissingDependencies(missingDeps, scriptId, scriptName) {
+        const depsList = missingDeps.join(', ');
+        
+        // 创建依赖安装确认对话框
+        const modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.style.display = 'flex';
+        modal.id = 'dependency-install-modal';
+        
+        modal.innerHTML = `
+            <div class="modal-content" style="width: 450px; max-height: 90vh; overflow-y: auto;">
+                <div style="padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="font-size: 16px; font-weight: 600; margin: 0;"><i class="fas fa-package"></i> 需要安装依赖</h3>
+                    <button onclick="document.getElementById('dependency-install-modal').remove()" class="btn btn-sm btn-outline-secondary" style="margin-left: 10px;">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div style="padding: 20px;">
+                    <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px; margin-bottom: 16px; border-radius: 0 4px 4px 0;">
+                        <p style="margin: 0; color: #92400e; font-weight: 500;">脚本"${scriptName}"需要安装以下依赖才能执行：</p>
+                        <p style="margin: 8px 0 0; color: #b45309; font-family: monospace; font-size: 14px;">${depsList}</p>
+                    </div>
+                    
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; font-size: 13px; color: #64748b; margin-bottom: 8px;">安装选项：</label>
+                        <div style="display: flex; gap: 10px;">
+                            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                <input type="radio" name="install-mode" value="sync" checked>
+                                <span style="font-size: 13px;">同步安装（等待完成）</span>
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                <input type="radio" name="install-mode" value="async">
+                                <span style="font-size: 13px;">后台安装（继续操作）</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div id="install-progress" style="display: none; margin-bottom: 16px;">
+                        <div style="font-size: 13px; color: #64748b; margin-bottom: 8px;">安装进度：</div>
+                        <div style="height: 20px; background: #e2e8f0; border-radius: 10px; overflow: hidden;">
+                            <div id="install-progress-bar" style="height: 100%; background: linear-gradient(90deg, #3b82f6, #10b981); width: 0%; transition: width 0.3s ease;"></div>
+                        </div>
+                        <div id="install-status" style="font-size: 12px; color: #64748b; margin-top: 8px;">正在安装...</div>
+                        <pre id="install-output" style="font-size: 12px; background: #f8fafc; padding: 10px; border-radius: 6px; max-height: 150px; overflow-y: auto; margin-top: 10px; font-family: monospace;"></pre>
+                    </div>
+                </div>
+                <div style="padding: 16px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 10px;">
+                    <button id="install-cancel-btn" onclick="document.getElementById('dependency-install-modal').remove()" class="btn btn-outline-secondary">
+                        取消
+                    </button>
+                    <button id="install-confirm-btn" onclick="app.startDependencyInstallation('${scriptId}', '${scriptName}')" class="btn btn-primary">
+                        <i class="fas fa-download"></i> 确认安装
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+    }
+
+    async startDependencyInstallation(scriptId, scriptName) {
+        const installMode = document.querySelector('input[name="install-mode"]:checked').value;
+        const progressDiv = document.getElementById('install-progress');
+        const progressBar = document.getElementById('install-progress-bar');
+        const statusDiv = document.getElementById('install-status');
+        const outputDiv = document.getElementById('install-output');
+        const confirmBtn = document.getElementById('install-confirm-btn');
+        const cancelBtn = document.getElementById('install-cancel-btn');
+        
+        // 显示进度
+        progressDiv.style.display = 'block';
+        confirmBtn.disabled = true;
+        cancelBtn.disabled = true;
+        confirmBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 安装中...';
+        
+        try {
+            // 先检测依赖
+            const checkResponse = await fetch(`${this.baseUrl}/api/lobster-claw/script/check-dependencies`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ script_id: scriptId })
+            });
+            const checkResult = await checkResponse.json();
+            
+            if (!checkResult.success || !checkResult.has_missing) {
+                statusDiv.textContent = '依赖已安装，准备执行脚本...';
+                progressBar.style.width = '100%';
+                setTimeout(() => {
+                    document.getElementById('dependency-install-modal').remove();
+                    this.executeScript(scriptId);
+                }, 500);
+                return;
+            }
+            
+            const missingDeps = checkResult.missing_dependencies;
+            
+            // 逐个安装依赖
+            for (let i = 0; i < missingDeps.length; i++) {
+                const dep = missingDeps[i];
+                statusDiv.textContent = `正在安装 ${dep} (${i + 1}/${missingDeps.length})...`;
+                progressBar.style.width = `${((i + 0.5) / missingDeps.length) * 100}%`;
+                
+                if (installMode === 'sync') {
+                    // 同步安装
+                    const installResponse = await fetch(`${this.baseUrl}/api/lobster-claw/script/install-dependency`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: `package_name=${encodeURIComponent(dep)}`
+                    });
+                    const installResult = await installResponse.json();
+                    
+                    outputDiv.textContent += `\n=== 安装 ${dep} ===\n`;
+                    outputDiv.textContent += installResult.output || installResult.message;
+                    outputDiv.scrollTop = outputDiv.scrollHeight;
+                    
+                    if (!installResult.success) {
+                        statusDiv.textContent = `安装 ${dep} 失败: ${installResult.message}`;
+                        statusDiv.style.color = '#ef4444';
+                        confirmBtn.disabled = false;
+                        cancelBtn.disabled = false;
+                        confirmBtn.innerHTML = '<i class="fas fa-redo"></i> 重试';
+                        confirmBtn.onclick = () => this.startDependencyInstallation(scriptId, scriptName);
+                        return;
+                    }
+                } else {
+                    // 异步安装
+                    await fetch(`${this.baseUrl}/api/lobster-claw/script/install-dependency-async`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: `package_name=${encodeURIComponent(dep)}`
+                    });
+                    
+                    // 轮询安装状态
+                    let maxWait = 120; // 最多等待120秒
+                    let waited = 0;
+                    while (waited < maxWait) {
+                        const statusResponse = await fetch(`${this.baseUrl}/api/lobster-claw/script/installation-status`);
+                        const statusResult = await statusResponse.json();
+                        
+                        if (!statusResult.in_progress) {
+                            if (statusResult.success) {
+                                outputDiv.textContent += `\n=== 安装 ${dep} ===\n成功\n`;
+                            } else {
+                                outputDiv.textContent += `\n=== 安装 ${dep} ===\n失败: ${statusResult.output}\n`;
+                            }
+                            outputDiv.scrollTop = outputDiv.scrollHeight;
+                            break;
+                        }
+                        
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        waited += 2;
+                    }
+                    
+                    if (waited >= maxWait) {
+                        statusDiv.textContent = `安装 ${dep} 超时`;
+                        statusDiv.style.color = '#ef4444';
+                        confirmBtn.disabled = false;
+                        cancelBtn.disabled = false;
+                        confirmBtn.innerHTML = '<i class="fas fa-redo"></i> 重试';
+                        confirmBtn.onclick = () => this.startDependencyInstallation(scriptId, scriptName);
+                        return;
+                    }
+                }
+            }
+            
+            // 安装完成
+            statusDiv.textContent = '所有依赖安装完成！';
+            statusDiv.style.color = '#10b981';
+            progressBar.style.width = '100%';
+            
+            // 自动执行脚本
+            setTimeout(() => {
+                document.getElementById('dependency-install-modal').remove();
+                this.executeScript(scriptId);
+            }, 1000);
+            
+        } catch (error) {
+            statusDiv.textContent = `安装出错: ${error.message}`;
+            statusDiv.style.color = '#ef4444';
+            confirmBtn.disabled = false;
+            cancelBtn.disabled = false;
+            confirmBtn.innerHTML = '<i class="fas fa-redo"></i> 重试';
+            confirmBtn.onclick = () => this.startDependencyInstallation(scriptId, scriptName);
         }
     }
 
@@ -6096,6 +6703,248 @@ class App {
         return window.Utils.formatTimestamp(timestamp);
     }
 
+    // ========== Python 语法高亮 ==========
+    
+    highlightPythonCode(code) {
+        if (!code) return '';
+        
+        // 关键字分类
+        const keywordsControl = ['if', 'elif', 'else', 'for', 'while', 'try', 'except', 'finally', 'with', 'lambda', 'yield', 'async', 'await', 'pass', 'break', 'continue', 'return'];
+        const keywordsDef = ['def', 'class'];
+        const keywordsLogic = ['and', 'or', 'not', 'in', 'is'];
+        const keywordsImport = ['import', 'from', 'as'];
+        const keywordsOther = ['del', 'global', 'nonlocal', 'raise', 'assert'];
+        
+        // 内置类型
+        const builtinTypes = ['list', 'dict', 'set', 'tuple', 'str', 'int', 'float', 'bool', 'type'];
+        
+        // 内置函数
+        const builtinFuncs = ['print', 'len', 'range', 'open', 'input', 'abs', 'max', 'min', 'sum', 'sorted', 'reversed', 'enumerate', 'zip', 'map', 'filter', 'round', 'pow', 'divmod', 'chr', 'ord', 'hex', 'oct', 'bin', 'repr', 'format', 'hash', 'id', 'callable', 'isinstance', 'issubclass', 'globals', 'locals', 'dir', 'help'];
+        
+        // 内置常量
+        const builtinConsts = ['True', 'False', 'None'];
+        
+        // 常见异常
+        const exceptions = ['Exception', 'ValueError', 'TypeError', 'KeyError', 'IndexError', 'AttributeError', 'IOError', 'FileNotFoundError', 'RuntimeError', 'NotImplementedError', 'StopIteration', 'AssertionError', 'SyntaxError', 'ImportError', 'ModuleNotFoundError'];
+        
+        let html = this.escapeHtml(code);
+        
+        // 使用占位符策略避免破坏已高亮的内容
+        const placeholders = [];
+        let placeholderIndex = 0;
+        
+        // 1. 先用占位符替换所有字符串和注释（这些内容不需要进一步处理）
+        // 处理带前缀的字符串 (f"", r"", b"", u"")
+        html = html.replace(/((?:[frbuFRBU])?("""[\s\S]*?""")|(?:[frbuFRBU])?('''[\s\S]*?'''))/g, (match) => {
+            const placeholder = `__PY_STRING_${placeholderIndex}__`;
+            placeholders.push({ index: placeholderIndex, type: 'string', content: match });
+            placeholderIndex++;
+            return placeholder;
+        });
+        
+        html = html.replace(/((?:[frbuFRBU])?("[^"]*")|(?:[frbuFRBU])?('[^']*'))/g, (match) => {
+            const placeholder = `__PY_STRING_${placeholderIndex}__`;
+            placeholders.push({ index: placeholderIndex, type: 'string', content: match });
+            placeholderIndex++;
+            return placeholder;
+        });
+        
+        // 处理单行注释
+        html = html.replace(/(#.*$)/gm, (match) => {
+            const placeholder = `__PY_COMMENT_${placeholderIndex}__`;
+            placeholders.push({ index: placeholderIndex, type: 'comment', content: match });
+            placeholderIndex++;
+            return placeholder;
+        });
+        
+        // 2. 在不含字符串和注释的文本上处理其他语法元素
+        // 处理数字
+        html = html.replace(/\b(\d+\.?\d*)\b/g, '<span class="python-number">$1</span>');
+        
+        // 处理装饰器
+        html = html.replace(/(@\w+)/g, '<span class="python-decorator">$1</span>');
+        
+        // 处理类定义
+        html = html.replace(/\b(class)\s+(\w+)/g, '<span class="python-keyword-def">$1</span> <span class="python-class">$2</span>');
+        
+        // 处理函数定义
+        html = html.replace(/\b(def)\s+(\w+)/g, '<span class="python-keyword-def">$1</span> <span class="python-function">$2</span>');
+        
+        // 处理魔法方法 (__xxx__) - 在函数定义之后处理，确保 def 关键字已被高亮
+        html = html.replace(/\b(__\w+__)\b/g, '<span class="python-magic">$1</span>');
+        
+        // 处理异常
+        exceptions.forEach(exc => {
+            const regex = new RegExp(`\\b(${exc})\\b`, 'g');
+            html = html.replace(regex, '<span class="python-exception">$1</span>');
+        });
+        
+        // 处理内置常量
+        builtinConsts.forEach(constant => {
+            const regex = new RegExp(`\\b(${constant})\\b`, 'g');
+            html = html.replace(regex, '<span class="python-builtin-const">$1</span>');
+        });
+        
+        // 处理内置类型
+        builtinTypes.forEach(type => {
+            const regex = new RegExp(`\\b(${type})\\b`, 'g');
+            html = html.replace(regex, '<span class="python-builtin-type">$1</span>');
+        });
+        
+        // 处理内置函数
+        builtinFuncs.forEach(func => {
+            const regex = new RegExp(`\\b(${func})\\b`, 'g');
+            html = html.replace(regex, '<span class="python-builtin-func">$1</span>');
+        });
+        
+        // 处理控制流关键字
+        keywordsControl.forEach(keyword => {
+            const regex = new RegExp(`\\b(${keyword})\\b`, 'g');
+            html = html.replace(regex, '<span class="python-keyword-control">$1</span>');
+        });
+        
+        // 处理逻辑关键字
+        keywordsLogic.forEach(keyword => {
+            const regex = new RegExp(`\\b(${keyword})\\b`, 'g');
+            html = html.replace(regex, '<span class="python-keyword-logic">$1</span>');
+        });
+        
+        // 处理导入关键字
+        keywordsImport.forEach(keyword => {
+            const regex = new RegExp(`\\b(${keyword})\\b`, 'g');
+            html = html.replace(regex, '<span class="python-keyword-import">$1</span>');
+        });
+        
+        // 处理其他关键字
+        keywordsOther.forEach(keyword => {
+            const regex = new RegExp(`\\b(${keyword})\\b`, 'g');
+            html = html.replace(regex, '<span class="python-keyword-control">$1</span>');
+        });
+        
+        // 3. 将占位符还原为带高亮标签的内容
+        placeholders.forEach(ph => {
+            const tag = ph.type === 'comment' ? 'python-comment' : 'python-string';
+            const placeholder = ph.type === 'comment' ? `__PY_COMMENT_${ph.index}__` : `__PY_STRING_${ph.index}__`;
+            html = html.replace(placeholder, `<span class="${tag}">${ph.content}</span>`);
+        });
+        
+        return html;
+    }
+
+    // ========== 脚本编辑器功能 ==========
+    
+    showScriptEditor(scriptId = null) {
+        document.getElementById('script-editor-name').value = '';
+        document.getElementById('script-editor-description').value = '';
+        document.getElementById('script-editor-code').value = '';
+        document.getElementById('script-editor-highlight').innerHTML = '';
+        
+        this.editingScriptId = scriptId;
+        
+        if (scriptId) {
+            document.getElementById('script-editor-title').textContent = '编辑脚本';
+            this.loadScriptForEdit(scriptId);
+        } else {
+            document.getElementById('script-editor-title').textContent = '新建脚本';
+        }
+        
+        document.getElementById('claw-script-editor-modal').style.display = 'flex';
+        
+        // 使用 oninput 和 onscroll 属性代替 addEventListener，避免事件监听器累积
+        const codeTextarea = document.getElementById('script-editor-code');
+        codeTextarea.oninput = () => this.updateScriptHighlight();
+        codeTextarea.onscroll = () => this.syncScriptScroll();
+        document.getElementById('script-editor-highlight').onscroll = () => this.syncScriptScroll();
+    }
+
+    async loadScriptForEdit(scriptId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/script/${scriptId}`);
+            const result = await response.json();
+            
+            if (result.success) {
+                const script = result.script;
+                document.getElementById('script-editor-name').value = script.name;
+                document.getElementById('script-editor-description').value = script.description || '';
+                document.getElementById('script-editor-code').value = script.code;
+                this.updateScriptHighlight();
+            } else {
+                alert('获取脚本失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('获取脚本失败: ' + error.message);
+        }
+    }
+
+    updateScriptHighlight() {
+        const code = document.getElementById('script-editor-code').value;
+        const highlight = document.getElementById('script-editor-highlight');
+        const highlighted = this.highlightPythonCode(code);
+        highlight.innerHTML = highlighted;
+        console.log('Syntax highlight updated, length:', highlighted.length);
+        console.log('Sample highlighted content:', highlighted.substring(0, 200));
+    }
+
+    syncScriptScroll() {
+        const codeTextarea = document.getElementById('script-editor-code');
+        const highlight = document.getElementById('script-editor-highlight');
+        
+        if (codeTextarea.scrollTop !== highlight.scrollTop) {
+            highlight.scrollTop = codeTextarea.scrollTop;
+            highlight.scrollLeft = codeTextarea.scrollLeft;
+        }
+    }
+
+    async saveScriptEditor() {
+        const name = document.getElementById('script-editor-name').value.trim();
+        const description = document.getElementById('script-editor-description').value.trim();
+        const code = document.getElementById('script-editor-code').value.trim();
+        
+        if (!name) {
+            alert('请输入脚本名称');
+            return;
+        }
+        if (!code) {
+            alert('请输入脚本代码');
+            return;
+        }
+        
+        try {
+            let response, result;
+            
+            if (this.editingScriptId) {
+                response = await fetch(`${this.baseUrl}/api/lobster-claw/script/${this.editingScriptId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description, code })
+                });
+            } else {
+                response = await fetch(`${this.baseUrl}/api/lobster-claw/script/create`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description, code })
+                });
+            }
+            
+            result = await response.json();
+            
+            if (result.success) {
+                alert(this.editingScriptId ? '脚本更新成功！' : '脚本创建成功！');
+                this.closeScriptEditor();
+                this.showScriptModal();
+            } else {
+                alert('操作失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('操作失败: ' + error.message);
+        }
+    }
+
+    closeScriptEditor() {
+        document.getElementById('claw-script-editor-modal').style.display = 'none';
+        this.editingScriptId = null;
+    }
+
     // ========== 统计分析功能 ==========
     
     async loadStatistics() {
@@ -6131,6 +6980,10 @@ class App {
         document.getElementById('stat-total-tokens').textContent = (stats.total_tokens || 0).toLocaleString();
         document.getElementById('stat-prompt-tokens').textContent = (stats.total_prompt_tokens || 0).toLocaleString();
         document.getElementById('stat-completion-tokens').textContent = (stats.total_completion_tokens || 0).toLocaleString();
+        document.getElementById('stat-average-duration').textContent = (stats.average_duration || 0) + 's';
+        document.getElementById('stat-average-tps').textContent = stats.average_tokens_per_second || 0;
+        document.getElementById('stat-success-rate').textContent = (stats.success_rate || 0) + '%';
+        document.getElementById('stat-total-errors').textContent = stats.total_errors || 0;
         
         const modelsList = document.getElementById('stat-models-list');
         if (stats.models && Object.keys(stats.models).length > 0) {
@@ -6141,6 +6994,10 @@ class App {
                         <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
                             调用 ${modelStats.calls} 次 | Token ${modelStats.total_tokens.toLocaleString()} | 
                             输入 ${modelStats.prompt_tokens.toLocaleString()} | 输出 ${modelStats.completion_tokens.toLocaleString()}
+                        </div>
+                        <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">
+                            平均耗时 ${modelStats.average_duration}s | 平均速度 ${modelStats.average_tokens_per_second} tokens/s | 
+                            成功率 ${modelStats.success_rate}% | 错误 ${modelStats.errors}次
                         </div>
                     </div>
                 `;
@@ -6156,7 +7013,11 @@ class App {
                     <div style="padding: 10px; border-bottom: 1px solid #e2e8f0;">
                         <div style="font-size: 13px; font-weight: 500; color: #1e293b;">${day.date}</div>
                         <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
-                            调用 ${day.calls} 次 | Token ${day.total_tokens.toLocaleString()}
+                            调用 ${day.calls} 次 | Token ${day.total_tokens.toLocaleString()} | 
+                            输入 ${day.prompt_tokens.toLocaleString()} | 输出 ${day.completion_tokens.toLocaleString()}
+                        </div>
+                        <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">
+                            总耗时 ${day.duration.toFixed(2)}s | 错误 ${day.errors}次
                         </div>
                     </div>
                 `;

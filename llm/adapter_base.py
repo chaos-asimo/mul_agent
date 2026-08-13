@@ -39,6 +39,19 @@ class LLMAdapter(ABC):
         """Count tokens in text"""
         pass
 
+    @abstractmethod
+    def embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings for a list of texts"""
+        pass
+
+    def embed_query(self, text: str) -> List[float]:
+        """Generate embedding for a search query.
+
+        Default implementation delegates to ``embeddings``. Subclasses may
+        override to add model-specific query prefixes (e.g. BGE models).
+        """
+        return self.embeddings([text])[0]
+
     def count_messages_tokens(self, messages: List[Dict[str, str]]) -> int:
         """Count tokens in messages"""
         total = 0

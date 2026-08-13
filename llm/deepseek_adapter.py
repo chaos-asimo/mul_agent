@@ -114,3 +114,15 @@ class DeepSeekAdapter(LLMAdapter):
             return len(encoding.encode(text))
         except Exception:
             return len(text) // 4
+
+    def embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings using DeepSeek API (OpenAI-compatible)"""
+        try:
+            response = self.client.embeddings.create(
+                model=self.model_name,
+                input=texts
+            )
+            return [data.embedding for data in response.data]
+        except Exception as e:
+            print(f"DeepSeek embedding API error: {e}")
+            raise

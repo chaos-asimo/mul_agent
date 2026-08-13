@@ -4,9 +4,9 @@ import random
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Request, Depends, Form
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse, Response
 from utils.logger import logger
-from web.schemas import SettingsUpdate
+
 from engine.agent_worker import create_llm_adapter
 from engine.iteration_controller import IterationController
 
@@ -25,33 +25,6 @@ def get_state(request: Request):
 async def get_version_api(state=Depends(get_state)):
     """获取应用版本号"""
     return {"version": state.app_version}
-
-
-@router.get("/api/settings")
-async def get_settings(state=Depends(get_state)):
-    """获取当前设置"""
-    return state.settings
-
-
-@router.put("/api/settings")
-async def update_settings(new_settings: SettingsUpdate, state=Depends(get_state), managers: dict = Depends(get_managers)):
-    """更新设置"""
-    settings = state.settings
-    settings["iterations"] = new_settings.iterations
-    settings["enable_search"] = new_settings.enable_search
-    settings["max_search_per_iter"] = new_settings.max_search_per_iter
-    settings["default_log_level"] = new_settings.default_log_level
-
-    controller = IterationController(
-        agent_manager=managers["agent_manager"],
-        model_manager=managers["model_manager"],
-        log_manager=managers["log_manager"],
-        search_manager=managers["search_manager"] if settings["enable_search"] else None,
-        iterations=settings["iterations"]
-    )
-    state.controller = controller
-
-    return {"status": "success", "message": "设置更新成功"}
 
 
 @router.get("/api/system_info")
@@ -111,6 +84,92 @@ async def get_hexagram_by_name(name: str):
 
 
 YIJING_HISTORY_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "yijing_history")
+
+
+def generate_yijing_markdown(data):
+    content = data.get("content", "")
+    date = data.get("date", "")
+    original = data.get("original_hexagram", {})
+    changed = data.get("changed_hexagram", None)
+    yao_results = data.get("yao_results", [])
+    change_count = data.get("change_count", 0)
+    solution_text = data.get("solution_text", "")
+    ai_solution = data.get("ai_solution", "")
+
+    lines = []
+
+    lines.append("# 周易卜卦记录")
+    lines.append("")
+    lines.append(f"## {content}")
+    lines.append("")
+    lines.append(f"> 占卜时间：{date}")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    lines.append("## 摇卦过程")
+    lines.append("")
+    lines.append("| 爻位 | 爻名 | 铜钱结果 | 数值 | 类型 | 是否变爻 |")
+    lines.append("| :---: | :--- | :--- | :--- | :--- | :--- |")
+    sorted_yao = sorted(yao_results, key=lambda y: y.get("position", 0))
+    for yao in sorted_yao:
+        position = yao.get("position", "")
+        name = yao.get("name", "")
+        coin_result = yao.get("coin_result", "")
+        value = yao.get("value", "")
+        yao_type = yao.get("type", "")
+        is_change = yao.get("is_change", False)
+        change_str = "✅ 变爻" if is_change else "-"
+        lines.append(f"| {position} | {name} | {coin_result} | {value} | {yao_type} | {change_str} |")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    lines.append("## 本卦")
+    lines.append("")
+    full_name = original.get("full_name", "")
+    number = original.get("number", "")
+    description = original.get("description", "")
+    lines.append(f"### {full_name}（第{number}卦）")
+    lines.append("")
+    lines.append(f"> {description}")
+    lines.append("")
+
+    if changed is not None:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 之卦")
+        lines.append("")
+        changed_full_name = changed.get("full_name", "")
+        changed_number = changed.get("number", "")
+        changed_description = changed.get("description", "")
+        lines.append(f"### {changed_full_name}（第{changed_number}卦）")
+        lines.append("")
+        lines.append(f"> {changed_description}")
+        lines.append("")
+        lines.append(f"> 变爻数量：{change_count}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("## 解卦参考")
+    lines.append("")
+    if solution_text:
+        for sol_line in solution_text.splitlines():
+            lines.append(f"> {sol_line}")
+    lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("## AI解卦")
+    lines.append("")
+    if ai_solution:
+        for ai_line in ai_solution.splitlines():
+            lines.append(ai_line)
+    lines.append("")
+
+    return "\n".join(lines)
+
 
 @router.post("/api/yijing/save")
 async def save_yijing_history(request: Request):
@@ -209,6 +268,110 @@ async def delete_yijing_history(session_id: str):
     except Exception as e:
         logger.error(f"Delete yijing history error: {e}")
         return {"status": "error", "message": str(e)}
+
+
+@router.post("/api/yijing/export")
+async def export_yijing_result(request: Request):
+    """导出卜卦结果为Markdown文件"""
+    try:
+        data = await request.json()
+        
+        original = data.get("original_hexagram", {})
+        yao_results = data.get("yao_results", [])
+        ai_solution = data.get("ai_solution", "")
+        
+        if not original or not yao_results:
+            return Response(
+                content=json.dumps({"status": "error", "message": "缺少必需的卜卦数据"}, ensure_ascii=False),
+                status_code=400,
+                media_type="application/json; charset=utf-8"
+            )
+        
+        if not ai_solution:
+            return Response(
+                content=json.dumps({"status": "error", "message": "请先完成AI解卦后再导出"}, ensure_ascii=False),
+                status_code=400,
+                media_type="application/json; charset=utf-8"
+            )
+        
+        md_content = generate_yijing_markdown(data)
+        
+        original_name = original.get("full_name", "卦象")
+        date_str = datetime.now().strftime("%Y%m%d")
+        safe_original_name = "".join(c for c in original_name if c not in '\\/:*?"<>|')
+        filename = f"卜卦_{date_str}_{safe_original_name}.md"
+        
+        from urllib.parse import quote
+        encoded_filename = quote(filename, safe="")
+        headers = {
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+        }
+        
+        return Response(
+            content=md_content,
+            media_type="text/markdown; charset=utf-8",
+            headers=headers
+        )
+        
+    except Exception as e:
+        logger.error(f"Export yijing result error: {e}")
+        return Response(
+            content=json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False),
+            status_code=500,
+            media_type="application/json; charset=utf-8"
+        )
+
+
+@router.get("/api/yijing/history/{session_id}/export")
+async def export_yijing_history(session_id: str):
+    """从历史记录导出卜卦结果为Markdown文件"""
+    try:
+        filepath = os.path.join(YIJING_HISTORY_DIR, f"{session_id}.json")
+        if not os.path.exists(filepath):
+            return Response(
+                content=json.dumps({"status": "error", "message": "记录不存在"}, ensure_ascii=False),
+                status_code=404,
+                media_type="application/json; charset=utf-8"
+            )
+        
+        with open(filepath, "r", encoding="utf-8") as f:
+            record = json.load(f)
+        
+        if not record.get("ai_solution"):
+            return Response(
+                content=json.dumps({"status": "error", "message": "该记录没有AI解卦数据，无法导出"}, ensure_ascii=False),
+                status_code=400,
+                media_type="application/json; charset=utf-8"
+            )
+        
+        md_content = generate_yijing_markdown(record)
+        
+        original = record.get("original_hexagram", {})
+        original_name = original.get("full_name", "卦象")
+        record_date = record.get("date", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        date_str = record_date.replace("-", "").replace(" ", "").replace(":", "")[:8]
+        safe_original_name = "".join(c for c in original_name if c not in '\\/:*?"<>|')
+        filename = f"卜卦_{date_str}_{safe_original_name}.md"
+        
+        from urllib.parse import quote
+        encoded_filename = quote(filename, safe="")
+        headers = {
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+        }
+        
+        return Response(
+            content=md_content,
+            media_type="text/markdown; charset=utf-8",
+            headers=headers
+        )
+        
+    except Exception as e:
+        logger.error(f"Export yijing history error: {e}")
+        return Response(
+            content=json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False),
+            status_code=500,
+            media_type="application/json; charset=utf-8"
+        )
 
 
 def _generate_yijing_explain(content: str, original: dict, changed: dict, yao_results: list, change_count: int, change_yao_positions: list, managers: dict):
@@ -381,27 +544,31 @@ async def get_model_call_statistics(start_date: Optional[str] = None, end_date: 
     from llm.model_call_logger import model_call_logger
     from datetime import datetime
     
-    logs = model_call_logger.call_logs
+    # 使用get_all_logs获取所有日志（包括历史文件）
+    logs = model_call_logger.get_all_logs()
     
     if start_date or end_date:
         filtered_logs = []
         for log in logs:
-            log_date = log.timestamp.date()
-            if start_date:
-                try:
-                    start = datetime.strptime(start_date, "%Y-%m-%d").date()
-                    if log_date < start:
-                        continue
-                except:
-                    pass
-            if end_date:
-                try:
-                    end = datetime.strptime(end_date, "%Y-%m-%d").date()
-                    if log_date > end:
-                        continue
-                except:
-                    pass
-            filtered_logs.append(log)
+            try:
+                log_date = datetime.fromisoformat(log["timestamp"]).date()
+                if start_date:
+                    try:
+                        start = datetime.strptime(start_date, "%Y-%m-%d").date()
+                        if log_date < start:
+                            continue
+                    except:
+                        pass
+                if end_date:
+                    try:
+                        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+                        if log_date > end:
+                            continue
+                    except:
+                        pass
+                filtered_logs.append(log)
+            except:
+                pass
         logs = filtered_logs
     
     if not logs:
@@ -411,52 +578,94 @@ async def get_model_call_statistics(start_date: Optional[str] = None, end_date: 
             "total_prompt_tokens": 0,
             "total_completion_tokens": 0,
             "total_duration": 0,
+            "average_duration": 0,
+            "average_tokens_per_second": 0,
+            "success_rate": 0,
+            "total_errors": 0,
             "models": {},
             "daily_stats": []
         }
     
     model_stats = {}
     daily_stats = {}
+    total_errors = 0
     
     for log in logs:
-        date_str = log.timestamp.strftime("%Y-%m-%d")
+        date_str = datetime.fromisoformat(log["timestamp"]).strftime("%Y-%m-%d")
         
-        if log.model_name not in model_stats:
-            model_stats[log.model_name] = {
+        if log.get("error"):
+            total_errors += 1
+        
+        model_name = log.get("model_name", "unknown")
+        if model_name not in model_stats:
+            model_stats[model_name] = {
                 "calls": 0,
                 "total_tokens": 0,
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
-                "duration": 0
+                "duration": 0,
+                "errors": 0,
+                "tokens_per_second": 0
             }
         
-        model_stats[log.model_name]["calls"] += 1
-        model_stats[log.model_name]["total_tokens"] += log.total_tokens
-        model_stats[log.model_name]["prompt_tokens"] += log.prompt_tokens
-        model_stats[log.model_name]["completion_tokens"] += log.completion_tokens
-        model_stats[log.model_name]["duration"] += log.duration
+        model_stats[model_name]["calls"] += 1
+        model_stats[model_name]["total_tokens"] += log.get("total_tokens", 0)
+        model_stats[model_name]["prompt_tokens"] += log.get("prompt_tokens", 0)
+        model_stats[model_name]["completion_tokens"] += log.get("completion_tokens", 0)
+        model_stats[model_name]["duration"] += log.get("duration", 0)
+        model_stats[model_name]["tokens_per_second"] += log.get("tokens_per_second", 0)
+        if log.get("error"):
+            model_stats[model_name]["errors"] += 1
         
         if date_str not in daily_stats:
             daily_stats[date_str] = {
                 "date": date_str,
                 "calls": 0,
-                "total_tokens": 0
+                "total_tokens": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "duration": 0,
+                "errors": 0
             }
         
         daily_stats[date_str]["calls"] += 1
-        daily_stats[date_str]["total_tokens"] += log.total_tokens
+        daily_stats[date_str]["total_tokens"] += log.get("total_tokens", 0)
+        daily_stats[date_str]["prompt_tokens"] += log.get("prompt_tokens", 0)
+        daily_stats[date_str]["completion_tokens"] += log.get("completion_tokens", 0)
+        daily_stats[date_str]["duration"] += log.get("duration", 0)
+        if log.get("error"):
+            daily_stats[date_str]["errors"] += 1
     
-    total_tokens = sum(log.total_tokens for log in logs)
-    total_prompt_tokens = sum(log.prompt_tokens for log in logs)
-    total_completion_tokens = sum(log.completion_tokens for log in logs)
-    total_duration = sum(log.duration for log in logs)
+    total_tokens = sum(log.get("total_tokens", 0) for log in logs)
+    total_prompt_tokens = sum(log.get("prompt_tokens", 0) for log in logs)
+    total_completion_tokens = sum(log.get("completion_tokens", 0) for log in logs)
+    total_duration = sum(log.get("duration", 0) for log in logs)
+    total_tokens_per_second = sum(log.get("tokens_per_second", 0) for log in logs)
+    
+    # 计算每个模型的平均指标
+    for model_name, stats in model_stats.items():
+        calls = stats["calls"]
+        if calls > 0:
+            stats["average_duration"] = round(stats["duration"] / calls, 2)
+            stats["average_tokens_per_second"] = round(stats["tokens_per_second"] / calls, 2)
+            stats["success_rate"] = round(((calls - stats["errors"]) / calls) * 100, 2)
+        else:
+            stats["average_duration"] = 0
+            stats["average_tokens_per_second"] = 0
+            stats["success_rate"] = 0
+    
+    total_calls = len(logs)
     
     return {
-        "total_calls": len(logs),
+        "total_calls": total_calls,
         "total_tokens": total_tokens,
         "total_prompt_tokens": total_prompt_tokens,
         "total_completion_tokens": total_completion_tokens,
         "total_duration": round(total_duration, 2),
+        "average_duration": round(total_duration / total_calls, 2),
+        "average_tokens_per_second": round(total_tokens_per_second / total_calls, 2),
+        "success_rate": round(((total_calls - total_errors) / total_calls) * 100, 2),
+        "total_errors": total_errors,
         "models": model_stats,
         "daily_stats": sorted(daily_stats.values(), key=lambda x: x["date"], reverse=True)[:7]
     }

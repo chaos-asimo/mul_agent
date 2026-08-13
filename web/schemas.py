@@ -38,13 +38,6 @@ class ProcessRequest(BaseModel):
     agent_ids: List[str] = []
 
 
-class SettingsUpdate(BaseModel):
-    iterations: int
-    enable_search: bool
-    max_search_per_iter: int
-    default_log_level: str
-
-
 class ImageGenerateRequest(BaseModel):
     prompt: str
     model_id: Optional[str] = None

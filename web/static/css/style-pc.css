@@ -507,13 +507,6 @@ body {
     text-decoration: underline;
 }
 
-/* 设置表单 */
-.settings-form {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
 .form-group {
     display: flex;
     flex-direction: column;
@@ -3075,6 +3068,32 @@ body {
     display: none;
 }
 
+/* ============ 龙虾Claw 文件上传样式 ============ */
+.claw-chat-file-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 8px;
+    background: #3b82f6;
+    color: white;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: default;
+    transition: background 0.2s;
+}
+
+.claw-chat-file-tag:hover {
+    background: #2563eb;
+}
+
+.claw-chat-file-tag .fas.fa-times {
+    font-size: 10px;
+    opacity: 0.8;
+}
+
+.claw-chat-file-tag .fas.fa-times:hover {
+    opacity: 1;
+}
+
 /* ============ 龙虾Claw Markdown样式 ============ */
 .claw-chat-message .claw-streaming-text h1 {
     font-size: 1.5em;
@@ -3348,4 +3367,126 @@ body {
         height: 48px !important;
         font-size: 18px !important;
     }
+}
+
+/* Python 语法高亮样式（参考 VS Code One Dark Pro 主题） */
+.python-highlight {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    color: #d4d4d4;
+    background: #1e1e1e;
+}
+
+/* 关键字 - 控制流 */
+.python-keyword-control {
+    color: #c586c0;
+    font-weight: bold;
+}
+
+/* 关键字 - 类型与定义 */
+.python-keyword-def {
+    color: #569cd6;
+    font-weight: bold;
+}
+
+/* 关键字 - 逻辑 */
+.python-keyword-logic {
+    color: #c586c0;
+}
+
+/* 关键字 - 导入 */
+.python-keyword-import {
+    color: #569cd6;
+}
+
+/* 内置类型 */
+.python-builtin-type {
+    color: #4ec9b0;
+    font-weight: bold;
+}
+
+/* 内置函数 */
+.python-builtin-func {
+    color: #4ec9b0;
+}
+
+/* 内置常量 */
+.python-builtin-const {
+    color: #569cd6;
+    font-weight: bold;
+}
+
+/* 字符串 */
+.python-string {
+    color: #ce9178;
+}
+
+/* 字符串前缀 */
+.python-string-prefix {
+    color: #c586c0;
+}
+
+/* 注释 */
+.python-comment {
+    color: #6a9955;
+    font-style: italic;
+}
+
+/* 函数名 */
+.python-function {
+    color: #dcdcaa;
+}
+
+/* 类名 */
+.python-class {
+    color: #4ec9b0;
+    font-weight: bold;
+}
+
+/* 装饰器 */
+.python-decorator {
+    color: #c586c0;
+}
+
+/* 魔法方法 */
+.python-magic {
+    color: #c586c0;
+    font-weight: bold;
+}
+
+/* 数字 */
+.python-number {
+    color: #b5cea8;
+}
+
+/* 运算符 */
+.python-operator {
+    color: #d4d4d4;
+}
+
+/* 括号 */
+.python-bracket {
+    color: #858585;
+}
+
+/* 异常 */
+.python-exception {
+    color: #f14c4c;
+    font-weight: bold;
+}
+
+/* 模块名 */
+.python-module {
+    color: #9cdcfe;
+}
+
+/* 参数 */
+.python-parameter {
+    color: #9cdcfe;
+}
+
+/* 变量 */
+.python-variable {
+    color: #9cdcfe;
 }
