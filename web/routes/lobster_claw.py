@@ -671,6 +671,29 @@ async def cron_runs(task_id: int, limit: int = 50):
     runs = cron_task_manager.get_runs(task_id, limit=limit)
     return {"success": True, "runs": runs}
 
+@router.get("/environment/snapshot")
+async def get_env_snapshot():
+    """返回龙虾当前运行环境的完整快照：大模型/搜索引擎/飞书通道/知识库/定时任务。"""
+    try:
+        snapshot = get_environment_snapshot()
+        return {"success": True, "snapshot": snapshot}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.get("/cron/runs/recent")
+async def cron_recent_runs(since_id: int = 0, limit: int = 50, only_finished: bool = True):
+    """
+    跨任务获取最近的运行记录，用于前端增量展示。
+    - since_id: 仅返回 id > since_id 的记录（用于增量拉取）
+    - limit: 返回条数上限
+    - only_finished: 默认只返回已结束的 (success/failed)，忽略 running
+    """
+    runs = cron_task_manager.get_recent_runs(
+        since_id=since_id, limit=limit,
+        min_status='finished' if only_finished else None
+    )
+    return {"success": True, "runs": runs}
+
 @router.post("/cron/{task_id}/run-now")
 async def cron_run_now(task_id: int):
     task = cron_task_manager.get_task(task_id)
@@ -998,6 +1021,218 @@ async def execute_skill(request: SkillExecuteRequest):
 chat_sessions = {}
 MAX_CHAT_HISTORY = 50
 
+# ================= 环境感知：聚合 LLM 模型 / 搜索引擎 / 飞书通道 / RAG 知识库 =================
+_ENV_CACHE = {"ts": 0, "ttl": 5, "data": None}  # 5秒软缓存，避免聊天高频调用压垮 DB/JSON
+
+def get_environment_snapshot():
+    """
+    获取龙虾当前运行环境的快照。
+    返回结构：
+    {
+        "ts": str,                # 快照生成时间 (ISO)
+        "models": {               # 模型配置
+            "total": int, "enabled": int, "configured": int,
+            "by_type": {"text": int, "image": int, "video": int, "embedding": int},
+            "items": [{name, model_type, api_type, model_name, enabled, has_key, max_tokens, context_window}]
+        },
+        "search_engines": {       # 搜索引擎
+            "total": int, "enabled": int, "available": int,
+            "items": [{id, adapter_type, enabled, has_key, has_url}]
+        },
+        "feishu": {               # 飞书通道
+            "enabled": bool, "is_configured": bool,
+            "bot_name": str, "domain": str, "event_mode": str,
+            "dm_policy": str, "handle_groups": bool, "handle_dms": bool,
+            "sessions": int, "recent_messages": int
+        },
+        "knowledge_base": {       # RAG 知识库
+            "documents": int, "chunks": int
+        },
+        "cron": {                 # 定时任务
+            "total": int, "enabled": int, "task_types": {"ai": int, "command": int}
+        }
+    }
+    """
+    import time as _t
+    now_ts = _t.time()
+    if _ENV_CACHE["data"] and (now_ts - _ENV_CACHE["ts"]) < _ENV_CACHE["ttl"]:
+        return _ENV_CACHE["data"]
+
+    snapshot = {"ts": datetime.now().isoformat()}
+
+    # ---- 1. 大模型 ----
+    try:
+        from models.model_manager import ModelManager
+        mm = ModelManager()
+        models_all = mm.get_all()
+    except Exception:
+        models_all = []
+
+    by_type = {}
+    items = []
+    configured = 0
+    enabled_count = 0
+    for m in models_all:
+        has_key = bool(getattr(m, "api_key", ""))
+        if has_key and getattr(m, "enabled", True):
+            configured += 1
+        if getattr(m, "enabled", True):
+            enabled_count += 1
+        mt = getattr(m, "model_type", "text") or "text"
+        by_type[mt] = by_type.get(mt, 0) + 1
+        items.append({
+            "id": getattr(m, "id", ""),
+            "name": getattr(m, "name", ""),
+            "model_type": mt,
+            "api_type": getattr(m, "api_type", ""),
+            "model_name": getattr(m, "model_name", ""),
+            "enabled": bool(getattr(m, "enabled", True)),
+            "has_key": has_key,
+            "max_tokens": getattr(m, "max_tokens", 0),
+            "context_window": getattr(m, "context_window", 0),
+        })
+    snapshot["models"] = {
+        "total": len(models_all),
+        "enabled": enabled_count,
+        "configured": configured,  # 已启用且配置了 api_key
+        "by_type": by_type,
+        "items": items,
+    }
+
+    # ---- 2. 搜索引擎 ----
+    try:
+        from search.search_manager import SearchManager
+        sm = SearchManager()
+        engines = sm.list()
+    except Exception:
+        engines = []
+
+    se_items = []
+    se_enabled = 0
+    se_available = 0
+    for e in engines:
+        has_key = bool(getattr(e, "api_key", ""))
+        has_url = bool(getattr(e, "api_url", ""))
+        enabled_ = bool(getattr(e, "enabled", True))
+        if enabled_:
+            se_enabled += 1
+        if enabled_ and has_key:
+            se_available += 1
+        se_items.append({
+            "id": getattr(e, "id", ""),
+            "name": getattr(e, "name", ""),
+            "adapter_type": getattr(e, "adapter_type", ""),
+            "enabled": enabled_,
+            "has_key": has_key,
+            "has_url": has_url,
+        })
+    snapshot["search_engines"] = {
+        "total": len(engines),
+        "enabled": se_enabled,
+        "available": se_available,
+        "items": se_items,
+    }
+
+    # ---- 3. 飞书通道 ----
+    feishu = {"enabled": False, "is_configured": False, "bot_name": "Lobster Bot",
+             "domain": "feishu", "event_mode": "long_connection",
+             "dm_policy": "open", "handle_groups": False, "handle_dms": False,
+             "sessions": 0, "recent_messages": 0}
+    try:
+        from web.routes.feishu import feishu_config, feishu_handler
+        cfg = feishu_config.get()
+        feishu["enabled"] = bool(cfg.get("enabled", False))
+        feishu["is_configured"] = bool(feishu_config.is_configured())
+        feishu["bot_name"] = cfg.get("bot_name") or feishu["bot_name"]
+        feishu["domain"] = cfg.get("domain") or "feishu"
+        feishu["event_mode"] = cfg.get("event_mode") or "long_connection"
+        feishu["dm_policy"] = cfg.get("dm_policy") or "open"
+        feishu["handle_groups"] = bool(cfg.get("handle_groups"))
+        feishu["handle_dms"] = bool(cfg.get("handle_dms"))
+        try:
+            logs = feishu_handler.get_message_logs(limit=1)
+            feishu["recent_messages"] = len(getattr(feishu_handler, "message_logs", logs)) if hasattr(feishu_handler, "message_logs") else 0
+        except Exception:
+            pass
+    except Exception:
+        pass
+    feishu["sessions"] = sum(1 for sid in chat_sessions.keys() if sid.startswith("feishu_"))
+    snapshot["feishu"] = feishu
+
+    # ---- 4. RAG 知识库 ----
+    kb = {"documents": 0, "chunks": 0}
+    try:
+        from rag.knowledge_base import KnowledgeBase
+        kb_stats = KnowledgeBase().get_stats()
+        kb["documents"] = int(kb_stats.get("total_documents", 0))
+        kb["chunks"] = int(kb_stats.get("total_chunks", 0))
+    except Exception:
+        pass
+    snapshot["knowledge_base"] = kb
+
+    # ---- 5. 定时任务 ----
+    try:
+        tasks = cron_task_manager.list_tasks()
+    except Exception:
+        tasks = []
+    task_types = {}
+    enabled_cron = 0
+    for t in tasks:
+        tt = t.get("task_type") or "unknown"
+        task_types[tt] = task_types.get(tt, 0) + 1
+        if t.get("enabled"):
+            enabled_cron += 1
+    snapshot["cron"] = {
+        "total": len(tasks),
+        "enabled": enabled_cron,
+        "task_types": task_types,
+    }
+
+    _ENV_CACHE["ts"] = now_ts
+    _ENV_CACHE["data"] = snapshot
+    return snapshot
+
+
+def format_environment_for_prompt(snapshot) -> str:
+    """将环境快照格式化为适合注入 system prompt 的自然语言摘要。"""
+    lines = ["【系统环境感知摘要（当前龙虾运行环境）】"]
+    m = snapshot.get("models", {})
+    configured_models = [x for x in m.get("items", []) if x.get("has_key") and x.get("enabled")]
+    lines.append(f"- 大模型: 共 {m.get('total',0)} 个，已配置可用 {m.get('configured',0)} 个")
+    if configured_models:
+        by_mt = {}
+        for x in configured_models:
+            mt = x.get("model_type","text")
+            by_mt.setdefault(mt,[]).append(f"{x.get('name') or x.get('model_name')}({x.get('api_type')})")
+        tag_map = {"text":"文本对话","image":"图像生成","video":"视频生成","embedding":"向量化"}
+        for mt, names in by_mt.items():
+            label = tag_map.get(mt, mt)
+            lines.append(f"    · {label}模型 ({len(names)}): {', '.join(names[:5])}{'…' if len(names)>5 else ''}")
+
+    se = snapshot.get("search_engines", {})
+    available = [x for x in se.get("items", []) if x.get("enabled") and x.get("has_key")]
+    lines.append(f"- 搜索引擎: 共 {se.get('total',0)} 个，可用 {se.get('available',0)} 个"
+                 + (f"（{', '.join(x.get('name') or x.get('id') for x in available)}）" if available else ""))
+
+    f = snapshot.get("feishu", {})
+    status_parts = []
+    if f.get("enabled"): status_parts.append("已启用")
+    if f.get("is_configured"): status_parts.append("配置完整")
+    if f.get("handle_groups"): status_parts.append("处理群聊")
+    if f.get("handle_dms"): status_parts.append("处理私聊")
+    lines.append(f"- 飞书通道: {f.get('bot_name') or 'Lobster Bot'} / {f.get('domain','feishu')} / {f.get('event_mode','')}"
+                 + (f"（{' / '.join(status_parts)}）" if status_parts else "（未配置）")
+                 + f"，当前会话 {f.get('sessions',0)} 个")
+
+    kb = snapshot.get("knowledge_base", {})
+    lines.append(f"- RAG知识库: {kb.get('documents',0)} 个文档 / {kb.get('chunks',0)} 个分块")
+
+    c = snapshot.get("cron", {})
+    tt_desc = ", ".join(f"{k}={v}" for k,v in (c.get("task_types") or {}).items()) or "-"
+    lines.append(f"- 定时任务: 共 {c.get('total',0)} 个（启用 {c.get('enabled',0)} 个，类型：{tt_desc}）")
+    lines.append("【摘要结束】")
+    return "\n".join(lines)
+
 class ChatMessageRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
@@ -1098,6 +1333,12 @@ async def generate_chat_response(session_id: str, message: str, model_name: Opti
         session_id = get_or_create_session()
         session = chat_sessions[session_id]
     
+    try:
+        env_aware_text = format_environment_for_prompt(get_environment_snapshot())
+    except Exception:
+        env_aware_text = ""
+    env_block = "\n\n" + env_aware_text + "\n" if env_aware_text else ""
+
     system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以执行以下操作：
 1. 回答用户问题
 2. 执行Shell命令（dir, ls, echo等）
@@ -1106,7 +1347,7 @@ async def generate_chat_response(session_id: str, message: str, model_name: Opti
 5. 执行定时任务
 6. 管理智能体
 
-请根据用户的需求，选择合适的工具执行。如果需要执行工具，请使用<tool>标签包裹工具调用。"""
+请根据用户的需求，选择合适的工具执行。如果需要执行工具，请使用<tool>标签包裹工具调用。""" + env_block
     
     context = session["messages"][-10:]
     messages = adapter.create_prompt(system_prompt, message, context)
@@ -1610,12 +1851,18 @@ async def chat_stream(request: ChatStreamRequest):
         return StreamingResponse(error_generator(), media_type="text/event-stream")
     
     # 根据是否有文件上传，使用不同的系统提示词
+    try:
+        env_aware_text = format_environment_for_prompt(get_environment_snapshot())
+    except Exception:
+        env_aware_text = ""
+    env_block = "\n\n" + env_aware_text + "\n" if env_aware_text else ""
+
     if request.files:
         system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以帮助用户回答问题、分析信息、提供建议。当提供了工具执行结果时，请基于结果给出详细的解答和说明。
 
 你拥有记忆能力，可以记住用户的偏好、重要事实和历史对话。以下是与当前问题相关的记忆信息，请参考这些信息来回答用户的问题。
 
-重要规则：用户已上传文件，请直接分析文件内容并给出回答，不需要创建脚本。"""
+重要规则：用户已上传文件，请直接分析文件内容并给出回答，不需要创建脚本。""" + env_block
     else:
         system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以帮助用户回答问题、分析信息、提供建议。当提供了工具执行结果时，请基于结果给出详细的解答和说明。
 
@@ -1624,7 +1871,7 @@ async def chat_stream(request: ChatStreamRequest):
 你具备以下特殊能力：
 - 生成中文PDF文档：当用户要求生成PDF时，你可以通过编写Python脚本来生成。系统已安装fpdf2库，并且会自动查找系统中文字体（微软雅黑等）来确保中文正确显示。生成的PDF文件会自动保存并提供下载链接。
 
-重要规则：当你发现无法直接通过文字回答完成用户的任务时（例如需要计算、数据处理、文件操作、系统检查、生成PDF等），请在回复开头添加标记 [NEED_SCRIPT]，表示需要创建Python脚本来自动完成任务。系统会自动根据你的回复生成并执行脚本。"""
+重要规则：当你发现无法直接通过文字回答完成用户的任务时（例如需要计算、数据处理、文件操作、系统检查、生成PDF等），请在回复开头添加标记 [NEED_SCRIPT]，表示需要创建Python脚本来自动完成任务。系统会自动根据你的回复生成并执行脚本。""" + env_block
     
     # 当有文件上传时，跳过工具检测，直接将文件内容传给大模型
     tool_call = None if request.files else detect_tool_intent(request.message)

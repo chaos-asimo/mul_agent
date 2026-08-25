@@ -3325,6 +3325,77 @@ body {
     height: 95vh !important;
 }
 
+#claw-env-modal-content.modal-maximized {
+    width: 95vw !important;
+    max-width: 95vw !important;
+    max-height: 95vh !important;
+    height: 95vh !important;
+}
+
+/* ===== 环境感知总览：最大化后布局优化 ===== */
+/* body 内边距随宽度加大，避免内容贴边 */
+#claw-env-modal-content.modal-maximized #claw-env-body {
+    padding: 24px 32px !important;
+}
+/* 默认宽度下 grid 最小 400px；最大化后用 520px，列更少更大 */
+#claw-env-modal-content.modal-maximized .env-grid {
+    grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)) !important;
+    gap: 20px !important;
+}
+/* 最大化时 大模型配置 & 搜索引擎 独占一整行，表格横向不挤 */
+#claw-env-modal-content.modal-maximized .env-card.env-card-models,
+#claw-env-modal-content.modal-maximized .env-card.env-card-search {
+    grid-column: 1 / -1;
+}
+#claw-env-modal-content.modal-maximized .env-card {
+    padding: 18px 22px !important;
+    border-radius: 12px !important;
+}
+
+/* ===== 大模型表格：呼吸空间 & 固定列宽 & 换行 ===== */
+.env-models-table th,
+.env-models-table td {
+    padding: 10px 12px !important;
+    vertical-align: middle;
+    line-height: 1.5;
+    border-bottom: 1px solid #eef2f7;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+.env-models-table thead th {
+    background: #f8fafc;
+    color: #475569;
+    font-weight: 600;
+    white-space: nowrap;
+    border-bottom: 2px solid #e2e8f0;
+}
+.env-models-table tbody tr:hover {
+    background: #f8fafc;
+}
+/* 固定列宽：名称和模型ID宽，类型/接口/状态窄 */
+.env-models-table .col-name        { width: 20%; min-width: 140px; }
+.env-models-table .col-model-type  { width: 8%;  min-width: 64px; }
+.env-models-table .col-api-type    { width: 9%;  min-width: 64px; }
+.env-models-table .col-model-name  { width: 32%; min-width: 180px; }
+.env-models-table .col-tokens      { width: 19%; min-width: 150px; text-align: center; }
+.env-models-table .col-status      { width: 12%; min-width: 80px; text-align: center; }
+
+/* 最大化后再加宽各列，并把 body 再放宽让表格更宽 */
+#claw-env-modal-content.modal-maximized .env-models-table-wrap {
+    max-height: 520px !important;
+}
+#claw-env-modal-content.modal-maximized .env-models-table th,
+#claw-env-modal-content.modal-maximized .env-models-table td {
+    padding: 12px 18px !important;
+    font-size: 14px;
+}
+#claw-env-modal-content.modal-maximized .env-models-table .col-name        { width: 19%; min-width: 150px; }
+#claw-env-modal-content.modal-maximized .env-models-table .col-model-type  { width: 7%;  min-width: 60px; }
+#claw-env-modal-content.modal-maximized .env-models-table .col-api-type    { width: 8%;  min-width: 60px; }
+#claw-env-modal-content.modal-maximized .env-models-table .col-model-name  { width: 35%; min-width: 200px; }
+#claw-env-modal-content.modal-maximized .env-models-table .col-tokens      { width: 19%; min-width: 160px; }
+#claw-env-modal-content.modal-maximized .env-models-table .col-status      { width: 12%; min-width: 90px; }
+
 /* 悬浮展开按钮 */
 .expand-all-btn {
     position: fixed !important;

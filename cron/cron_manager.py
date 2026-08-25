@@ -173,6 +173,51 @@ class CronTaskManager:
         conn.close()
         return [self._run_row_to_dict(row) for row in rows]
 
+    def get_recent_runs(self, since_id: int = 0, limit: int = 50,
+                        min_status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        获取最近的运行记录（跨所有任务），支持 since_id 增量查询。
+        :param since_id: 只返回 run.id > since_id 的记录
+        :param limit: 返回条数上限
+        :param min_status: 若传入，返回 status != 'running' 的记录（即已完成/失败）
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        sql_parts = [
+            'SELECT r.id, r.task_id, r.status, r.output, r.error, r.started_at, r.finished_at, r.duration, t.name, t.task_type, t.content',
+            'FROM cron_runs r LEFT JOIN cron_tasks t ON r.task_id = t.id',
+            'WHERE r.id > ?'
+        ]
+        params = [int(since_id)]
+        if min_status:
+            sql_parts.append("AND r.status != 'running'")
+        sql_parts.append('ORDER BY r.id DESC LIMIT ?')
+        params.append(int(limit))
+        cursor.execute(' '.join(sql_parts), params)
+        rows = cursor.fetchall()
+        conn.close()
+        results = []
+        for row in rows:
+            r = {
+                'id': row[0],
+                'task_id': row[1],
+                'status': row[2],
+                'output': row[3],
+                'error': row[4],
+                'started_at': row[5],
+                'finished_at': row[6],
+                'duration': row[7],
+            }
+            results.append({
+                **r,
+                'task_name': row[8] if row[8] is not None else f'任务#{row[1]}',
+                'task_type': row[9] if row[9] is not None else 'unknown',
+                'task_content': row[10] if row[10] is not None else '',
+            })
+        # 返回升序（id从小到大），方便前端顺序插入
+        results.reverse()
+        return results
+
     def get_due_tasks(self) -> List[Dict[str, Any]]:
         now = datetime.now().isoformat()
         conn = sqlite3.connect(self.db_path)

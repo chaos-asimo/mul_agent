@@ -37,7 +37,7 @@ class TaskExecutor:
 
     async def _execute_ai_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            from llm.adapter_base import get_default_llm_adapter
+            from web.routes.lobster_claw import get_default_llm_adapter
             
             adapter = get_default_llm_adapter()
             if not adapter:
@@ -46,10 +46,14 @@ class TaskExecutor:
             system_prompt = "你是龙虾Claw，一个强大的AI智能体助手。请完成以下定时任务："
             messages = adapter.create_prompt(system_prompt, task['content'], [])
             
-            response = await adapter.chat(messages)
-            return {'success': True, 'output': response.content, 'error': ''}
+            # adapter.chat 是同步调用，在后台线程中执行避免阻塞事件循环
+            import functools
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(None, functools.partial(adapter.chat, messages))
+            output = response.content if hasattr(response, 'content') else str(response)
+            return {'success': True, 'output': output, 'error': ''}
         except Exception as e:
-            logger.error(f"AI task execution failed: {e}")
+            logger.exception(f"AI task execution failed")
             return {'success': False, 'output': '', 'error': str(e)}
 
     async def _execute_command_task(self, task: Dict[str, Any]) -> Dict[str, Any]:

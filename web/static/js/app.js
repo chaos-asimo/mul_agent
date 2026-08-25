@@ -4,7 +4,7 @@ class App {
         this.currentModalType = null;
         this.currentEditId = null;
         this.statusInterval = null;
-        this.statusIntervalTime = 3000;
+        this.statusIntervalTime = 800;
         this.editingScriptId = null;
         this.init();
     }
@@ -15,7 +15,6 @@ class App {
         this.loadSearchEngines();
         this.loadSkills();
         this.loadSkillHistory();
-        this.startStatusPolling();
         this.loadVersion();
         this.initAIChat();
     }
@@ -1975,8 +1974,11 @@ class App {
             if (result.status === 'success') {
                 this.addLog(result.message);
             }
+            // 停止轮询，页面保留最后状态
+            this.stopStatusPolling();
         } catch (error) {
             this.addLog(`停止失败: ${error.message}`);
+            this.stopStatusPolling();
         }
     }
 
@@ -2145,7 +2147,7 @@ class App {
 
     startStatusPolling() {
         this.stopStatusPolling();
-        this.statusIntervalTime = 3000;
+        this.statusIntervalTime = 800;
 
         const poll = async () => {
             try {
@@ -2279,11 +2281,14 @@ class App {
                 console.error('获取状态失败:', error);
             }
 
-            // 根据运行状态动态调整轮询频率
-            let targetInterval = 3000;
-            if (status && status.status === 'processing') {
-                targetInterval = 800;
+            // 处理结束（completed/stopped/error）后自动停止轮询，保留最后状态
+            if (status && status.status !== 'processing') {
+                this.stopStatusPolling();
+                return;
             }
+
+            // 处理中时使用更快的轮询频率
+            let targetInterval = 800;
             if (this.statusIntervalTime !== targetInterval) {
                 this.statusIntervalTime = targetInterval;
                 clearInterval(this.statusInterval);
@@ -2298,6 +2303,58 @@ class App {
         if (this.statusInterval) {
             clearInterval(this.statusInterval);
             this.statusInterval = null;
+        }
+    }
+
+    /**
+     * 单次获取状态并更新UI，不启动持续轮询
+     * 用于WebSocket关闭后获取最终状态，保留最后状态在页面上
+     */
+    async fetchStatusOnce() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/status`);
+            const status = await response.json();
+
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+
+            if (statusDot && statusText) {
+                statusDot.className = 'status-dot';
+                if (status.status === 'completed') {
+                    statusDot.classList.add('completed');
+                    statusText.textContent = '已完成';
+                } else if (status.status === 'stopped') {
+                    statusDot.classList.add('error');
+                    statusText.textContent = '已停止';
+                } else if (status.status === 'error') {
+                    statusDot.classList.add('error');
+                    statusText.textContent = '出错';
+                } else {
+                    statusText.textContent = '空闲';
+                }
+            }
+
+            // 更新按钮状态
+            const startBtn = document.getElementById('start-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            if (startBtn) startBtn.disabled = false;
+            if (stopBtn) stopBtn.disabled = true;
+
+            // 更新Agent结果（保留最后状态）
+            if (status.agent_results) {
+                for (const [agentId, result] of Object.entries(status.agent_results)) {
+                    const agentRow = document.querySelector(`#agent-status-body tr[data-id="${agentId}"]`);
+                    if (agentRow) {
+                        const statusBadge = agentRow.querySelector('.status-badge');
+                        if (statusBadge) {
+                            statusBadge.textContent = result.success ? '完成' : '失败';
+                            statusBadge.className = result.success ? 'status-badge completed' : 'status-badge error';
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('获取最终状态失败:', error);
         }
     }
 
@@ -2803,8 +2860,8 @@ class App {
                     clearInterval(self.streamTimer);
                     self.streamTimer = null;
                 }
-                // 重新启动状态轮询
-                self.startStatusPolling();
+                // 单次获取最终状态后停止，不再持续轮询
+                self.fetchStatusOnce();
             };
 
         } catch (error) {
@@ -3997,6 +4054,123 @@ class App {
         }
         
         this.loadClawChatModels();
+        this.startCronRunNotifier();
+    }
+
+    // 定时任务运行通知：拉取最近运行记录并作为系统消息显示
+    startCronRunNotifier() {
+        if (this._cronNotifierTimer) return;
+        // since_id 用 "当前最大id" 作为基准，避免展示历史运行记录
+        this._cronNotifierLastId = 0;
+        this._cronNotifierReady = false;
+        // 首次查询以最新ID为基准（仅查询一次，不显示历史消息）
+        this.fetchRecentCronRuns(false).then((maxId) => {
+            this._cronNotifierLastId = maxId || 0;
+            this._cronNotifierReady = true;
+        }).catch(e => console.warn('[CronNotifier] 首次查询失败:', e));
+
+        this._cronNotifierTimer = setInterval(() => {
+            if (!this._cronNotifierReady) return;
+            this.fetchRecentCronRuns(true).then((maxId) => {
+                if (maxId && maxId > this._cronNotifierLastId) {
+                    this._cronNotifierLastId = maxId;
+                }
+            }).catch(e => console.warn('[CronNotifier] 轮询出错:', e));
+        }, 5000);
+    }
+
+    async fetchRecentCronRuns(showMessages) {
+        const since = this._cronNotifierLastId || 0;
+        const url = `${this.baseUrl}/api/lobster-claw/cron/runs/recent?since_id=${since}&limit=50&only_finished=true`;
+        const resp = await fetch(url);
+        const result = await resp.json();
+        if (!result.success || !Array.isArray(result.runs) || result.runs.length === 0) {
+            return since;
+        }
+        if (showMessages) {
+            result.runs.forEach(run => this.appendCronRunNotification(run));
+        }
+        return result.runs[result.runs.length - 1].id;
+    }
+
+    appendCronRunNotification(run) {
+        const isSuccess = run.status === 'success';
+        const icon = isSuccess ? 'fa-check-circle' : 'fa-times-circle';
+        const iconColor = isSuccess ? '#10b981' : '#ef4444';
+        const statusLabel = isSuccess ? '执行成功' : '执行失败';
+        const duration = (typeof run.duration === 'number') ? run.duration.toFixed(2) + 's' : '-';
+        const taskTypeLabel = run.task_type === 'ai' ? 'AI任务' : run.task_type === 'command' ? '命令任务' : run.task_type;
+
+        // 任务内容预览
+        const contentPreview = (run.task_content || '').toString();
+        const previewShort = contentPreview.length > 40 ? contentPreview.slice(0, 40) + '…' : contentPreview;
+
+        // 执行结果 (AI输出 或 命令stdout 或 错误)
+        let resultBlock = '';
+        if (isSuccess) {
+            const out = (run.output || '').toString();
+            if (out) {
+                const short = out.length > 300 ? out.slice(0, 300) + '\n…(已截断)' : out;
+                resultBlock = `
+                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed #cbd5e1;">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">输出:</div>
+                        <pre style="margin: 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px;
+                                     white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #0f172a;
+                                     max-height: 220px; overflow: auto;">${this.escapeHtml(short)}</pre>
+                    </div>`;
+            }
+        } else {
+            const err = (run.error || '未知错误').toString();
+            const short = err.length > 300 ? err.slice(0, 300) + '…' : err;
+            resultBlock = `
+                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed #fecaca;">
+                    <div style="font-size: 11px; color: #991b1b; margin-bottom: 4px;">错误信息:</div>
+                    <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 8px;
+                                font-size: 12px; color: #991b1b; white-space: pre-wrap; word-break: break-word;">
+                        ${this.escapeHtml(short)}
+                    </div>
+                </div>`;
+        }
+
+        const startedDisplay = run.started_at ? new Date(run.started_at).toLocaleString() : '-';
+        const html = `
+            <div style="display: flex; gap: 10px; align-items: stretch; min-width: 320px;">
+                <div style="width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+                            background: ${isSuccess ? '#d1fae5' : '#fee2e2'};
+                            display: flex; align-items: center; justify-content: center;">
+                    <i class="fas ${icon}" style="color: ${iconColor}; font-size: 16px;"></i>
+                </div>
+                <div style="flex: 1; min-width: 0;">
+                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                        <span style="font-size: 13px; font-weight: 600; color: #0f172a;">⏰ 定时任务</span>
+                        <span style="font-size: 11px; padding: 1px 8px; border-radius: 10px;
+                                     background: ${isSuccess ? '#d1fae5' : '#fee2e2'}; color: ${iconColor}; font-weight: 600;">
+                            ${statusLabel}
+                        </span>
+                        <span style="font-size: 11px; padding: 1px 8px; border-radius: 10px;
+                                     background: #e0e7ff; color: #4338ca; font-weight: 600;">${taskTypeLabel}</span>
+                    </div>
+                    <div style="font-size: 13px; margin-top: 4px; color: #1e293b; font-weight: 600;">
+                        📌 ${this.escapeHtml(run.task_name || `任务#${run.task_id}`)}
+                    </div>
+                    ${previewShort ? `<div style="font-size: 12px; color: #475569; margin-top: 2px;">任务: ${this.escapeHtml(previewShort)}</div>` : ''}
+                    <div style="font-size: 11px; color: #64748b; margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap;">
+                        <span>🕐 ${startedDisplay}</span>
+                        <span>⏱ ${duration}</span>
+                        <span>id: ${run.id}</span>
+                    </div>
+                    ${resultBlock}
+                </div>
+            </div>`;
+
+        this.addClawChatMessage('system', html, false, run.finished_at || run.started_at || new Date().toISOString());
+    }
+
+    escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str).replace(/[&<>"']/g, s => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[s]));
     }
     
     async loadClawChatModels() {
@@ -4952,6 +5126,9 @@ class App {
                                 ${enabledLabel}
                             </div>
                             <div style="display: flex; gap: 5px;">
+                                <button class="btn btn-outline-secondary btn-sm" onclick="app.editCronTask(${task.id})" title="编辑">
+                                    <i class="fas fa-edit"></i>
+                                </button>
                                 <button class="btn btn-outline-secondary btn-sm" onclick="app.runCronTask(${task.id})" title="立即执行">
                                     <i class="fas fa-play"></i>
                                 </button>
@@ -4984,12 +5161,172 @@ class App {
         }
     }
 
+    // ===== Cron 简易模式辅助函数 =====
+    switchCronMode(mode) {
+        document.getElementById('cron-simple-panel').style.display = mode === 'simple' ? 'block' : 'none';
+        document.getElementById('cron-advanced-panel').style.display = mode === 'advanced' ? 'block' : 'none';
+        document.getElementById('cron-once-panel').style.display = mode === 'once' ? 'block' : 'none';
+        const radios = document.getElementsByName('cron-mode');
+        for (const r of radios) {
+            r.checked = (r.value === mode);
+        }
+    }
+
+    onCronFreqChange() {
+        const freq = document.getElementById('cron-freq').value;
+        const show = (id, visible) => { document.getElementById(id).style.display = visible ? 'block' : 'none'; };
+
+        switch (freq) {
+            case 'every_minute':
+                show('cron-param-n', false); show('cron-param-time', false);
+                show('cron-param-weekday', false); show('cron-param-day', false);
+                break;
+            case 'every_n_minute':
+                show('cron-param-n', true); show('cron-param-time', false);
+                show('cron-param-weekday', false); show('cron-param-day', false);
+                break;
+            case 'every_hour':
+                show('cron-param-n', false); show('cron-param-time', false);
+                show('cron-param-weekday', false); show('cron-param-day', false);
+                break;
+            case 'every_n_hour':
+                show('cron-param-n', true); show('cron-param-time', false);
+                show('cron-param-weekday', false); show('cron-param-day', false);
+                break;
+            case 'daily':
+                show('cron-param-n', false); show('cron-param-time', true);
+                show('cron-param-weekday', false); show('cron-param-day', false);
+                break;
+            case 'weekly':
+                show('cron-param-n', false); show('cron-param-time', true);
+                show('cron-param-weekday', true); show('cron-param-day', false);
+                break;
+            case 'monthly':
+                show('cron-param-n', false); show('cron-param-time', true);
+                show('cron-param-weekday', false); show('cron-param-day', true);
+                break;
+        }
+        this.buildCronFromSimple();
+    }
+
+    buildCronFromSimple() {
+        const freq = document.getElementById('cron-freq').value;
+        const interval = parseInt(document.getElementById('cron-interval').value) || 5;
+        const timeStr = document.getElementById('cron-time').value || '09:00';
+        const [hStr, mStr] = timeStr.split(':');
+        const hour = parseInt(hStr) || 0;
+        const minute = parseInt(mStr) || 0;
+        const weekday = document.getElementById('cron-weekday').value;
+        const day = Math.max(1, Math.min(31, parseInt(document.getElementById('cron-day').value) || 1));
+
+        let expr = "* * * * *";
+        switch (freq) {
+            case 'every_minute':   expr = "* * * * *"; break;
+            case 'every_n_minute': expr = `*/${Math.max(1, interval)} * * * *`; break;
+            case 'every_hour':     expr = "0 * * * *"; break;
+            case 'every_n_hour':   expr = `0 */${Math.max(1, interval)} * * *`; break;
+            case 'daily':          expr = `${minute} ${hour} * * *`; break;
+            case 'weekly':         expr = `${minute} ${hour} * * ${weekday}`; break;
+            case 'monthly':        expr = `${minute} ${hour} ${day} * *`; break;
+        }
+        document.getElementById('cron-schedule').value = expr;
+        const preview = document.getElementById('cron-schedule-preview');
+        if (preview) preview.textContent = expr;
+        return expr;
+    }
+
+    parseCronToSimple() {
+        // 从高级模式输入的 cron 表达式反向解析为简易模式
+        const raw = (document.getElementById('cron-schedule').value || '').trim();
+        if (!raw) return;
+        const parts = raw.split(/\s+/);
+        if (parts.length !== 5) return;
+        const [m, h, dom, mo, dow] = parts;
+
+        const tryMatch = (expr, pattern) => {
+            // 简易 5 段匹配：用简单规则
+            return false;
+        };
+
+        let matched = null;
+
+        if (m === '*' && h === '*' && dom === '*' && mo === '*' && dow === '*') {
+            matched = { freq: 'every_minute' };
+        } else if (/^\*\/\d+$/.test(m) && h === '*' && dom === '*' && mo === '*' && dow === '*') {
+            matched = { freq: 'every_n_minute', interval: parseInt(m.slice(2)) };
+        } else if (m === '0' && h === '*' && dom === '*' && mo === '*' && dow === '*') {
+            matched = { freq: 'every_hour' };
+        } else if (m === '0' && /^\*\/\d+$/.test(h) && dom === '*' && mo === '*' && dow === '*') {
+            matched = { freq: 'every_n_hour', interval: parseInt(h.slice(2)) };
+        } else if (/^\d+$/.test(m) && /^\d+$/.test(h) && dom === '*' && mo === '*' && dow === '*') {
+            matched = { freq: 'daily', minute: parseInt(m), hour: parseInt(h) };
+        } else if (/^\d+$/.test(m) && /^\d+$/.test(h) && dom === '*' && mo === '*' && /^\d+$/.test(dow)) {
+            matched = { freq: 'weekly', minute: parseInt(m), hour: parseInt(h), weekday: dow };
+        } else if (/^\d+$/.test(m) && /^\d+$/.test(h) && /^\d+$/.test(dom) && mo === '*' && dow === '*') {
+            matched = { freq: 'monthly', minute: parseInt(m), hour: parseInt(h), day: parseInt(dom) };
+        }
+
+        if (matched) {
+            document.getElementById('cron-freq').value = matched.freq;
+            this.onCronFreqChange();
+            if ('interval' in matched) document.getElementById('cron-interval').value = matched.interval;
+            if ('minute' in matched && 'hour' in matched) {
+                const pad = n => String(n).padStart(2, '0');
+                document.getElementById('cron-time').value = `${pad(matched.hour)}:${pad(matched.minute)}`;
+            }
+            if ('weekday' in matched) document.getElementById('cron-weekday').value = matched.weekday;
+            if ('day' in matched) document.getElementById('cron-day').value = matched.day;
+            const preview = document.getElementById('cron-schedule-preview');
+            if (preview) preview.textContent = raw;
+        }
+    }
+
+    applyCronModeFromTask(task) {
+        // 根据编辑的任务内容，自动选择模式并填充
+        if (task.run_at) {
+            this.switchCronMode('once');
+            return;
+        }
+        if (task.schedule) {
+            document.getElementById('cron-schedule').value = task.schedule;
+            const raw = task.schedule.trim();
+            const parts = raw.split(/\s+/);
+            if (parts.length === 5) {
+                // 尝试解析为简易模式
+                const backup = document.getElementById('cron-schedule').value;
+                this.parseCronToSimple();
+                if (document.getElementById('cron-schedule').value === backup) {
+                    this.switchCronMode('simple');
+                } else {
+                    // parseCronToSimple 已重写 schedule，说明成功匹配
+                    this.switchCronMode('simple');
+                    document.getElementById('cron-schedule').value = backup;
+                    const preview = document.getElementById('cron-schedule-preview');
+                    if (preview) preview.textContent = backup;
+                }
+                return;
+            }
+            this.switchCronMode('advanced');
+        } else {
+            this.switchCronMode('simple');
+            this.buildCronFromSimple();
+        }
+    }
+
     showAddCronTask() {
+        this._editingCronTaskId = null;
         document.getElementById('claw-cron-task-list').style.display = 'none';
         document.getElementById('claw-cron-add-form').style.display = 'block';
+        document.getElementById('cron-form-title').textContent = '添加定时任务';
+        document.getElementById('cron-submit-btn').textContent = '确认添加';
+        // 默认简易模式 + 每5分钟
+        this.switchCronMode('simple');
+        document.getElementById('cron-freq').value = 'every_n_minute';
+        this.onCronFreqChange();
     }
 
     hideAddCronTask() {
+        this._editingCronTaskId = null;
         document.getElementById('claw-cron-task-list').style.display = 'block';
         document.getElementById('claw-cron-add-form').style.display = 'none';
         document.getElementById('cron-name').value = '';
@@ -4999,13 +5336,80 @@ class App {
         document.getElementById('cron-content').value = '';
         document.getElementById('cron-timeout').value = '300';
         document.getElementById('cron-enabled').value = 'true';
+        document.getElementById('cron-form-title').textContent = '添加定时任务';
+        document.getElementById('cron-submit-btn').textContent = '确认添加';
+        document.getElementById('cron-interval').value = '5';
+        document.getElementById('cron-time').value = '09:00';
+        document.getElementById('cron-day').value = '1';
+        document.getElementById('cron-weekday').value = '1';
+        const preview = document.getElementById('cron-schedule-preview');
+        if (preview) preview.textContent = '*/5 * * * *';
+    }
+
+    async editCronTask(taskId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/cron/${taskId}`);
+            const result = await response.json();
+            if (!result.success || !result.task) {
+                alert('获取任务详情失败: ' + (result.error || '未知错误'));
+                return;
+            }
+            const task = result.task;
+            this._editingCronTaskId = taskId;
+
+            document.getElementById('claw-cron-task-list').style.display = 'none';
+            document.getElementById('claw-cron-add-form').style.display = 'block';
+            document.getElementById('cron-form-title').textContent = '编辑定时任务';
+            document.getElementById('cron-submit-btn').textContent = '保存修改';
+
+            document.getElementById('cron-name').value = task.name || '';
+            document.getElementById('cron-task-type').value = task.task_type || 'ai';
+            document.getElementById('cron-schedule').value = task.schedule || '';
+            document.getElementById('cron-run-at').value = task.run_at ? task.run_at.slice(0, 16) : '';
+            document.getElementById('cron-content').value = task.content || '';
+            document.getElementById('cron-timeout').value = task.timeout || 300;
+            document.getElementById('cron-enabled').value = task.enabled ? 'true' : 'false';
+
+            // 根据任务内容自动选择模式
+            this.applyCronModeFromTask(task);
+        } catch (error) {
+            alert('获取任务详情失败: ' + error.message);
+        }
+    }
+
+    _getCurrentCronValues() {
+        const radios = document.getElementsByName('cron-mode');
+        let mode = 'simple';
+        for (const r of radios) { if (r.checked) { mode = r.value; break; } }
+
+        // 简易模式确保 schedule 同步
+        if (mode === 'simple') {
+            this.buildCronFromSimple();
+        }
+
+        let schedule = document.getElementById('cron-schedule').value.trim();
+        let runAt = document.getElementById('cron-run-at').value;
+
+        if (mode === 'once') {
+            schedule = '';
+        } else if (mode === 'simple' || mode === 'advanced') {
+            runAt = '';
+        }
+        return { mode, schedule, run_at: runAt };
+    }
+
+    async submitCronTask() {
+        if (this._editingCronTaskId) {
+            await this.updateCronTask();
+        } else {
+            await this.addCronTask();
+        }
     }
 
     async addCronTask() {
         const name = document.getElementById('cron-name').value.trim();
         const taskType = document.getElementById('cron-task-type').value;
-        const schedule = document.getElementById('cron-schedule').value.trim();
-        const runAt = document.getElementById('cron-run-at').value;
+        const { schedule, run_at: runAt } = this._getCurrentCronValues();
         const content = document.getElementById('cron-content').value.trim();
         const timeout = parseInt(document.getElementById('cron-timeout').value) || 300;
         const enabled = document.getElementById('cron-enabled').value === 'true';
@@ -5019,7 +5423,7 @@ class App {
             return;
         }
         if (!schedule && !runAt) {
-            alert('请指定cron表达式或一次性执行时间');
+            alert('请指定调度规则（选择执行频率或设置一次性执行时间）');
             return;
         }
         
@@ -5040,6 +5444,50 @@ class App {
             }
         } catch (error) {
             alert('添加任务失败: ' + error.message);
+        }
+    }
+
+    async updateCronTask() {
+        const taskId = this._editingCronTaskId;
+        if (!taskId) return;
+
+        const name = document.getElementById('cron-name').value.trim();
+        const taskType = document.getElementById('cron-task-type').value;
+        const { schedule, run_at: runAt } = this._getCurrentCronValues();
+        const content = document.getElementById('cron-content').value.trim();
+        const timeout = parseInt(document.getElementById('cron-timeout').value) || 300;
+        const enabled = document.getElementById('cron-enabled').value === 'true';
+
+        if (!name) {
+            alert('请输入任务名称');
+            return;
+        }
+        if (!content) {
+            alert('请输入任务内容');
+            return;
+        }
+        if (!schedule && !runAt) {
+            alert('请指定调度规则（选择执行频率或设置一次性执行时间）');
+            return;
+        }
+
+        try {
+            const response = await fetch(`${this.baseUrl}/api/lobster-claw/cron/${taskId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, task_type: taskType, content, schedule, run_at: runAt, timeout, enabled })
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                alert('任务修改成功');
+                this.hideAddCronTask();
+                this.loadCronTasks();
+            } else {
+                alert('修改失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('修改任务失败: ' + error.message);
         }
     }
 
@@ -7103,24 +7551,36 @@ class App {
         const content = document.getElementById('log-detail-modal-content');
         const body = document.getElementById('log-detail-body');
         const maxBtn = document.querySelector('#log-detail-modal button[onclick="app.toggleLogDetailMaximize()"] i');
-        
+
         if (!modal || !content || !body || !maxBtn) return;
-        
+
         if (this._logDetailMaximized) {
+            // 恢复正常尺寸
+            modal.style.alignItems = 'center';
+            modal.style.justifyContent = 'center';
+            modal.style.padding = '';
             content.style.width = '90%';
             content.style.maxWidth = '900px';
+            content.style.height = '';
             content.style.maxHeight = '80vh';
             content.style.borderRadius = '12px';
             body.style.padding = '20px';
             maxBtn.className = 'fas fa-expand';
+            maxBtn.parentElement.title = '最大化';
             this._logDetailMaximized = false;
         } else {
+            // 最大化：让内容从左上角开始铺满
+            modal.style.alignItems = 'flex-start';
+            modal.style.justifyContent = 'flex-start';
+            modal.style.padding = '0';
             content.style.width = '100%';
             content.style.maxWidth = 'none';
-            content.style.maxHeight = 'none';
+            content.style.height = '100vh';
+            content.style.maxHeight = '100vh';
             content.style.borderRadius = '0';
             body.style.padding = '30px';
             maxBtn.className = 'fas fa-compress';
+            maxBtn.parentElement.title = '恢复';
             this._logDetailMaximized = true;
         }
     }
@@ -7423,6 +7883,173 @@ App.prototype.openImage = function(imageSrc) {
 window.aiChatOpenImage = function(imageSrc) {
     window.app.openImage(imageSrc);
 };
+
+// ============ 环境感知总览 ============
+
+App.prototype.showEnvSnapshotModal = async function() {
+    document.getElementById('claw-env-modal').style.display = 'block';
+    await this.loadEnvSnapshot();
+};
+
+App.prototype.toggleEnvMaximize = function() {
+    const content = document.getElementById('claw-env-modal-content');
+    content.classList.toggle('modal-maximized');
+    const icon = event.currentTarget.querySelector('i');
+    if (content.classList.contains('modal-maximized')) {
+        icon.className = 'fas fa-compress';
+    } else {
+        icon.className = 'fas fa-expand';
+    }
+};
+
+App.prototype.loadEnvSnapshot = async function() {
+    const body = document.getElementById('claw-env-body');
+    const ts = document.getElementById('env-ts');
+    if (body) {
+        body.innerHTML = `<div style="text-align:center; color:#94a3b8; padding:40px;"><i class="fas fa-spinner fa-spin" style="font-size:28px;"></i> 正在读取环境快照…</div>`;
+    }
+    try {
+        const r = await fetch('/api/lobster-claw/environment/snapshot');
+        const data = await r.json();
+        if (!data.success) throw new Error(data.error || '加载失败');
+        if (ts && data.snapshot?.ts) ts.textContent = '· 更新于 ' + data.snapshot.ts;
+        this.renderEnvSnapshot(data.snapshot);
+    } catch (e) {
+        if (body) body.innerHTML = `<div style="padding: 20px; color:#b91c1c; background:#fef2f2; border:1px solid #fecaca; border-radius:8px;"><i class="fas fa-exclamation-circle"></i> 环境快照加载失败：${e.message}</div>`;
+    }
+};
+
+App.prototype.renderEnvSnapshot = function(snap) {
+    const body = document.getElementById('claw-env-body');
+    if (!body) return;
+
+    const badge = (on, text='', ok='启用', off='未启用') =>
+        `<span class="badge ${on ? 'badge-success' : 'badge-secondary'}" style="font-size:12px;">${on ? '✓ ' + ok : '✗ ' + off}</span> ${text}`;
+    const pill = (n, max=0, label='', ok='#16a34a', warn='#d97706', off='#64748b') => {
+        const color = n <= 0 ? off : (max && n < max ? warn : ok);
+        return `<span style="display:inline-block; padding: 2px 10px; border-radius:9999px; background:${color}15; color:${color}; border:1px solid ${color}40; font-weight:600;">${label} ${n}</span>`;
+    };
+    const section = (id, icon, title, summary, html, color='#3b82f6') => `
+        <div class="env-card env-card-${id}" style="border:1px solid #e2e8f0; border-radius:10px; padding:14px 16px; background:#fff;">
+            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+                <h4 style="margin:0; display:flex; align-items:center; gap:6px; color:#0f172a;">
+                    <i class="${icon}" style="color:${color};"></i> ${title}
+                </h4>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">${summary}</div>
+            </div>
+            ${html}
+        </div>`;
+
+    // ---- 1. 模型 ----
+    const m = snap.models || {total:0, enabled:0, configured:0, by_type:{}, items:[]};
+    const mtBadges = Object.entries(m.by_type || {}).map(([k,v]) => {
+        const map = {text:('文本对话','#2563eb'), image:('图像生成','#9333ea'), video:('视频生成','#dc2626'), embedding:('向量化','#0d9488')};
+        const [label, color] = map[k] || [k, '#64748b'];
+        return `<span style="display:inline-block; padding:2px 8px; border-radius:6px; background:${color}15; color:${color}; border:1px solid ${color}30; font-size:12px;">${label} ${v}</span>`;
+    }).join(' ');
+    let mrows = '';
+    if (m.items && m.items.length) {
+        const rows = m.items.map(x => {
+            const status = x.has_key && x.enabled
+                ? `<span class="badge badge-success">可用</span>`
+                : (!x.enabled ? `<span class="badge badge-secondary">已禁用</span>` : `<span class="badge badge-warning">缺密钥</span>`);
+            return `<tr>
+                <td class="col-name" style="font-weight:600; color:#0f172a;">${this.escapeHtml(x.name || x.model_name || '-')}</td>
+                <td class="col-model-type"><code style="color:#475569;">${this.escapeHtml(x.model_type || '-')}</code></td>
+                <td class="col-api-type"><code style="color:#475569;">${this.escapeHtml(x.api_type || '-')}</code></td>
+                <td class="col-model-name"><code style="color:#475569; font-size:12px;">${this.escapeHtml(x.model_name || '-')}</code></td>
+                <td class="col-tokens">${x.max_tokens || 0} / ${x.context_window || 0}</td>
+                <td class="col-status">${status}</td>
+            </tr>`;
+        }).join('');
+        mrows = `
+            <div class="env-models-table-wrap" style="max-height:460px; overflow:auto; border:1px solid #eef2f7; border-radius:8px;">
+            <table class="table table-sm env-models-table" style="margin:0; width:100%; table-layout:fixed;">
+                <thead style="position:sticky; top:0; background:#f8fafc; z-index:1;">
+                <tr>
+                  <th class="col-name">名称</th>
+                  <th class="col-model-type">类型</th>
+                  <th class="col-api-type">接口</th>
+                  <th class="col-model-name">模型 ID</th>
+                  <th class="col-tokens">max_tokens / context_window</th>
+                  <th class="col-status">状态</th>
+                </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table></div>`;
+    } else {
+        mrows = `<div style="color:#94a3b8; padding:14px; text-align:center;">暂无已注册的模型</div>`;
+    }
+    const modelsHtml = section('models', 'fas fa-brain', '大模型配置',
+        [pill(m.total, m.total, '总数', '#334155'), pill(m.enabled, m.enabled, '启用'), pill(m.configured, m.configured, '可用', '#16a34a'), mtBadges].join(''),
+        mrows, '#2563eb');
+
+    // ---- 2. 搜索引擎 ----
+    const se = snap.search_engines || {total:0, enabled:0, available:0, items:[]};
+    let seRows = '';
+    if (se.items && se.items.length) {
+        seRows = `<table class="table table-sm"><thead><tr><th>名称</th><th>适配器</th><th>启用</th><th>密钥</th><th>URL</th></tr></thead><tbody>` +
+            se.items.map(x => `<tr>
+                <td style="font-weight:600;">${this.escapeHtml(x.name || x.id || '-')}</td>
+                <td><code>${this.escapeHtml(x.adapter_type || '-')}</code></td>
+                <td>${x.enabled ? '<span class="badge badge-success">是</span>' : '<span class="badge badge-secondary">否</span>'}</td>
+                <td>${x.has_key ? '<span class="badge badge-success">已配</span>' : '<span class="badge badge-warning">未配</span>'}</td>
+                <td>${x.has_url ? '<i class="fas fa-check" style="color:#16a34a;"></i>' : '<i class="fas fa-times" style="color:#94a3b8;"></i>'}</td>
+            </tr>`).join('') + `</tbody></table>`;
+    } else {
+        seRows = `<div style="color:#94a3b8; padding:14px; text-align:center;">暂无搜索引擎配置</div>`;
+    }
+    const searchHtml = section('search', 'fas fa-search', '搜索引擎',
+        [pill(se.total, se.total, '总数', '#334155'), pill(se.enabled, se.enabled, '启用', '#2563eb'), pill(se.available, se.available, '可用', '#16a34a')].join(''),
+        seRows, '#7c3aed');
+
+    // ---- 3. 飞书 ----
+    const f = snap.feishu || {};
+    const fs = [
+        f.enabled ? badge(true, '通道', '已启用') : badge(false, '通道'),
+        f.is_configured ? badge(true, '配置', '完整') : badge(false, '配置', '不完整'),
+        f.handle_groups ? badge(true, '群聊', '处理中') : badge(false, '群聊'),
+        f.handle_dms ? badge(true, '私聊', '处理中') : badge(false, '私聊'),
+    ].join(' ');
+    const feishuTable = `
+    <table class="table table-sm" style="margin:0;">
+      <tr><th style="width:120px;">机器人名</th><td><code>${this.escapeHtml(f.bot_name || '-')}</code></td>
+          <th style="width:120px;">域名</th><td><code>${this.escapeHtml(f.domain || '-')}</code></td></tr>
+      <tr><th>事件模式</th><td><code>${this.escapeHtml(f.event_mode || '-')}</code></td>
+          <th>私信策略</th><td><code>${this.escapeHtml(f.dm_policy || '-')}</code></td></tr>
+      <tr><th>当前会话数</th><td><b>${f.sessions || 0}</b></td>
+          <th>消息日志数</th><td><b>${f.recent_messages || 0}</b></td></tr>
+    </table>`;
+    const feishuHtml = section('feishu', 'fas fa-paper-plane', '飞书通道', fs, feishuTable, '#16a34a');
+
+    // ---- 4. 知识库 ----
+    const kb = snap.knowledge_base || {documents:0, chunks:0};
+    const kbHtml = section('kb', 'fas fa-book', 'RAG 知识库',
+        [pill(kb.documents, kb.documents, '文档', '#0d9488'), pill(kb.chunks, kb.chunks, '分块', '#0891b2')].join(''),
+        `<div style="color:#475569; padding: 10px 6px;">当前已向量化 <b>${kb.documents}</b> 份文档，共 <b>${kb.chunks}</b> 个分块。</div>`,
+        '#0d9488');
+
+    // ---- 5. 定时任务 ----
+    const c = snap.cron || {total:0, enabled:0, task_types:{}};
+    const ttBadges = Object.entries(c.task_types||{}).map(([k,v]) => {
+        const color = k === 'ai' ? '#2563eb' : (k === 'command' ? '#ea580c' : '#64748b');
+        return `<span style="display:inline-block; padding:2px 8px; border-radius:6px; background:${color}15; color:${color}; border:1px solid ${color}30; font-size:12px;">${k} ${v}</span>`;
+    }).join(' ') || `<span style="color:#94a3b8; font-size:12px;">（无任务）</span>`;
+    const cronHtml = section('cron', 'fas fa-clock', '定时任务',
+        [pill(c.total, c.total, '总数', '#334155'), pill(c.enabled, c.enabled, '启用', '#ea580c'), ttBadges].join(''),
+        `<div style="color:#475569; padding: 10px 6px;">共 <b>${c.total}</b> 个定时任务，其中 <b>${c.enabled}</b> 个已启用。</div>`,
+        '#ea580c');
+
+    body.innerHTML = `
+        <div class="env-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap:16px;">
+            ${modelsHtml}
+            ${searchHtml}
+            ${feishuHtml}
+            ${kbHtml}
+            ${cronHtml}
+        </div>`;
+};
+
 
 // ============ 飞书接入管理 ============
 

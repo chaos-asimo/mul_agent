@@ -111,6 +111,9 @@
                             <button class="btn btn-outline-secondary btn-sm" onclick="app.showFeishuModal()" title="飞书接入">
                                 <i class="fas fa-paper-plane"></i> 飞书
                             </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.showEnvSnapshotModal()" title="当前环境感知：模型/搜索/飞书/知识库/定时任务">
+                                <i class="fas fa-satellite-dish"></i> 环境
+                            </button>
                             <button class="btn btn-outline-secondary btn-sm" onclick="app.addClawTab()" title="新建会话">
                                 <i class="fas fa-plus"></i> 新建会话
                             </button>
@@ -236,7 +239,7 @@
                                 </div>
                             </div>
                             <div id="claw-cron-add-form" style="display: none; margin-top: 20px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
-                                <h4 style="margin-bottom: 15px;">添加定时任务</h4>
+                                <h4 id="cron-form-title" style="margin-bottom: 15px;">添加定时任务</h4>
                                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                                     <div class="form-group">
                                         <label>任务名称</label>
@@ -249,13 +252,83 @@
                                             <option value="command">Shell命令任务</option>
                                         </select>
                                     </div>
-                                    <div class="form-group">
-                                        <label>Cron表达式</label>
-                                        <input type="text" id="cron-schedule" class="form-control" placeholder="如: */5 * * * * (每分钟执行)">
-                                    </div>
-                                    <div class="form-group">
-                                        <label>一次性执行时间</label>
-                                        <input type="datetime-local" id="cron-run-at" class="form-control">
+                                    <div class="form-group" style="grid-column: 1 / -1;">
+                                        <label style="margin-bottom: 6px;">调度方式</label>
+                                        <div style="display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap;">
+                                            <label style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                                                <input type="radio" name="cron-mode" value="simple" checked onchange="app.switchCronMode('simple')"> 简易模式
+                                            </label>
+                                            <label style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                                                <input type="radio" name="cron-mode" value="advanced" onchange="app.switchCronMode('advanced')"> Cron表达式
+                                            </label>
+                                            <label style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                                                <input type="radio" name="cron-mode" value="once" onchange="app.switchCronMode('once')"> 一次性执行
+                                            </label>
+                                        </div>
+
+                                        <!-- 简易模式 -->
+                                        <div id="cron-simple-panel" style="background: #f8fafc; padding: 12px 15px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; align-items: end;">
+                                                <div class="form-group" style="margin-bottom: 0;">
+                                                    <label>执行频率</label>
+                                                    <select id="cron-freq" class="form-control" onchange="app.onCronFreqChange()">
+                                                        <option value="every_minute">每分钟</option>
+                                                        <option value="every_n_minute" selected>每 N 分钟</option>
+                                                        <option value="every_hour">每小时</option>
+                                                        <option value="every_n_hour">每 N 小时</option>
+                                                        <option value="daily">每天</option>
+                                                        <option value="weekly">每周</option>
+                                                        <option value="monthly">每月</option>
+                                                    </select>
+                                                </div>
+
+                                                <div id="cron-param-n" class="form-group" style="margin-bottom: 0;">
+                                                    <label>间隔数</label>
+                                                    <input type="number" id="cron-interval" class="form-control" value="5" min="1" max="9999" onchange="app.buildCronFromSimple()">
+                                                </div>
+
+                                                <div id="cron-param-time" class="form-group" style="margin-bottom: 0; display: none;">
+                                                    <label>执行时间</label>
+                                                    <input type="time" id="cron-time" class="form-control" value="09:00" onchange="app.buildCronFromSimple()">
+                                                </div>
+
+                                                <div id="cron-param-weekday" class="form-group" style="margin-bottom: 0; display: none;">
+                                                    <label>星期</label>
+                                                    <select id="cron-weekday" class="form-control" onchange="app.buildCronFromSimple()">
+                                                        <option value="1">周一</option>
+                                                        <option value="2">周二</option>
+                                                        <option value="3">周三</option>
+                                                        <option value="4">周四</option>
+                                                        <option value="5">周五</option>
+                                                        <option value="6">周六</option>
+                                                        <option value="0">周日</option>
+                                                    </select>
+                                                </div>
+
+                                                <div id="cron-param-day" class="form-group" style="margin-bottom: 0; display: none;">
+                                                    <label>日期(日)</label>
+                                                    <input type="number" id="cron-day" class="form-control" value="1" min="1" max="31" onchange="app.buildCronFromSimple()">
+                                                </div>
+                                            </div>
+                                            <div style="margin-top: 10px; font-size: 12px; color: #475569;">
+                                                生成表达式: <code id="cron-schedule-preview" style="background: #fff; padding: 2px 6px; border-radius: 4px; border: 1px solid #cbd5e1;">*/5 * * * *</code>
+                                            </div>
+                                        </div>
+
+                                        <!-- Cron表达式（高级） -->
+                                        <div id="cron-advanced-panel" style="display: none;">
+                                            <input type="text" id="cron-schedule" class="form-control" placeholder="如: */5 * * * * (每5分钟执行)" onchange="app.parseCronToSimple()">
+                                            <div style="font-size: 12px; color: #64748b; margin-top: 4px; line-height: 1.5;">
+                                                格式: <code>分 时 日 月 周</code> &nbsp;|&nbsp;
+                                                例: <code>0 9 * * 1-5</code> 工作日早9点，<code>0 */3 * * *</code> 每3小时，<code>30 14 1 * *</code> 每月1号14:30
+                                            </div>
+                                        </div>
+
+                                        <!-- 一次性执行 -->
+                                        <div id="cron-once-panel" style="display: none;">
+                                            <input type="datetime-local" id="cron-run-at" class="form-control">
+                                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">到指定时间执行一次，执行后自动关闭</div>
+                                        </div>
                                     </div>
                                     <div class="form-group" style="grid-column: 1 / -1;">
                                         <label>任务内容</label>
@@ -274,7 +347,7 @@
                                     </div>
                                 </div>
                                 <div style="display: flex; gap: 10px; margin-top: 15px;">
-                                    <button class="btn btn-primary" onclick="app.addCronTask()">确认添加</button>
+                                    <button id="cron-submit-btn" class="btn btn-primary" onclick="app.submitCronTask()">确认添加</button>
                                     <button class="btn btn-outline-secondary" onclick="app.hideAddCronTask()">取消</button>
                                 </div>
                             </div>
@@ -374,6 +447,29 @@
                 </div>
             </div>
         </div>
+
+                <div id="claw-env-modal" class="modal" style="display: none;">
+                    <div id="claw-env-modal-content" class="modal-content" style="width: 85%; max-width: 960px; max-height: 85vh;">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-satellite-dish" style="color:#3b82f6;"></i> 环境感知总览</h3>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <button class="modal-close" onclick="app.toggleEnvMaximize()" title="最大化/还原" style="font-size: 14px;">
+                                    <i class="fas fa-expand"></i>
+                                </button>
+                                <button class="btn btn-outline-primary btn-sm" onclick="app.loadEnvSnapshot()">
+                                    <i class="fas fa-sync"></i> 刷新
+                                </button>
+                                <span id="env-ts" style="font-size:12px; color:#94a3b8;"></span>
+                                <button class="modal-close" onclick="document.getElementById('claw-env-modal').style.display='none'">&times;</button>
+                            </div>
+                        </div>
+                        <div class="modal-body" id="claw-env-body" style="overflow-y: auto; max-height: calc(85vh - 60px); padding: 16px 20px;">
+                            <div style="text-align: center; color:#94a3b8; padding: 40px;">
+                                <i class="fas fa-spinner fa-spin" style="font-size: 28px;"></i> 正在读取环境快照…
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
                 <div id="claw-feishu-modal" class="modal" style="display: none;">
                     <div id="claw-feishu-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
@@ -1106,49 +1202,47 @@
 
                 <div id="log-detail-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
                     <div id="log-detail-modal-content" style="background: #fff; border-radius: 12px; width: 90%; max-width: 900px; max-height: 80vh; overflow: hidden; display: flex; flex-direction: column;">
-                        <div style="padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;">
+                        <div style="padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; z-index: 10;">
                             <h3 style="font-size: 16px; font-weight: 600; margin: 0;">调用详情</h3>
                             <div style="display: flex; gap: 10px; align-items: center;">
-                                <button onclick="app.toggleLogDetailMaximize()" style="background: none; border: none; font-size: 16px; cursor: pointer; color: #64748b;" title="最大化"><i class="fas fa-expand"></i></button>
-                                <button onclick="document.getElementById('log-detail-modal').style.display='none'" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #64748b;">&times;</button>
+                                <button onclick="app.toggleLogDetailMaximize()" style="background: none; border: none; font-size: 16px; cursor: pointer; color: #64748b; padding: 4px 8px;" title="最大化"><i class="fas fa-expand"></i></button>
+                                <button onclick="document.getElementById('log-detail-modal').style.display='none'" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #64748b; padding: 4px 8px;">&times;</button>
                             </div>
                         </div>
-                        <div id="log-detail-body" style="padding: 20px; overflow-y: auto; flex: 1;">
-                            <div style="margin-bottom: 20px;">
+                        <div id="log-detail-body" style="padding: 20px; overflow-y: auto; flex: 1; display: flex; flex-direction: column;">
+                            <div style="margin-bottom: 15px;">
                                 <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">模型名称</div>
                                 <div style="font-size: 16px; font-weight: 600; color: #3b82f6;" id="detail-model-name">-</div>
                             </div>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px;">
-                                <div style="background: #f8fafc; padding: 10px; border-radius: 6px;">
-                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">总Token</div>
+                            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 15px;">
+                                <div style="background: #f8fafc; padding: 8px 10px; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 2px;">总Token</div>
                                     <div style="font-size: 14px; font-weight: 600;" id="detail-total-tokens">0</div>
                                 </div>
-                                <div style="background: #f8fafc; padding: 10px; border-radius: 6px;">
-                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">输入Token</div>
+                                <div style="background: #f8fafc; padding: 8px 10px; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 2px;">输入Token</div>
                                     <div style="font-size: 14px; font-weight: 600; color: #10b981;" id="detail-prompt-tokens">0</div>
                                 </div>
-                                <div style="background: #f8fafc; padding: 10px; border-radius: 6px;">
-                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">输出Token</div>
+                                <div style="background: #f8fafc; padding: 8px 10px; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 2px;">输出Token</div>
                                     <div style="font-size: 14px; font-weight: 600; color: #f59e0b;" id="detail-completion-tokens">0</div>
                                 </div>
-                            </div>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
-                                <div style="background: #f8fafc; padding: 10px; border-radius: 6px;">
-                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">耗时</div>
+                                <div style="background: #f8fafc; padding: 8px 10px; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 2px;">耗时</div>
                                     <div style="font-size: 14px; font-weight: 600;" id="detail-duration">0s</div>
                                 </div>
-                                <div style="background: #f8fafc; padding: 10px; border-radius: 6px;">
-                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">时间</div>
-                                    <div style="font-size: 14px; font-weight: 600;" id="detail-timestamp">-</div>
+                                <div style="background: #f8fafc; padding: 8px 10px; border-radius: 6px;">
+                                    <div style="font-size: 11px; color: #64748b; margin-bottom: 2px;">时间</div>
+                                    <div style="font-size: 13px; font-weight: 600;" id="detail-timestamp">-</div>
                                 </div>
                             </div>
-                            <div style="margin-bottom: 20px;">
+                            <div style="margin-bottom: 15px; flex: 1; display: flex; flex-direction: column; min-height: 0;">
                                 <div style="font-size: 12px; color: #64748b; margin-bottom: 8px;">输入消息</div>
-                                <div style="background: #f8fafc; padding: 12px; border-radius: 6px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.6;" id="detail-messages">-</div>
+                                <div style="background: #f8fafc; padding: 12px; border-radius: 6px; flex: 1; min-height: 120px; max-height: 40vh; overflow-y: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.6;" id="detail-messages">-</div>
                             </div>
-                            <div style="margin-bottom: 10px;">
+                            <div style="margin-bottom: 10px; flex: 1; display: flex; flex-direction: column; min-height: 0;">
                                 <div style="font-size: 12px; color: #64748b; margin-bottom: 8px;">模型响应</div>
-                                <div style="background: #f0fdf4; padding: 12px; border-radius: 6px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.6;" id="detail-response">-</div>
+                                <div style="background: #f0fdf4; padding: 12px; border-radius: 6px; flex: 1; min-height: 120px; max-height: 40vh; overflow-y: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.6;" id="detail-response">-</div>
                             </div>
                         </div>
                     </div>

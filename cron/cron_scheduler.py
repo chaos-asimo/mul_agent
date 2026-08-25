@@ -32,29 +32,61 @@ class CronParser:
         
         for part in field.split(','):
             part = part.strip()
+            if not part:
+                raise ValueError(f"Empty segment in field: '{field}'")
             if part == '*':
                 result.update(range(min_val, max_val + 1))
             elif '/' in part:
                 base, step = part.split('/')
+                if not step or not step.isdigit():
+                    raise ValueError(f"Invalid step in: '{part}'")
                 if base == '*':
                     start = min_val
                 else:
+                    if not base.lstrip('-').isdigit():
+                        raise ValueError(f"Invalid base in: '{part}'")
                     start = int(base)
+                    if start < min_val or start > max_val:
+                        raise ValueError(
+                            f"Value {start} out of range [{min_val},{max_val}] in: '{part}'"
+                        )
                 step = int(step)
+                if step <= 0:
+                    raise ValueError(f"Step must be positive in: '{part}'")
                 for val in range(start, max_val + 1, step):
                     if min_val <= val <= max_val:
                         result.add(val)
             elif '-' in part:
-                start, end = part.split('-')
-                start, end = int(start), int(end)
+                items = part.split('-')
+                if len(items) != 2 or not items[0].isdigit() or not items[1].isdigit():
+                    raise ValueError(f"Invalid range: '{part}'")
+                start, end = int(items[0]), int(items[1])
+                if start < min_val or start > max_val:
+                    raise ValueError(
+                        f"Range start {start} out of range [{min_val},{max_val}] in: '{part}'"
+                    )
+                if end < min_val or end > max_val:
+                    raise ValueError(
+                        f"Range end {end} out of range [{min_val},{max_val}] in: '{part}'"
+                    )
+                if start > end:
+                    raise ValueError(f"Invalid range (start > end): '{part}'")
                 for val in range(start, end + 1):
-                    if min_val <= val <= max_val:
-                        result.add(val)
-            else:
-                val = int(part)
-                if min_val <= val <= max_val:
                     result.add(val)
+            else:
+                if not part.lstrip('-').isdigit():
+                    raise ValueError(f"Invalid value: '{part}'")
+                val = int(part)
+                if val < min_val or val > max_val:
+                    raise ValueError(
+                        f"Value {val} out of range [{min_val},{max_val}] in: '{part}'"
+                    )
+                result.add(val)
         
+        if not result:
+            raise ValueError(
+                f"Field evaluates to empty set: '{field}' (range [{min_val},{max_val}])"
+            )
         return sorted(list(result))
 
     @staticmethod
@@ -155,21 +187,27 @@ class CronScheduler:
             duration = (datetime.fromisoformat(finished_at) - 
                         datetime.fromisoformat(started_at)).total_seconds()
             
+            success = bool(result.get('success', False))
             self.task_manager.update_run(
                 run_id=run_id,
-                status='completed',
+                status='success' if success else 'failed',
                 output=result.get('output', ''),
+                error=result.get('error', '') if not success else '',
                 finished_at=finished_at,
                 duration=duration
             )
             
-            if task['schedule']:
-                next_run = CronParser.get_next_run(task['schedule'])
-                self.task_manager.update_task(task_id, next_run_at=next_run.isoformat())
-            elif task['run_at']:
+            if task.get('schedule'):
+                try:
+                    next_run = CronParser.get_next_run(task['schedule'])
+                    self.task_manager.update_task(task_id, next_run_at=next_run.isoformat())
+                except Exception:
+                    pass
+            elif task.get('run_at'):
                 self.task_manager.update_task(task_id, enabled=False)
                 
         except Exception as e:
+            logger.exception(f"Task {task_id} execution crashed")
             finished_at = datetime.now().isoformat()
             duration = (datetime.fromisoformat(finished_at) - 
                         datetime.fromisoformat(started_at)).total_seconds()
@@ -183,11 +221,11 @@ class CronScheduler:
                     duration=duration
                 )
             
-            if task['schedule']:
+            if task.get('schedule'):
                 try:
                     next_run = CronParser.get_next_run(task['schedule'])
                     self.task_manager.update_task(task_id, next_run_at=next_run.isoformat())
-                except:
+                except Exception:
                     pass
 
     def run_now(self, task_id: int) -> bool:
