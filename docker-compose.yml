@@ -1,0 +1,30 @@
+services:
+  mul-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mul-agent
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8888}:8888"
+    working_dir: /app
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      # 持久化数据（可写）
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+      - packages_data:/app/packages
+      # 用户文件目录
+      - ./web/static/uploads:/app/web/static/uploads
+      - ./web/static/lobster-claw-files:/app/web/static/lobster-claw-files
+      - ./web/static/mu-files:/app/web/static/mu-files
+      # 配置文件（只读挂载，在宿主机编辑）
+      - ./models.json:/app/models.json:ro
+      - ./agents.json:/app/agents.json:ro
+      - ./skills.json:/app/skills.json:ro
+      - ./search_engines.json:/app/search_engines.json:ro
+
+volumes:
+  packages_data:

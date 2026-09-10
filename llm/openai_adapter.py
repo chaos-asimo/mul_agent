@@ -83,13 +83,17 @@ class OpenAIAdapter(LLMAdapter):
         completion_tokens = 0
         
         try:
-            stream = self.client.chat.completions.create(
+            create_kwargs = dict(
                 model=self.model_name,
                 messages=messages,
                 temperature=kwargs.get("temperature", 0.7),
                 top_p=kwargs.get("top_p", 1.0),
                 stream=True
             )
+            # 默认不限制 max_tokens；调用方显式传入时生效（如 PPT 大纲生成需要更长输出）
+            if kwargs.get("max_tokens"):
+                create_kwargs["max_tokens"] = kwargs["max_tokens"]
+            stream = self.client.chat.completions.create(**create_kwargs)
             
             for chunk in stream:
                 if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content is not None:

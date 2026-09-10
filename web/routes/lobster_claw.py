@@ -1299,15 +1299,25 @@ def detect_generation_type(message: str) -> str:
     message_lower = message.lower()
     video_keywords = ["生成视频", "视频生成", "画视频", "制作视频", "视频制作", "视频内容"]
     image_keywords = ["画图", "画画", "绘图", "绘制", "生成图片", "图片生成", "生成图像", "图像生成", "生成图", "画一张", "画个"]
-    
+    ppt_keywords = ["做ppt", "制作ppt", "生成ppt", "做个ppt", "做一份ppt", "ppt制作", "ppt生成",
+                    "制作演示文稿", "生成演示文稿", "做演示文稿", "制作幻灯片", "生成幻灯片", "做幻灯片"]
+
     for keyword in video_keywords:
         if keyword in message_lower:
             return "video"
-    
+
     for keyword in image_keywords:
         if keyword in message_lower:
             return "image"
-    
+
+    for keyword in ppt_keywords:
+        if keyword in message_lower:
+            return "ppt"
+
+    # 兜底：含 ppt/幻灯片/演示文稿 且含制作类动词（如"做一份关于AI的PPT""做个幻灯片"）
+    if re.search(r"ppt|幻灯片|演示文稿", message_lower) and re.search(r"做|制作|生成|设计|写一?份|一份", message_lower):
+        return "ppt"
+
     return "text"
 
 def get_or_create_session(session_id: Optional[str] = None) -> str:

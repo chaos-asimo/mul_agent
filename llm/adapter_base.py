@@ -105,3 +105,29 @@ class LLMAdapter(ABC):
         messages.insert(0, {"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": user_input})
         return messages
+
+    def create_prompt_with_images(self, system_prompt: str, user_input: str, context: List[Dict[str, str]] = None, images: List[Dict[str, str]] = None) -> List[Dict]:
+        """Create multimodal prompt with image support (OpenAI format).
+
+        images: list of dicts with key 'data_url' (data:image/xxx;base64,...) or 'url'.
+        """
+        messages = []
+        if context:
+            for msg in context:
+                if msg.get("role") != "system":
+                    messages.append(msg)
+        messages.insert(0, {"role": "system", "content": system_prompt})
+
+        if images:
+            content_parts = [{"type": "text", "text": user_input}]
+            for img in images:
+                if isinstance(img, dict):
+                    url = img.get("data_url") or img.get("url") or ""
+                else:
+                    url = str(img)
+                if url:
+                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
+            messages.append({"role": "user", "content": content_parts})
+        else:
+            messages.append({"role": "user", "content": user_input})
+        return messages

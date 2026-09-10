@@ -11,6 +11,40 @@ class ClaudeAdapter(LLMAdapter):
         super().__init__(api_key, model_name, api_url)
         self.client = Anthropic(api_key=api_key)
 
+    @staticmethod
+    def _convert_content(content):
+        """Convert OpenAI multimodal content to Claude format.
+
+        - str -> str (unchanged)
+        - list of blocks -> convert image_url blocks to Claude image blocks
+        """
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            converted = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "image_url":
+                    url = (item.get("image_url") or {}).get("url", "")
+                    if url.startswith("data:"):
+                        # data:image/png;base64,xxxx
+                        header, _, data = url.partition(",")
+                        media_type = header.split(":")[1].split(";")[0] if ":" in header else "image/png"
+                        converted.append({
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": media_type, "data": data},
+                        })
+                    elif url:
+                        converted.append({
+                            "type": "image",
+                            "source": {"type": "url", "url": url},
+                        })
+                else:
+                    converted.append(item)
+            return converted
+        return content
+
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> LLMResponse:
         """Send chat request to Claude API"""
         try:
@@ -24,7 +58,7 @@ class ClaudeAdapter(LLMAdapter):
                 else:
                     claude_messages.append({
                         "role": msg.get("role", "user"),
-                        "content": msg.get("content", "")
+                        "content": self._convert_content(msg.get("content", ""))
                     })
 
             response = self.client.messages.create(
@@ -72,7 +106,7 @@ class ClaudeAdapter(LLMAdapter):
                 else:
                     claude_messages.append({
                         "role": msg.get("role", "user"),
-                        "content": msg.get("content", "")
+                        "content": self._convert_content(msg.get("content", ""))
                     })
 
             stream = self.client.messages.create(

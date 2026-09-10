@@ -25,6 +25,15 @@
 - **Token统计**：显示输入/输出Token数、耗时、每秒Token速率、模型名称
 - **记忆唤起**：对话过程中自动检索相关记忆，增强上下文理解
 
+### PPT 制作（多用户龙虾Claw）
+- **一句话生成**：对话中说「帮我做一份关于 X 的 PPT」即自动识别 PPT 意图，AI 生成结构化大纲并渲染 `.pptx` 演示文稿，聊天中返回下载链接
+- **三种版式混排**：`bullets`（纯要点）、`chart`（整页图表）、`text_chart`（左文右图混排）
+- **原生图表**：python-pptx 原生柱状图 / 折线图（带圆形标记点）/ 饼图，图表配色随主题自动派生 8 色调色板
+- **内置主题**：商务蓝 / 活力橙 / 简约灰三套配色，封面装饰线、内容页标题条、页脚标题+页码
+- **LLM JSON 容错**：字段合并、多余括号、截断等多级自动修复链，解析失败时降级为文字大纲
+- **流式进度**：实时推送「正在生成 PPT 大纲」→「正在渲染幻灯片」→「✅ 已生成（N 页）」进度提示
+- **隔离与安全**：生成文件按用户目录存储（`web/static/lobster-claw-files/{uid}/`），下载接口校验归属，文件扩展名白名单含 `.pptx`
+
 ### 记忆系统
 - **多类型记忆**：支持即时（instant）、短期（short_term）、长期（long_term）三种记忆类型
 - **权重机制**：通过weight字段和access_count实现记忆权重管理
@@ -173,6 +182,17 @@ mul_agent/
 │   └── log_manager.py   # 日志管理器
 ├── attachment/          # 附件管理
 │   └── attachment_manager.py
+├── lobster_mu/          # 多用户龙虾Claw子项目
+│   ├── chat_service.py  # 聊天编排（SSE流式、PPT/脚本意图识别）
+│   ├── ppt_service.py   # PPT生成（大纲解析+python-pptx渲染+图表）
+│   ├── script_service.py# 脚本管理与生成
+│   ├── memory_store.py  # 记忆存储
+│   ├── cron_store.py    # 定时任务存储
+│   ├── knowledge_store.py # RAG知识库
+│   ├── mcp_client.py    # MCP客户端
+│   ├── security.py      # 安全机制
+│   ├── user_store.py    # 多用户管理
+│   └── paths.py         # 用户文件目录规范（防路径穿越）
 ├── cron/                # 定时任务模块
 │   ├── cron_manager.py   # 任务和运行历史持久化
 │   ├── cron_scheduler.py # 调度器（cron解析+循环检查）
@@ -298,6 +318,86 @@ python web_server.py
 ### 技能配置
 可参考 `skills.example.json` 配置技能。
 
+## Docker 部署（可选）
+
+项目提供 Docker 化部署方案，支持 Linux/macOS/Windows（Docker Desktop）一键部署。
+
+### 前置要求
+- Docker 20.10+ 与 Docker Compose 2.x
+- 可用域名（飞书 Webhook 回调需要公网可访问；本地开发可用内网穿透）
+
+### 快速开始
+```bash
+# 1. 复制环境变量模板并填写
+cp .env.example .env
+vim .env   # 配置 ADMIN_PASSWORD、SESSION_SECRET、飞书相关变量等
+
+# 2. 一键构建并启动
+./deploy.sh up
+
+# 3. 查看状态 / 日志
+docker compose ps
+docker compose logs -f app
+```
+
+### 主要操作
+```bash
+docker compose down        # 停止
+docker compose up -d       # 启动
+docker compose pull && docker compose up -d --force-recreate  # 更新镜像
+```
+
+### 环境变量速查
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `ADMIN_PASSWORD` | 管理员初始密码 | `admin123` |
+| `SESSION_SECRET` | Session 签名密钥（生产务必修改） | - |
+| `PUBLIC_URL` | 公网访问地址（用于飞书 Webhook 回调） | - |
+| `TZ` | 时区 | `Asia/Shanghai` |
+
+### 数据持久化
+- `data/` - SQLite 数据库（用户、会话、记忆、定时任务等）
+- `uploads/` - 用户上传文件
+- 生产环境建议将以上目录挂载到独立卷（见 `docker-compose.yml`）
+
+详细部署说明见 [README-deploy.md](README-deploy.md)。
+
+## 部署限制说明（生产环境）
+
+以下为当前架构的已知限制，生产部署前请确认：
+
+### 1. 单进程部署
+- 应用以单进程运行（SQLite + 进程内状态），**不支持多副本水平扩展**
+- 会话 cookie、限流计数、定时任务调度器均保存在进程内，多实例会导致状态不一致
+- 如需扩容，需先做会话外置（Redis）与 SQLite 迁移（PostgreSQL）
+
+### 2. SQLite 并发写
+- 多用户并发写（聊天消息、记忆、定时任务）依赖 SQLite WAL 模式
+- 高并发写入场景（>100 QPS）可能出现 `database is locked`，建议监控并设置合理超时
+
+### 3. 限流为进程内计数
+- 多用户Claw 接口限流（100 次/60s/用户）基于进程内存桶
+- **服务重启后限流计数清零**，且多副本部署时限流不共享
+- 生产多副本场景建议接入网关层限流（Nginx/云 WAF）
+
+### 4. 定时任务调度器
+- 调度循环在应用进程内运行，**服务不可用期间错过的任务不会补跑**
+- 一次性任务（run_at）若服务在触发时刻宕机，任务将被标记失败而非延后
+
+### 5. 飞书 Webhook 要求公网
+- 飞书事件订阅需公网可访问的 HTTPS 回调地址
+- 内网开发请用 ngrok/frp 等内网穿透工具
+- 单实例部署天然满足"同一事件只处理一次"；若未来多副本，需做事件去重
+
+### 6. 生成文件存储
+- PPT/PDF 等生成文件写入 `web/static/` 下按用户隔离的目录
+- 磁盘容量需自行规划（建议为生成文件目录设置独立磁盘或配额告警）
+- 旧文件不会自动清理，需配合运维策略定期归档
+
+### 7. 敏感信息
+- `data/feishu_config.json`、`models.json` 等包含 API 密钥，**切勿提交到版本库或公开共享**
+- 镜像内不包含 `.env`，密钥通过容器环境变量或挂载密文注入
+
 ## 使用指南
 
 ### 文档处理
@@ -318,6 +418,12 @@ python web_server.py
 2. **选择模型**：在发送按钮旁选择大模型
 3. **开始对话**：输入消息，支持流式响应
 4. **管理会话**：可创建多个会话、查看历史
+
+### PPT 制作
+1. **发起需求**：在Claw对话中直接说「帮我做一份关于 X 的 PPT」（可附带页数、风格要求，如「8页，橙色风格」）
+2. **等待生成**：界面实时显示「正在生成 PPT 大纲」→「正在渲染幻灯片」进度
+3. **下载文件**：生成完成后回复中附下载卡片，点击即可下载 `.pptx` 文件
+4. **使用提示**：生成文件保存在对应用户目录，按登录用户隔离
 
 ### 记忆管理
 1. **打开记忆管理**：在Claw面板点击"记忆"按钮
@@ -432,6 +538,7 @@ ws.onmessage = (event) => {
 - `data/memory.db` - 记忆数据库（SQLite）
 - `data/cron.db` - 定时任务数据库（SQLite）
 - `uploads/` - 上传文件目录
+- `web/static/lobster-claw-files/{uid}/` - 多用户Claw生成文件目录（PPT/PDF等）
 - `agents.example.json` - Agent配置示例
 - `models.example.json` - 模型配置示例
 - `search_engines.example.json` - 搜索引擎配置示例

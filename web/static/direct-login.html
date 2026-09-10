@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>龙虾Claw · 直接登录</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .card {
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+    width: 100%;
+    max-width: 420px;
+    padding: 40px 36px;
+  }
+  .logo {
+    text-align: center;
+    font-size: 32px;
+    margin-bottom: 8px;
+  }
+  .title {
+    text-align: center;
+    font-size: 22px;
+    font-weight: 600;
+    color: #1a1a2e;
+    margin-bottom: 6px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 32px;
+  }
+  .field { margin-bottom: 20px; }
+  .field label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: #444;
+    margin-bottom: 8px;
+  }
+  .field input {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1.5px solid #e0e0e0;
+    border-radius: 10px;
+    font-size: 14px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    outline: none;
+  }
+  .field input:focus {
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+  }
+  .field input::placeholder { color: #bbb; }
+  .btn {
+    width: 100%;
+    padding: 13px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.1s, opacity 0.2s;
+    margin-top: 8px;
+  }
+  .btn:hover { opacity: 0.92; }
+  .btn:active { transform: scale(0.98); }
+  .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+  .msg {
+    margin-top: 18px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    text-align: center;
+    display: none;
+  }
+  .msg.error { display: block; background: #fee; color: #c33; border: 1px solid #fcc; }
+  .msg.success { display: block; background: #efe; color: #2a7; border: 1px solid #cfc; }
+  .hint {
+    margin-top: 16px;
+    font-size: 12px;
+    color: #999;
+    text-align: center;
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🦞</div>
+    <div class="title">龙虾Claw 直接登录</div>
+    <div class="subtitle">输入用户名即可自动注册并登录</div>
+
+    <div class="field">
+      <label for="baseUrl">连接地址</label>
+      <input id="baseUrl" type="text" placeholder="http://localhost:8888" autocomplete="off" />
+    </div>
+
+    <div class="field">
+      <label for="username">用户名</label>
+      <input id="username" type="text" placeholder="请输入用户名" autocomplete="off" />
+    </div>
+
+    <div class="field">
+      <label for="displayName">显示名</label>
+      <input id="displayName" type="text" placeholder="请输入显示名" autocomplete="off" />
+    </div>
+
+    <button id="loginBtn" class="btn">直接登录</button>
+
+  </div>
+
+<script>
+(function () {
+  // 默认连接地址为当前页面所在服务器
+  var baseUrlInput = document.getElementById('baseUrl');
+  if (!baseUrlInput.value) {
+    baseUrlInput.value = window.location.origin;
+  }
+
+  var btn = document.getElementById('loginBtn');
+  var msgEl = document.getElementById('msg');
+
+  function showMsg(text, type) {
+    msgEl.textContent = text;
+    msgEl.className = 'msg ' + (type || 'error');
+  }
+  function hideMsg() {
+    msgEl.className = 'msg';
+    msgEl.textContent = '';
+  }
+
+  btn.addEventListener('click', async function () {
+    hideMsg();
+    var baseUrl = baseUrlInput.value.trim().replace(/\/+$/, '');
+    var username = document.getElementById('username').value.trim();
+    var displayName = document.getElementById('displayName').value.trim();
+
+    if (!baseUrl) { showMsg('请填写连接地址'); return; }
+    if (!username) { showMsg('请填写用户名'); return; }
+    if (!displayName) { showMsg('请填写显示名'); return; }
+
+    btn.disabled = true;
+    btn.textContent = '登录中...';
+
+    try {
+      var resp = await fetch(baseUrl + '/api/lobster-mu/login/direct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ username: username, display_name: displayName })
+      });
+      var data = await resp.json();
+
+      if (resp.ok && data.status === 'success') {
+        var tip = data.created ? '注册并登录成功' : '登录成功';
+        showMsg(tip + '，正在跳转...', 'success');
+        // 跳转到 v3 工作台
+        setTimeout(function () {
+          window.location.href = baseUrl + '/v3/';
+        }, 600);
+      } else {
+        showMsg(data.detail || data.message || '登录失败');
+        btn.disabled = false;
+        btn.textContent = '直接登录';
+      }
+    } catch (err) {
+      showMsg('网络错误：' + err.message + '（请检查连接地址或跨域配置）');
+      btn.disabled = false;
+      btn.textContent = '直接登录';
+    }
+  });
+
+  // 回车提交
+  ['username', 'displayName'].forEach(function (id) {
+    document.getElementById(id).addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') btn.click();
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -41,6 +41,7 @@ from web.routes import image as image_router
 from web.routes import video as video_router
 from web.routes import ai_chat as ai_chat_router
 from web.routes import lobster_claw as lobster_claw_router
+from web.routes import lobster_mu as lobster_mu_router
 from web.routes import feishu as feishu_router
 
 logger.info("Initializing FastAPI app...")
@@ -52,14 +53,20 @@ app.add_middleware(SessionMiddleware, secret_key="mul_agent_secret_key_2026")
 async def startup():
     logger.info("Starting cron scheduler...")
     await lobster_claw_router.cron_scheduler.start()
-    
+
+    logger.info("Starting mu cron scheduler...")
+    await lobster_mu_router.mu_scheduler.start()
+
     logger.info("Starting Feishu long connection client...")
     await feishu_router.start_feishu_ws_client()
 
 async def shutdown():
     logger.info("Stopping cron scheduler...")
     await lobster_claw_router.cron_scheduler.stop()
-    
+
+    logger.info("Stopping mu cron scheduler...")
+    await lobster_mu_router.mu_scheduler.stop()
+
     logger.info("Stopping Feishu long connection client...")
     feishu_router.stop_feishu_ws_client()
 
@@ -97,6 +104,8 @@ jinja_env = Environment(
 app.mount("/static", StaticFiles(directory="web/static"), name="static")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 app.mount("/v2/assets", StaticFiles(directory="web/static/v2/assets"), name="v2-assets")
+os.makedirs("web/static/v3/assets", exist_ok=True)
+app.mount("/v3/assets", StaticFiles(directory="web/static/v3/assets"), name="v3-assets")
 
 # 全局管理器
 logger.info("Initializing managers...")
@@ -172,6 +181,7 @@ app.include_router(image_router.router, prefix="/api")
 app.include_router(video_router.router, prefix="/api")
 app.include_router(ai_chat_router.router, prefix="/api")
 app.include_router(lobster_claw_router.router, prefix="")
+app.include_router(lobster_mu_router.router, prefix="")
 app.include_router(feishu_router.router)
 
 # 初始化控制器
@@ -290,6 +300,20 @@ async def v2_index(request: Request):
         return HTMLResponse(content=content)
     else:
         return HTMLResponse(content="<h1>React v2 应用尚未构建</h1><p>请运行 pnpm install && pnpm build</p>", status_code=503)
+
+# ============ React v3（多用户龙虾Claw）前端路由 ============
+@app.get("/v3", response_class=HTMLResponse)
+@app.get("/v3/{path:path}", response_class=HTMLResponse)
+async def v3_index(request: Request):
+    """React v3 前端入口"""
+    import os
+    index_path = os.path.join("web", "static", "v3", "index.html")
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return HTMLResponse(content=content)
+    else:
+        return HTMLResponse(content="<h1>React v3 应用尚未构建</h1><p>请运行 pnpm build:v3</p>", status_code=503)
 
 # ============ 文档处理 API（保留在 web_server.py） ============
 
