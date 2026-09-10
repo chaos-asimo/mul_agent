@@ -279,6 +279,7 @@ pip install -r requirements.txt
 - `uvicorn` - ASGI服务器
 - `httpx` - HTTP客户端
 - `python-docx` - Word文档处理
+- `python-pptx` - PPT演示文稿生成（多用户龙虾Claw，缺失时自动安装到 `packages/`）
 - `msoffcrypto-tool` - 加密Office文档
 - `pillow` - 图像处理
 - `tiktoken` - Token计数
