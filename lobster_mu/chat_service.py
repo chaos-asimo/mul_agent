@@ -653,6 +653,15 @@ def _knowledge_context(user_id: int, message: str) -> str:
         return ""
 
 
+def _warmup_knowledge() -> None:
+    """后台预热知识库 embedding 模型（失败静默，不影响聊天流）"""
+    try:
+        from lobster_mu import knowledge_store
+        knowledge_store.warmup()
+    except Exception:
+        pass
+
+
 def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingResponse:
     """多用户流式聊天入口"""
     session_id = session_store.get_or_create_session(user_id, request.session_id)
@@ -896,6 +905,9 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                         memory_context += f"{i}. [{mem_type}{weight_info}] {memory['content']}\n"
 
             knowledge_context = _knowledge_context(user_id, request.message)
+            # 后台预热 embedding 模型（本地 BGE 首次数十秒），下次聊天即可秒级注入知识库上下文
+            import threading as _threading
+            _threading.Thread(target=lambda: _warmup_knowledge(), daemon=True).start()
 
             if tool_result:
                 user_content = f"""用户问题: {request.message}

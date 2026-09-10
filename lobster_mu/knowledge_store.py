@@ -21,8 +21,21 @@ def _now() -> str:
     return datetime.now().isoformat()
 
 
+# 本地 BGE 等 embedding 模型加载耗时（首次数十秒），按签名缓存适配器实例
+_adapter_cache: Dict[tuple, object] = {}
+_adapter_cache_lock = None
+
+
+def _get_adapter_cache_lock():
+    global _adapter_cache_lock
+    if _adapter_cache_lock is None:
+        import threading
+        _adapter_cache_lock = threading.Lock()
+    return _adapter_cache_lock
+
+
 def _get_embedding_adapter():
-    """照抄 KnowledgeBase._get_embedding_adapter：取第一个启用的 embedding 模型"""
+    """取第一个启用的 embedding 模型并缓存适配器（避免每次调用重复加载本地模型）"""
     try:
         from models.model_manager import ModelManager
         from engine.agent_worker import create_embedding_adapter
@@ -35,13 +48,23 @@ def _get_embedding_adapter():
                 continue
             if not getattr(model_config, "api_key", ""):
                 continue
+            signature = (
+                getattr(model_config, "api_type", ""),
+                getattr(model_config, "model_name", ""),
+                getattr(model_config, "api_url", ""),
+            )
+            cached = _adapter_cache.get(signature)
+            if cached is not None:
+                return cached
             try:
                 adapter = create_embedding_adapter(model_config)
-                if adapter is not None:
-                    return adapter
             except Exception as e:
                 logger.error(f"[mu-kb] 创建 embedding adapter 失败: {e}")
                 continue
+            if adapter is not None:
+                with _get_adapter_cache_lock():
+                    _adapter_cache[signature] = adapter
+                return adapter
     except Exception as e:
         logger.error(f"[mu-kb] 获取 embedding 模型失败: {e}")
     return None
@@ -103,6 +126,11 @@ def add_document(user_id: int, filename: str, file_size: int, content: str) -> D
     logger.info(f"[mu-kb] user={user_id} 文件 {filename} 已入库 (doc_id={doc_id})")
     return {"doc_id": doc_id, "filename": filename, "chunk_count": len(chunks),
             "file_size": file_size}
+
+
+def warmup() -> bool:
+    """预热 embedding 模型（后台调用），避免首次搜索时长时间加载模型；返回是否成功"""
+    return _get_embedding_adapter() is not None
 
 
 def _cosine(a: List[float], b: List[float]) -> float:

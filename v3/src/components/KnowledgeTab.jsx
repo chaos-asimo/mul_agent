@@ -153,6 +153,11 @@ function KnowledgeTab() {
         </button>
       )}
 
+      {searching && (
+        <p className="text-xs t-text-accent animate-pulse">
+          正在检索…（本地 embedding 模型首次加载需数分钟，请耐心等待）
+        </p>
+      )}
       {searchMode ? (
         <div className="space-y-2">
           <p className="text-xs t-text-faint">检索结果（{results.length}）</p>
