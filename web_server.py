@@ -13,6 +13,7 @@ if _packages_dir not in sys.path:
 from utils.logger import setup_logging, logger
 setup_logging()
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -45,12 +46,10 @@ from web.routes import lobster_mu as lobster_mu_router
 from web.routes import feishu as feishu_router
 
 logger.info("Initializing FastAPI app...")
-app = FastAPI(title="Multi-Agent Document Enhancer", version="1.0")
-
-app.add_middleware(SessionMiddleware, secret_key="mul_agent_secret_key_2026")
 
 # 启动定时任务调度器和飞书长连接
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     logger.info("Starting cron scheduler...")
     await lobster_claw_router.cron_scheduler.start()
 
@@ -71,7 +70,8 @@ async def startup():
             logger.warning(f"Knowledge embedding model warmup failed: {e}")
     _threading.Thread(target=_kb_warmup, daemon=True).start()
 
-async def shutdown():
+    yield
+
     logger.info("Stopping cron scheduler...")
     await lobster_claw_router.cron_scheduler.stop()
 
@@ -81,8 +81,9 @@ async def shutdown():
     logger.info("Stopping Feishu long connection client...")
     feishu_router.stop_feishu_ws_client()
 
-app.add_event_handler("startup", startup)
-app.add_event_handler("shutdown", shutdown)
+app = FastAPI(title="Multi-Agent Document Enhancer", version="1.0", lifespan=lifespan)
+
+app.add_middleware(SessionMiddleware, secret_key="mul_agent_secret_key_2026")
 
 
 async def safe_send_json(websocket: WebSocket, data: dict):
