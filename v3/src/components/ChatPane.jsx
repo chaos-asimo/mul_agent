@@ -1,7 +1,38 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { Send, Paperclip, X, Bot, Image as ImageIcon } from 'lucide-react'
+import { Send, Paperclip, X, Bot, Image as ImageIcon, BookOpen, ChevronDown, ChevronUp } from 'lucide-react'
 import { apiGet, apiStream } from '../api/client'
 import MarkdownContent from './MarkdownContent'
+
+// 知识库参考来源（助手消息下方可折叠展示）
+function KnowledgeSources({ sources }) {
+  const [open, setOpen] = useState(false)
+  if (!sources || sources.length === 0) return null
+  return (
+    <div className="mt-1.5">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md t-bg-accent-soft t-border-accent t-text-accent text-[11px] hover:opacity-80 transition-opacity"
+      >
+        <BookOpen className="w-3 h-3" />
+        参考知识库 · {sources.length} 条
+        {open ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-1.5 max-w-[70%]">
+          {sources.map((s, i) => (
+            <div key={i} className="px-2.5 py-1.5 rounded-md t-bg-bubble border t-border text-[11px]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="t-text-2 font-medium truncate">{s.filename}</span>
+                <span className="t-text-fainter shrink-0">相关度 {(s.score || 0).toFixed(2)}</span>
+              </div>
+              <div className="t-text-faint whitespace-pre-wrap break-words mt-0.5 line-clamp-3">{s.content}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function formatTimestamp(timestamp) {
   if (!timestamp) return ''
@@ -274,6 +305,9 @@ function ChatPane({
               const meta = {}
               if (data.model_name) meta.model_name = data.model_name
               if (data.token_stats) meta.token_stats = data.token_stats
+              if (data.knowledge_sources && data.knowledge_sources.length > 0) {
+                meta.knowledge_sources = data.knowledge_sources
+              }
               appendOrUpdateAssistant(assistantContent, true, meta)
             }
           } catch (e) {
