@@ -173,15 +173,6 @@ def user_has_docs(user_id: int) -> bool:
         return False
 
 
-def search_for_display(user_id: int, message: str, top_k: int = 3, threshold: float = 0.3) -> List[Dict]:
-    """知识库检索（仅供前端展示参考来源）；异常返回空列表，不向上抛"""
-    try:
-        return search(user_id, message, top_k=top_k, threshold=threshold)
-    except Exception as e:
-        logger.debug(f"[mu-kb] 展示用检索失败: {e}")
-        return []
-
-
 def _cosine(a: List[float], b: List[float]) -> float:
     """纯 Python 余弦相似度（避免额外依赖）"""
     dot = 0.0

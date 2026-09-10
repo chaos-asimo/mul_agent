@@ -638,19 +638,24 @@ def get_environment_block() -> str:
     return "\n\n" + env_aware_text + "\n" if env_aware_text else ""
 
 
-def _knowledge_context(user_id: int, message: str) -> str:
-    """知识库检索（user_id 过滤）；接入向量检索，任何失败都返回空串保持聊天流不中断"""
+def _knowledge_context(user_id: int, message: str):
+    """知识库检索（user_id 过滤），返回 (context, sources) 元组；任何失败都返回 ("", []) 保持聊天流不中断
+
+    采纳门槛 threshold=0.5：低于该相关度的片段视为"未被问题采纳"，
+    既不注入上下文、也不向前端返回参考来源（避免低相关噪声）。
+    context 与 sources 来自同一份检索结果，保证前端展示与注入完全一致。
+    """
     try:
         from lobster_mu import knowledge_store
-        results = knowledge_store.search(user_id, message, top_k=3, threshold=0.3)
+        results = knowledge_store.search(user_id, message, top_k=3, threshold=0.5)
         if not results:
-            return ""
+            return "", []
         context = "\n\n📖 以下是与当前问题相关的知识库内容，请参考这些信息回答：\n"
         for i, r in enumerate(results, 1):
             context += f"{i}. [{r.get('filename', '未知文档')}] (相关度 {r.get('score', 0):.2f})\n{r.get('content', '')}\n"
-        return context
+        return context, results
     except Exception:
-        return ""
+        return "", []
 
 
 def _warmup_knowledge() -> None:
@@ -913,12 +918,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                     _ks.warmup_sync()
             except Exception:
                 pass
-            knowledge_context = _knowledge_context(user_id, request.message)
-            if knowledge_context:
-                try:
-                    knowledge_sources = _ks.search_for_display(user_id, request.message, top_k=3, threshold=0.3)
-                except Exception:
-                    knowledge_sources = []
+            knowledge_context, knowledge_sources = _knowledge_context(user_id, request.message)
 
             if tool_result:
                 user_content = f"""用户问题: {request.message}
