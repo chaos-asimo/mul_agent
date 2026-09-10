@@ -336,6 +336,14 @@ body {
 .markdown-body blockquote > :first-child { margin-top: 0; }
 .markdown-body blockquote > :last-child { margin-bottom: 0; }
 
+/* 参考信息片段：超出 3 行截断 */
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .markdown-body a {
   color: var(--md-link);
   text-decoration: underline;

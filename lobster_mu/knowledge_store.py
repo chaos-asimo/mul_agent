@@ -129,8 +129,57 @@ def add_document(user_id: int, filename: str, file_size: int, content: str) -> D
 
 
 def warmup() -> bool:
-    """预热 embedding 模型（后台调用），避免首次搜索时长时间加载模型；返回是否成功"""
-    return _get_embedding_adapter() is not None
+    """预热 embedding 模型（后台调用）：真正加载一次模型并缓存，避免首次搜索时长时间加载；返回是否成功"""
+    adapter = _get_embedding_adapter()
+    if adapter is None:
+        return False
+    try:
+        adapter.embed_query("预热")
+        return True
+    except Exception as e:
+        logger.debug(f"[mu-kb] warmup 失败: {e}")
+        return False
+
+
+def is_model_ready() -> bool:
+    """embedding 模型是否已在内存中加载（本地 BGE 的 _model 已初始化）"""
+    adapter = _get_embedding_adapter()
+    if adapter is None:
+        return False
+    return getattr(adapter, "_model", None) is not None
+
+
+def warmup_sync(timeout: int = 120) -> bool:
+    """同步预热（阻塞）：有知识库文档的用户聊天时首次调用，之后秒级返回；返回是否成功"""
+    if is_model_ready():
+        return True
+    return warmup()
+
+
+def user_has_docs(user_id: int) -> bool:
+    """用户是否已上传知识库文档（决定聊天时是否需要同步预热 embedding 模型）"""
+    try:
+        conn = get_conn()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM mu_knowledge_docs WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            return bool(row and row["c"] > 0)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug(f"[mu-kb] user_has_docs 失败: {e}")
+        return False
+
+
+def search_for_display(user_id: int, message: str, top_k: int = 3, threshold: float = 0.3) -> List[Dict]:
+    """知识库检索（仅供前端展示参考来源）；异常返回空列表，不向上抛"""
+    try:
+        return search(user_id, message, top_k=top_k, threshold=threshold)
+    except Exception as e:
+        logger.debug(f"[mu-kb] 展示用检索失败: {e}")
+        return []
 
 
 def _cosine(a: List[float], b: List[float]) -> float:

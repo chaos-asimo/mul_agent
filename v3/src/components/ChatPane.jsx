@@ -54,6 +54,9 @@ function MessageBubble({ msg }) {
               <MarkdownContent content={msg.content} />
             )}
           </div>
+        {!isUser && !isError && (
+          <KnowledgeSources sources={msg.knowledge_sources} />
+        )}
         <div className={`flex items-center gap-2 mt-1 px-1 text-[10px] t-text-faint ${isUser ? 'flex-row-reverse' : ''}`}>
           {isUser || isError ? (
             <>

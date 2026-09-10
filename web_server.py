@@ -60,6 +60,17 @@ async def startup():
     logger.info("Starting Feishu long connection client...")
     await feishu_router.start_feishu_ws_client()
 
+    logger.info("Warming up knowledge embedding model in background...")
+    import threading as _threading
+    def _kb_warmup():
+        try:
+            from lobster_mu import knowledge_store
+            knowledge_store.warmup()
+            logger.info("Knowledge embedding model warmup done")
+        except Exception as e:
+            logger.warning(f"Knowledge embedding model warmup failed: {e}")
+    _threading.Thread(target=_kb_warmup, daemon=True).start()
+
 async def shutdown():
     logger.info("Stopping cron scheduler...")
     await lobster_claw_router.cron_scheduler.stop()

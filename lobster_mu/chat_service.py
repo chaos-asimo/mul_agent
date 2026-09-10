@@ -904,10 +904,21 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                         weight_info = f" (权重: {memory.get('weight', 1.0):.1f})" if memory.get('weight') else ""
                         memory_context += f"{i}. [{mem_type}{weight_info}] {memory['content']}\n"
 
+            # 知识库：有文档的用户首次聊天同步预热 embedding 模型（首次数十秒，之后秒级），
+            # 保证本轮即可注入知识库上下文与参考来源
+            knowledge_sources = []
+            try:
+                from lobster_mu import knowledge_store as _ks
+                if _ks.user_has_docs(user_id) and not _ks.is_model_ready():
+                    _ks.warmup_sync()
+            except Exception:
+                pass
             knowledge_context = _knowledge_context(user_id, request.message)
-            # 后台预热 embedding 模型（本地 BGE 首次数十秒），下次聊天即可秒级注入知识库上下文
-            import threading as _threading
-            _threading.Thread(target=lambda: _warmup_knowledge(), daemon=True).start()
+            if knowledge_context:
+                try:
+                    knowledge_sources = _ks.search_for_display(user_id, request.message, top_k=3, threshold=0.3)
+                except Exception:
+                    knowledge_sources = []
 
             if tool_result:
                 user_content = f"""用户问题: {request.message}
@@ -1332,7 +1343,10 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                                        keywords=memory_store.extract_keywords(fact),
                                        session_id=session_id, weight=1.5)
 
-            yield f"data: {json.dumps({'success': True, 'content': '', 'session_id': session_id, 'done': True, 'model_name': adapter.model_name, 'token_stats': token_stats})}\n\n"
+            done_event = {'success': True, 'content': '', 'session_id': session_id, 'done': True, 'model_name': adapter.model_name, 'token_stats': token_stats}
+            if knowledge_sources:
+                done_event['knowledge_sources'] = knowledge_sources
+            yield f"data: {json.dumps(done_event)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'success': False, 'error': str(e), 'session_id': session_id})}\n\n"
         finally:
