@@ -168,8 +168,11 @@ function AdminUsers() {
   const [logTotal, setLogTotal] = useState(0)
   const [logsLoading, setLogsLoading] = useState(false)
   const [logError, setLogError] = useState('')
+  const [logPage, setLogPage] = useState(1)
+  const [logMaximized, setLogMaximized] = useState(false)
+  const LOG_PAGE_SIZE = 20
 
-  const loadLogs = useCallback(async () => {
+  const loadLogs = useCallback(async (page = 1) => {
     setLogsLoading(true)
     setLogError('')
     try {
@@ -179,10 +182,13 @@ function AdminUsers() {
         if (u) params.set('user_id', u.id)
       }
       if (logFilter.operation) params.set('operation', logFilter.operation)
+      params.set('limit', LOG_PAGE_SIZE)
+      params.set('offset', (page - 1) * LOG_PAGE_SIZE)
       const res = await apiGet(`/admin/logs?${params.toString()}`)
       if (res.success) {
         setLogs(res.logs || [])
         setLogTotal(res.total || 0)
+        setLogPage(page)
       } else {
         setLogError(res.error || '加载日志失败')
       }
@@ -194,8 +200,15 @@ function AdminUsers() {
   }, [logFilter, users])
 
   useEffect(() => {
-    if (showLogs) loadLogs()
+    if (showLogs) loadLogs(1)
   }, [showLogs, loadLogs])
+
+  const closeLogsModal = () => {
+    setShowLogs(false)
+    setLogFilter({ username: '', operation: '' })
+    setLogPage(1)
+    setLogMaximized(false)
+  }
 
   const handleDeleteLog = async (log) => {
     if (!window.confirm(`确定删除日志 #${log.id}（${log.username} · ${log.operation}）吗？`)) return
@@ -294,7 +307,7 @@ function AdminUsers() {
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               刷新
             </button>
-            <button onClick={() => setShowLogs(true)} className={btnGhost}>
+            <button onClick={() => { setLogPage(1); setLogMaximized(false); setShowLogs(true) }} className={btnGhost}>
               <ClipboardList className="w-3.5 h-3.5" />
               日志管理
             </button>
@@ -619,10 +632,12 @@ function AdminUsers() {
       {showLogs && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70"
-          onClick={() => setShowLogs(false)}
+          onClick={closeLogsModal}
         >
           <div
-            className="t-bg-panel border t-border-strong rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col"
+            className={`t-bg-panel border t-border-strong rounded-2xl shadow-2xl flex flex-col transition-all duration-200 ${
+              logMaximized ? 'w-full max-w-none h-full max-h-none' : 'w-full max-w-4xl max-h-[85vh]'
+            }`}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
@@ -632,10 +647,17 @@ function AdminUsers() {
                 操作日志（共 {logTotal} 条）
               </h3>
               <div className="flex items-center gap-2">
-                <button onClick={loadLogs} className="t-text-faint t-hover-text transition-colors" title="刷新">
+                <button onClick={() => loadLogs(logPage)} className="t-text-faint t-hover-text transition-colors" title="刷新">
                   <RefreshCw className={`w-4 h-4 ${logsLoading ? 'animate-spin' : ''}`} />
                 </button>
-                <button onClick={() => setShowLogs(false)} className="t-text-faint t-hover-text transition-colors">
+                <button
+                  onClick={() => setLogMaximized(!logMaximized)}
+                  title={logMaximized ? '还原' : '最大化'}
+                  className="t-text-faint t-hover-text transition-colors"
+                >
+                  {logMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                </button>
+                <button onClick={closeLogsModal} className="t-text-faint t-hover-text transition-colors">
                   <XCircle className="w-4 h-4" />
                 </button>
               </div>
@@ -738,6 +760,31 @@ function AdminUsers() {
                 </table>
               )}
             </div>
+
+            {/* 分页控制 */}
+            {logTotal > LOG_PAGE_SIZE && (
+              <div className="flex items-center justify-between px-5 py-3 border-t t-border shrink-0">
+                <span className="text-xs t-text-faint">
+                  第 {logPage} / {Math.ceil(logTotal / LOG_PAGE_SIZE)} 页
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => loadLogs(logPage - 1)}
+                    disabled={logPage <= 1 || logsLoading}
+                    className={`${btnGhost} disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    上一页
+                  </button>
+                  <button
+                    onClick={() => loadLogs(logPage + 1)}
+                    disabled={logPage >= Math.ceil(logTotal / LOG_PAGE_SIZE) || logsLoading}
+                    className={`${btnGhost} disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
