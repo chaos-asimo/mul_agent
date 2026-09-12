@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """多用户龙虾Claw子项目 - 用户表 CRUD + bootstrap 管理员"""
+import os
 from datetime import datetime
 
 from lobster_mu.db import get_conn
 from lobster_mu.security import hash_password, new_salt
 
-# 现有硬编码管理员凭据，用于 bootstrap 平滑过渡
-BOOTSTRAP_ADMIN = ("shineyue", "shineyue@2026")
+# 管理员凭据：优先从环境变量读取，默认值仅用于首次 bootstrap
+BOOTSTRAP_ADMIN = (
+    os.environ.get("MU_ADMIN_USERNAME", "shineyue"),
+    os.environ.get("MU_ADMIN_PASSWORD", "shineyue@2026"),
+)
 
 
 def _now() -> str:

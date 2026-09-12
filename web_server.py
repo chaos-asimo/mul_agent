@@ -229,10 +229,24 @@ async def login_page(request: Request):
 
 @app.post("/api/login")
 async def login(request: Request, login_data: LoginRequest):
-    if login_data.username == "shineyue" and login_data.password == "shineyue@2026":
-        request.session["user"] = {"username": login_data.username}
-        return {"status": "success", "message": "登录成功"}
-    return {"status": "error", "message": "用户名或密码错误"}
+    """旧版登录端点：改为数据库验证 + 共享限流器，消除硬编码密码"""
+    from web.routes.lobster_mu import ensure_db, login_limiter
+    from lobster_mu import user_store
+    from lobster_mu.security import verify_password
+
+    ip = request.client.host if request.client else ""
+    login_limiter.check(ip)
+
+    ensure_db()
+    row = user_store.get_by_username(login_data.username)
+    if not row or row["disabled"] or not verify_password(login_data.password, row["salt"], row["password_hash"]):
+        login_limiter.record_failure(ip)
+        return {"status": "error", "message": "用户名或密码错误"}
+
+    login_limiter.record_success(ip)
+    request.session["user"] = {"username": login_data.username, "id": row["id"], "role": row["role"]}
+    user_store.update_last_login(row["id"])
+    return {"status": "success", "message": "登录成功"}
 
 
 @app.post("/api/logout")

@@ -29,15 +29,78 @@ class MuLoginRequest(BaseModel):
     password: str
 
 
+# ---- 登录 IP 速率限制（防暴力破解） ----
+import time as _time
+
+class LoginRateLimiter:
+    """基于 IP 的登录失败计数 + 锁定
+
+    - 15 分钟内失败超过 MAX_FAILS 次 → 锁定 LOCK_SECONDS 秒
+    - 锁定期间直接返回 429
+    """
+    MAX_FAILS = 5
+    WINDOW = 900      # 15 分钟
+    LOCK_SECONDS = 900  # 锁定 15 分钟
+
+    def __init__(self):
+        self._fails: Dict[str, list] = {}      # ip -> [timestamps]
+        self._locks: Dict[str, float] = {}     # ip -> 解锁时间戳
+
+    def check(self, ip: str):
+        """锁定中则抛 429，否则返回剩余重试次数（供响应头使用）"""
+        if not ip:
+            return self.MAX_FAILS
+        now = _time.time()
+        # 检查锁定
+        unlock_at = self._locks.get(ip, 0)
+        if now < unlock_at:
+            remaining = int(unlock_at - now)
+            raise HTTPException(
+                status_code=429,
+                detail=f"登录失败次数过多，请 {remaining} 秒后重试",
+            )
+        # 检查窗口内失败次数
+        bucket = [t for t in self._fails.get(ip, []) if now - t < self.WINDOW]
+        self._fails[ip] = bucket
+        if len(bucket) >= self.MAX_FAILS:
+            self._locks[ip] = now + self.LOCK_SECONDS
+            self._fails[ip] = []
+            remaining = self.LOCK_SECONDS
+            raise HTTPException(
+                status_code=429,
+                detail=f"登录失败次数过多，已锁定 {remaining // 60} 分钟",
+            )
+        return self.MAX_FAILS - len(bucket)
+
+    def record_failure(self, ip: str):
+        if not ip:
+            return
+        now = _time.time()
+        bucket = [t for t in self._fails.get(ip, []) if now - t < self.WINDOW]
+        bucket.append(now)
+        self._fails[ip] = bucket
+
+    def record_success(self, ip: str):
+        if ip:
+            self._fails.pop(ip, None)
+            self._locks.pop(ip, None)
+
+
+login_limiter = LoginRateLimiter()
+
+
 @router.post("/login")
 async def mu_login(request: Request, body: MuLoginRequest):
     ensure_db()
     ip = request.client.host if request.client else ""
+    # 速率限制检查
+    login_limiter.check(ip)
     row = user_store.get_by_username(body.username)
     if not row or row["disabled"] or not verify_password(body.password, row["salt"], row["password_hash"]):
-        # 登录失败也记日志（user_id 用 0 表示未知用户）
+        login_limiter.record_failure(ip)
         tools.log_operation(0, "login_failed", f"用户 {body.username} 登录失败", success=False, ip=ip)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
+    login_limiter.record_success(ip)
     request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"]}
     user_store.update_last_login(row["id"])
     tools.log_operation(row["id"], "login", f"{row['username']} 登录成功", ip=ip)
