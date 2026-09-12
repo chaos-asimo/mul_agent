@@ -116,6 +116,7 @@ jinja_env = Environment(
 )
 app.mount("/static", StaticFiles(directory="web/static"), name="static")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+os.makedirs("web/static/v2/assets", exist_ok=True)
 app.mount("/v2/assets", StaticFiles(directory="web/static/v2/assets"), name="v2-assets")
 os.makedirs("web/static/v3/assets", exist_ok=True)
 app.mount("/v3/assets", StaticFiles(directory="web/static/v3/assets"), name="v3-assets")

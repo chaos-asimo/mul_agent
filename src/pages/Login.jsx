@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuthStore } from '../stores/authStore'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Shell, Lock, User } from 'lucide-react'
@@ -11,6 +11,12 @@ function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+
+  // 阻止浏览器自动填充残留的上次凭据
+  useEffect(() => {
+    setUsername('')
+    setPassword('')
+  }, [])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -79,6 +85,7 @@ function Login() {
                   onChange={(e) => setUsername(e.target.value)}
                   className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
                   placeholder="请输入用户名"
+                  autoComplete="off"
                   disabled={loading}
                 />
               </div>
@@ -94,6 +101,7 @@ function Login() {
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
                   placeholder="请输入密码"
+                  autoComplete="new-password"
                   disabled={loading}
                 />
               </div>

@@ -5,6 +5,7 @@
 ## 功能特性
 
 ### 核心功能
+
 - **多Agent协作处理**：支持多个专业Agent协同处理文档，每个Agent可配置不同的角色和能力
 - **迭代式优化**：文档经过多轮迭代处理，每轮由不同Agent完成特定任务
 - **流式输出**：大模型输出实时流式显示，提升用户体验
@@ -12,6 +13,7 @@
 - **登录系统**：基于Session的会话认证，保障访问安全
 
 ### AI聊天功能
+
 - **多角色对话**：多个AI角色同时参与对话，模拟真实讨论场景
 - **流式消息显示**：AI回复实时流式显示，跟随大模型输出
 - **字数统计**：每条消息显示字数统计和序号，便于追踪
@@ -19,6 +21,7 @@
 - **聊天记录独立访问**：支持通过独立页面查看聊天历史
 
 ### 龙虾Claw（Lobster Claw）智能助手
+
 - **Claw对话**：集成类Agent能力的智能助手，支持流式响应
 - **会话管理**：支持多会话切换、历史记录查看
 - **模型选择**：可在龙虾聊天界面动态选择大模型配置
@@ -26,6 +29,7 @@
 - **记忆唤起**：对话过程中自动检索相关记忆，增强上下文理解
 
 ### PPT 制作（多用户龙虾Claw）
+
 - **一句话生成**：对话中说「帮我做一份关于 X 的 PPT」即自动识别 PPT 意图，AI 生成结构化大纲并渲染 `.pptx` 演示文稿，聊天中返回下载链接
 - **三种版式混排**：`bullets`（纯要点）、`chart`（整页图表）、`text_chart`（左文右图混排）
 - **原生图表**：python-pptx 原生柱状图 / 折线图（带圆形标记点）/ 饼图，图表配色随主题自动派生 8 色调色板
@@ -35,16 +39,18 @@
 - **隔离与安全**：生成文件按用户目录存储（`web/static/lobster-claw-files/{uid}/`），下载接口校验归属，文件扩展名白名单含 `.pptx`
 
 ### 记忆系统
-- **多类型记忆**：支持即时（instant）、短期（short_term）、长期（long_term）三种记忆类型
-- **权重机制**：通过weight字段和access_count实现记忆权重管理
+
+- **多类型记忆**：支持即时（instant）、短期（short\_term）、长期（long\_term）三种记忆类型
+- **权重机制**：通过weight字段和access\_count实现记忆权重管理
 - **重复检测**：基于余弦相似度的重复记忆检测，自动合并相同记忆
 - **关键词检索**：支持中文n-gram分词，提升中文关键词提取和检索准确性
 - **记忆管理界面**：支持搜索、筛选、删除记忆，支持最大化窗口
 
 ### 定时任务系统（Cron）
+
 - **持久化存储**：基于SQLite存储任务定义和运行历史，重启不丢失
 - **Cron表达式调度**：支持标准5字段cron表达式，每分钟检查执行
-- **一次性任务**：支持run_at模式，在指定时间执行后自动清理
+- **一次性任务**：支持run\_at模式，在指定时间执行后自动清理
 - **多种任务类型**：
   - `ai` - AI对话任务，调用LLM生成响应
   - `command` - Shell命令任务，执行白名单内的命令
@@ -57,6 +63,7 @@
 龙虾Claw支持通过飞书机器人接收消息，让AI助手可以脱离Web界面、通过飞书随时随地使用。参考 OpenClaw 飞书插件方案实现。
 
 #### 功能特性
+
 - 📨 **Webhook事件订阅** - 通过Webhook接收飞书消息事件
 - 🔒 **签名校验** - 支持 Verification Token 校验和 AES-256-CBC 事件加密解密
 - 💬 **私聊和群聊** - 支持私聊和群聊两种场景（群聊默认@机器人触发）
@@ -69,13 +76,16 @@
 #### 配置步骤
 
 ##### 1. 创建飞书应用
+
 1. 访问 [飞书开放平台](https://open.feishu.cn/app) 创建企业自建应用
-   - 国际版用户访问 [https://open.larksuite.com/app](https://open.larksuite.com/app)
+   - 国际版用户访问 <https://open.larksuite.com/app>
 2. 在 **凭证与基础信息** 页面复制 App ID 和 App Secret
 3. 在 **应用功能 > 机器人** 页面启用机器人能力
 
 ##### 2. 配置权限
+
 在 **权限管理** 页面添加以下权限：
+
 - `im:message` - 发送消息
 - `im:message:send_as_bot` - 以机器人身份发送
 - `im:message.group_at_msg:readonly` - 读取群@消息
@@ -83,16 +93,19 @@
 - `im:resource` - 读取资源
 
 ##### 3. 配置事件订阅
+
 1. 在 **事件订阅** 页面选择"使用长连接接收事件"或"Webhook模式"
 2. Webhook URL 配置为：`https://your-domain.com/api/feishu/webhook`
 3. 订阅事件：`im.message.receive_v1`
 4. 在 **加密策略** 页面复制 Encrypt Key 和 Verification Token
 
 ##### 4. 发布应用
+
 1. 创建版本并提交审核
 2. 等待管理员审批通过
 
 ##### 5. 配置龙虾Claw
+
 1. 启动服务后，打开龙虾Claw面板
 2. 点击"飞书"按钮打开飞书管理界面
 3. 填写 App ID、App Secret、Encrypt Key、Verification Token
@@ -104,38 +117,42 @@
 
 #### 访问控制策略
 
-| 策略 | 说明 |
-|------|------|
-| `open` | 允许所有用户使用机器人（默认） |
-| `allowlist` | 仅允许名单中的用户使用 |
-| `blocklist` | 阻止名单中的用户使用 |
+| 策略          | 说明              |
+| ----------- | --------------- |
+| `open`      | 允许所有用户使用机器人（默认） |
+| `allowlist` | 仅允许名单中的用户使用     |
+| `blocklist` | 阻止名单中的用户使用      |
 
 #### 会话映射规则
+
 - 私聊会话：`feishu_<chat_id>`
 - 群聊会话：`feishu_group_<chat_id>`
 - 复用龙虾Claw的 `chat_sessions` 字典，保持上下文连续
 
 #### 飞书接入 API
 
-| 接口 | 方法 | 描述 |
-|------|------|------|
-| `/api/feishu/webhook` | POST | 飞书Webhook回调入口 |
-| `/api/lobster-claw/feishu/config` | GET | 获取飞书配置（脱敏） |
-| `/api/lobster-claw/feishu/config` | POST | 保存飞书配置 |
-| `/api/lobster-claw/feishu/test-connection` | POST | 测试飞书连接 |
-| `/api/lobster-claw/feishu/status` | GET | 获取连接状态和Webhook URL |
-| `/api/lobster-claw/feishu/messages` | GET | 获取消息处理日志 |
-| `/api/lobster-claw/feishu/messages` | DELETE | 清空消息日志 |
+| 接口                                         | 方法     | 描述                 |
+| ------------------------------------------ | ------ | ------------------ |
+| `/api/feishu/webhook`                      | POST   | 飞书Webhook回调入口      |
+| `/api/lobster-claw/feishu/config`          | GET    | 获取飞书配置（脱敏）         |
+| `/api/lobster-claw/feishu/config`          | POST   | 保存飞书配置             |
+| `/api/lobster-claw/feishu/test-connection` | POST   | 测试飞书连接             |
+| `/api/lobster-claw/feishu/status`          | GET    | 获取连接状态和Webhook URL |
+| `/api/lobster-claw/feishu/messages`        | GET    | 获取消息处理日志           |
+| `/api/lobster-claw/feishu/messages`        | DELETE | 清空消息日志             |
 
 #### 配置文件
+
 配置文件存储在 `data/feishu_config.json`，可参考 `feishu.example.json` 创建。
 
 #### 注意事项
+
 - ⚠️ **Webhook URL 需要公网可访问**，本地开发可使用 ngrok 等工具做内网穿透
 - ⚠️ App Secret、Encrypt Key 等敏感信息会持久化存储到 `data/feishu_config.json`，请妥善保护此文件
 - ⚠️ 修改配置后需重新测试连接以验证有效性
 
 ### 龙虾Claw命令执行能力
+
 - **Shell命令执行**：基于白名单的安全命令执行（echo/ls/cat/grep等）
 - **文件操作**：支持读取、写入、编辑、列表目录（路径白名单限制）
 - **HTTP请求**：支持GET/POST请求
@@ -144,12 +161,14 @@
 - **安全机制**：危险命令黑名单 + 允许命令白名单双重保护
 
 ### 文档处理
+
 - **多格式支持**：支持txt、doc、docx、pdf等格式文档处理
 - **角色选择**：可选择特定Agent处理文档，而非使用全部Agent
 - **搜索增强**：集成Bing搜索，为文档处理提供实时信息补充
 - **Token统计**：详细统计每次处理的Token消耗
 
 ### 用户界面
+
 - **实时进度显示**：迭代进度、步骤进度、运行时间实时更新
 - **Agent状态监控**：每个Agent的执行状态、耗时、Token消耗一目了然
 - **搜索日志查看**：可查看详细的搜索过程和结果
@@ -157,16 +176,19 @@
 - **模型调用统计**：查看模型调用次数、Token消耗统计，支持日期查询
 
 ### 图像与视频生成
+
 - **文生图**：支持DALL-E、Stable Diffusion等图像生成模型
 - **文生视频**：支持视频生成模型
 - **Agent分组**：按文本模型、文生图、文生视频对Agent分组展示
 
 ### 技能系统
+
 - **技能发现**：自动发现和加载可用技能
 - **技能执行**：通过API调用技能并获取结果
 - **技能配置**：通过配置文件管理技能参数
 
 ### 周易卜卦
+
 - **卦象推演**：集成了完整的周易卜卦功能
 - **卦辞解析**：支持384爻的详细解析
 
@@ -243,6 +265,7 @@ mul_agent/
 ## 技术栈
 
 ### 后端
+
 - **FastAPI**：高性能Web框架
 - **WebSocket**：实时双向通信
 - **SSE（Server-Sent Events）**：流式响应
@@ -252,11 +275,13 @@ mul_agent/
 - **SessionMiddleware**：会话管理
 
 ### 前端
+
 - **原生JavaScript**：无框架依赖
 - **CSS3**：响应式布局
 - **Font Awesome**：图标库
 
 ### AI集成
+
 - **OpenAI API**：GPT系列模型支持
 - **Claude API**：Anthropic Claude模型支持
 - **DeepSeek API**：DeepSeek模型支持
@@ -266,15 +291,18 @@ mul_agent/
 ## 安装配置
 
 ### 环境要求
+
 - Python 3.10+
 - Windows/Linux/macOS
 
 ### 依赖安装
+
 ```bash
 pip install -r requirements.txt
 ```
 
 主要依赖：
+
 - `fastapi` - Web框架
 - `uvicorn` - ASGI服务器
 - `httpx` - HTTP客户端
@@ -286,18 +314,19 @@ pip install -r requirements.txt
 - `matplotlib` - 数据可视化
 
 ### 启动服务
+
 ```bash
 python web_server.py
 ```
 
 服务默认在 `http://localhost:8888` 启动。首次访问需要登录。
 
-### 默认登录凭据
-- 用户名：`shineyue`
-- 密码：`shineyue@2026`
+#
 
 ### 模型配置
+
 在系统设置中配置API密钥：
+
 1. 打开Web界面，登录后进入"系统设置"
 2. 添加模型配置（OpenAI/Claude/DeepSeek等）
 3. 填写API密钥、模型名称、Base URL等参数
@@ -306,6 +335,7 @@ python web_server.py
 可参考 `models.example.json` 创建模型配置。
 
 ### Agent配置
+
 1. 进入"Agent配置"页面
 2. 添加或编辑Agent角色
 3. 设置Agent名称、角色描述、绑定模型
@@ -314,9 +344,11 @@ python web_server.py
 可参考 `agents.example.json` 创建Agent配置。
 
 ### 搜索引擎配置
+
 可参考 `search_engines.example.json` 配置搜索引擎（Bing等）。
 
 ### 技能配置
+
 可参考 `skills.example.json` 配置技能。
 
 ## Docker 部署（可选）
@@ -324,10 +356,12 @@ python web_server.py
 项目提供 Docker 化部署方案，支持 Linux/macOS/Windows（Docker Desktop）一键部署。
 
 ### 前置要求
+
 - Docker 20.10+ 与 Docker Compose 2.x
 - 可用域名（飞书 Webhook 回调需要公网可访问；本地开发可用内网穿透）
 
 ### 快速开始
+
 ```bash
 # 1. 复制环境变量模板并填写
 cp .env.example .env
@@ -342,6 +376,7 @@ docker compose logs -f app
 ```
 
 ### 主要操作
+
 ```bash
 docker compose down        # 停止
 docker compose up -d       # 启动
@@ -349,14 +384,16 @@ docker compose pull && docker compose up -d --force-recreate  # 更新镜像
 ```
 
 ### 环境变量速查
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `ADMIN_PASSWORD` | 管理员初始密码 | `admin123` |
-| `SESSION_SECRET` | Session 签名密钥（生产务必修改） | - |
-| `PUBLIC_URL` | 公网访问地址（用于飞书 Webhook 回调） | - |
-| `TZ` | 时区 | `Asia/Shanghai` |
+
+| 变量               | 说明                      | 默认值             |
+| ---------------- | ----------------------- | --------------- |
+| `ADMIN_PASSWORD` | 管理员初始密码                 | `admin123`      |
+| `SESSION_SECRET` | Session 签名密钥（生产务必修改）    | -               |
+| `PUBLIC_URL`     | 公网访问地址（用于飞书 Webhook 回调） | -               |
+| `TZ`             | 时区                      | `Asia/Shanghai` |
 
 ### 数据持久化
+
 - `data/` - SQLite 数据库（用户、会话、记忆、定时任务等）
 - `uploads/` - 用户上传文件
 - 生产环境建议将以上目录挂载到独立卷（见 `docker-compose.yml`）
@@ -368,40 +405,48 @@ docker compose pull && docker compose up -d --force-recreate  # 更新镜像
 以下为当前架构的已知限制，生产部署前请确认：
 
 ### 1. 单进程部署
+
 - 应用以单进程运行（SQLite + 进程内状态），**不支持多副本水平扩展**
 - 会话 cookie、限流计数、定时任务调度器均保存在进程内，多实例会导致状态不一致
 - 如需扩容，需先做会话外置（Redis）与 SQLite 迁移（PostgreSQL）
 
 ### 2. SQLite 并发写
+
 - 多用户并发写（聊天消息、记忆、定时任务）依赖 SQLite WAL 模式
 - 高并发写入场景（>100 QPS）可能出现 `database is locked`，建议监控并设置合理超时
 
 ### 3. 限流为进程内计数
+
 - 多用户Claw 接口限流（100 次/60s/用户）基于进程内存桶
 - **服务重启后限流计数清零**，且多副本部署时限流不共享
 - 生产多副本场景建议接入网关层限流（Nginx/云 WAF）
 
 ### 4. 定时任务调度器
+
 - 调度循环在应用进程内运行，**服务不可用期间错过的任务不会补跑**
-- 一次性任务（run_at）若服务在触发时刻宕机，任务将被标记失败而非延后
+- 一次性任务（run\_at）若服务在触发时刻宕机，任务将被标记失败而非延后
 
 ### 5. 飞书 Webhook 要求公网
+
 - 飞书事件订阅需公网可访问的 HTTPS 回调地址
 - 内网开发请用 ngrok/frp 等内网穿透工具
 - 单实例部署天然满足"同一事件只处理一次"；若未来多副本，需做事件去重
 
 ### 6. 生成文件存储
+
 - PPT/PDF 等生成文件写入 `web/static/` 下按用户隔离的目录
 - 磁盘容量需自行规划（建议为生成文件目录设置独立磁盘或配额告警）
 - 旧文件不会自动清理，需配合运维策略定期归档
 
 ### 7. 敏感信息
+
 - `data/feishu_config.json`、`models.json` 等包含 API 密钥，**切勿提交到版本库或公开共享**
 - 镜像内不包含 `.env`，密钥通过容器环境变量或挂载密文注入
 
 ## 使用指南
 
 ### 文档处理
+
 1. **输入文档**：在左侧输入框输入文档内容或上传文件
 2. **选择Agent**：点击"角色选择"按钮，选择处理角色
 3. **设置参数**：配置迭代次数、是否启用搜索
@@ -409,30 +454,35 @@ docker compose pull && docker compose up -d --force-recreate  # 更新镜像
 5. **查看结果**：处理完成后，右侧预览区域显示结果
 
 ### AI多角色聊天
+
 1. **选择角色**：在AI聊天面板选择参与对话的Agent角色
 2. **设置主题**：输入聊天主题
 3. **启动聊天**：点击"启动聊天"按钮
 4. **查看对话**：实时查看多Agent的流式对话内容
 
 ### 龙虾Claw对话
+
 1. **打开Claw**：在主界面打开龙虾Claw面板
 2. **选择模型**：在发送按钮旁选择大模型
 3. **开始对话**：输入消息，支持流式响应
 4. **管理会话**：可创建多个会话、查看历史
 
 ### PPT 制作
+
 1. **发起需求**：在Claw对话中直接说「帮我做一份关于 X 的 PPT」（可附带页数、风格要求，如「8页，橙色风格」）
 2. **等待生成**：界面实时显示「正在生成 PPT 大纲」→「正在渲染幻灯片」进度
 3. **下载文件**：生成完成后回复中附下载卡片，点击即可下载 `.pptx` 文件
 4. **使用提示**：生成文件保存在对应用户目录，按登录用户隔离
 
 ### 记忆管理
+
 1. **打开记忆管理**：在Claw面板点击"记忆"按钮
 2. **查看记忆**：浏览长期/短期记忆列表
 3. **搜索记忆**：按关键词或类型搜索
 4. **删除记忆**：单条删除或清空
 
 ### 定时任务管理
+
 1. **打开任务管理**：在Claw面板点击"定时任务"按钮
 2. **添加任务**：
    - 选择任务类型（AI对话/Shell命令）
@@ -446,6 +496,7 @@ docker compose pull && docker compose up -d --force-recreate  # 更新镜像
    - 删除任务
 
 支持的cron表达式格式（5字段）：`分 时 日 月 周`
+
 - `*/1 * * * *` - 每分钟执行
 - `0 * * * *` - 每小时整点执行
 - `0 9 * * *` - 每天早上9点执行
@@ -456,6 +507,7 @@ docker compose pull && docker compose up -d --force-recreate  # 更新镜像
 ### WebSocket接口
 
 #### 文档处理 (`/ws/process`)
+
 ```javascript
 // 发送处理请求
 ws.send(JSON.stringify({
@@ -476,6 +528,7 @@ ws.onmessage = (event) => {
 ```
 
 #### AI聊天 (`/ws/ai-chat`)
+
 ```javascript
 // 发送聊天动作
 ws.send(JSON.stringify({
@@ -495,44 +548,47 @@ ws.onmessage = (event) => {
 ### REST API
 
 #### 系统接口
-| 接口 | 方法 | 描述 |
-|------|------|------|
-| `/api/status` | GET | 获取处理状态 |
-| `/api/agents` | GET | 获取Agent列表 |
-| `/api/models` | GET | 获取模型列表 |
-| `/api/ai-chat/agents` | GET | 获取AI聊天Agent |
-| `/api/clear` | POST | 清空内容 |
-| `/api/search/logs` | GET | 获取搜索日志 |
-| `/api/login` | POST | 用户登录 |
-| `/api/logout` | POST | 用户退出 |
+
+| 接口                    | 方法   | 描述          |
+| --------------------- | ---- | ----------- |
+| `/api/status`         | GET  | 获取处理状态      |
+| `/api/agents`         | GET  | 获取Agent列表   |
+| `/api/models`         | GET  | 获取模型列表      |
+| `/api/ai-chat/agents` | GET  | 获取AI聊天Agent |
+| `/api/clear`          | POST | 清空内容        |
+| `/api/search/logs`    | GET  | 获取搜索日志      |
+| `/api/login`          | POST | 用户登录        |
+| `/api/logout`         | POST | 用户退出        |
 
 #### 龙虾Claw接口
-| 接口 | 方法 | 描述 |
-|------|------|------|
-| `/api/lobster-claw/chat/stream` | POST | 龙虾流式聊天 |
-| `/api/lobster-claw/chat/sessions` | GET | 获取会话列表 |
-| `/api/lobster-claw/chat/session/{id}` | GET | 获取会话详情 |
-| `/api/lobster-claw/chat/session/{id}` | DELETE | 删除会话 |
-| `/api/lobster-claw/memory/list` | GET | 获取记忆列表 |
-| `/api/lobster-claw/memory/add` | POST | 添加记忆 |
-| `/api/lobster-claw/memory/search` | POST | 搜索记忆 |
-| `/api/lobster-claw/memory/{id}` | DELETE | 删除记忆 |
-| `/api/lobster-claw/cron/add` | POST | 添加定时任务 |
-| `/api/lobster-claw/cron/list` | GET | 获取任务列表 |
-| `/api/lobster-claw/cron/{id}` | GET | 获取任务详情 |
-| `/api/lobster-claw/cron/{id}` | PUT | 修改任务 |
-| `/api/lobster-claw/cron/{id}` | DELETE | 删除任务 |
-| `/api/lobster-claw/cron/toggle/{id}` | POST | 启用/禁用任务 |
-| `/api/lobster-claw/cron/{id}/runs` | GET | 获取运行历史 |
-| `/api/lobster-claw/cron/{id}/run-now` | POST | 立即执行任务 |
+
+| 接口                                    | 方法     | 描述      |
+| ------------------------------------- | ------ | ------- |
+| `/api/lobster-claw/chat/stream`       | POST   | 龙虾流式聊天  |
+| `/api/lobster-claw/chat/sessions`     | GET    | 获取会话列表  |
+| `/api/lobster-claw/chat/session/{id}` | GET    | 获取会话详情  |
+| `/api/lobster-claw/chat/session/{id}` | DELETE | 删除会话    |
+| `/api/lobster-claw/memory/list`       | GET    | 获取记忆列表  |
+| `/api/lobster-claw/memory/add`        | POST   | 添加记忆    |
+| `/api/lobster-claw/memory/search`     | POST   | 搜索记忆    |
+| `/api/lobster-claw/memory/{id}`       | DELETE | 删除记忆    |
+| `/api/lobster-claw/cron/add`          | POST   | 添加定时任务  |
+| `/api/lobster-claw/cron/list`         | GET    | 获取任务列表  |
+| `/api/lobster-claw/cron/{id}`         | GET    | 获取任务详情  |
+| `/api/lobster-claw/cron/{id}`         | PUT    | 修改任务    |
+| `/api/lobster-claw/cron/{id}`         | DELETE | 删除任务    |
+| `/api/lobster-claw/cron/toggle/{id}`  | POST   | 启用/禁用任务 |
+| `/api/lobster-claw/cron/{id}/runs`    | GET    | 获取运行历史  |
+| `/api/lobster-claw/cron/{id}/run-now` | POST   | 立即执行任务  |
 
 #### 其他接口
-| 接口 | 方法 | 描述 |
-|------|------|------|
-| `/api/image/generate` | POST | 图像生成 |
-| `/api/video/generate` | POST | 视频生成 |
-| `/api/skills/discover` | GET | 发现技能 |
-| `/api/skills/execute` | POST | 执行技能 |
+
+| 接口                     | 方法   | 描述   |
+| ---------------------- | ---- | ---- |
+| `/api/image/generate`  | POST | 图像生成 |
+| `/api/video/generate`  | POST | 视频生成 |
+| `/api/skills/discover` | GET  | 发现技能 |
+| `/api/skills/execute`  | POST | 执行技能 |
 
 ## 数据存储
 
@@ -577,11 +633,13 @@ ws.onmessage = (event) => {
 ## 安全机制
 
 ### 命令执行安全
+
 - **危险命令黑名单**：禁止 rm、format、shutdown、regedit 等危险命令
 - **允许命令白名单**：仅允许 echo、ls、cat、grep 等安全命令
 - **路径白名单**：文件操作限制在项目目录内
 
 ### 访问控制
+
 - **登录认证**：基于Session的会话认证
 - **WebSocket验证**：检查session cookie
 - **速率限制**：防止API滥用
@@ -589,6 +647,7 @@ ws.onmessage = (event) => {
 ## 版本历史
 
 ### v1.20260701
+
 - 新增龙虾Claw定时任务系统
   - 支持cron表达式和一次性任务调度
   - 支持AI对话和Shell命令两种任务类型
@@ -604,6 +663,7 @@ ws.onmessage = (event) => {
   - 修复Token统计显示问题
 
 ### v1.20260629
+
 - 优化AI聊天流式输出
 - 实现大模型输出实时显示
 - 对话内容控制在256字以内
@@ -612,6 +672,7 @@ ws.onmessage = (event) => {
 - Agent状态按选择顺序排序
 
 ### v1.20260619
+
 - 新增导出日志按钮
 - 支持处理doc/docx/pdf附件
 - 添加版本号显示
@@ -619,12 +680,66 @@ ws.onmessage = (event) => {
 ## 开发说明
 
 ### 运行测试
+
 ```bash
 pytest
 ```
 
 ### 打包
+
 项目支持使用PyInstaller打包为可执行文件。
+
+#### 前端构建（v2 / v3）
+
+前端采用 Vite 多入口构建，`web/static/` 下分别存放 v2、v3 两个独立 SPA 的产物，根路由 `v2/index.html`、`v3/index.html` 与各自的 `assets/` 子目录。
+
+```bash
+# 一键构建 v2 + v3（输出到 web/static/v2 与 web/static/v3）
+npm run build
+
+# 仅构建 v2（base=/v2/）
+npm run build:v2
+
+# 仅构建 v3（base=/v3/，配置见 v3/vite.config.js）
+npm run build:v3
+
+# 本地开发（v2 默认入口，代理 /api -> http://127.0.0.1:8888）
+npm run dev
+
+# v3 开发服务器
+npm run dev:v3
+```
+
+> **部署要点**：构建脚本会 `emptyOutDir` 清空输出目录。`web_server.py` 启动时已对 `web/static/v2/assets`、`web/static/v3/assets` 调用 `os.makedirs(..., exist_ok=True)`，即使 assets 目录被清空也能正常挂载 `StaticFiles`，不会因目录缺失而崩溃。
+
+#### 登录页
+
+系统内置三个登录入口，默认用户名/密码均为空，并禁用浏览器自动填充（`autocomplete="off"` / `new-password`），打开页面时强制清空状态：
+
+| 入口        | 路径      | 实现                                   | 说明                       |
+| --------- | ------- | ------------------------------------ | ------------------------ |
+| v1 经典登录页  | `/login` | `web/templates/login.html`（Jinja2 模板） | Flask 直接渲染，改动无需构建        |
+| v2 React 登录 | `/v2/`   | `src/pages/Login.jsx`                | 默认 `useState('')`，挂载时清空  |
+| v3 React 登录 | `/v3/`   | `v3/src/pages/Login.jsx`             | 默认 `useState('')`，挂载时清空  |
+
+> **注意**：浏览器保存的凭据会覆盖页面默认值。若需彻底清空，请到浏览器的密码管理器删除对应站点（`127.0.0.1:8888` / `localhost:8888`）的已保存密码，然后强制刷新（Ctrl+Shift+R）。
+
+#### 日志
+
+- 服务端：`logs/server_out.log` / `logs/server_err.log`（含日期时间戳）
+- 模型调用：`logs/model_calls_YYYYMMDD.log`
+- 实时跟踪：
+
+```powershell
+# Windows PowerShell
+Get-Content -Path "logs\server_out.log" -Wait -Tail 100
+```
+
+```bash
+# Linux / Docker
+tail -f logs/server_out.log
+docker logs -f --tail 100 mul-agent
+```
 
 ## License
 

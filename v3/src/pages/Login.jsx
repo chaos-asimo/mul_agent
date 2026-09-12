@@ -19,6 +19,12 @@ function Login() {
     }
   }, [user, loading, navigate])
 
+  // 阻止浏览器自动填充残留的上次凭据
+  useEffect(() => {
+    setUsername('')
+    setPassword('')
+  }, [])
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
@@ -71,6 +77,7 @@ function Login() {
                   onChange={(e) => setUsername(e.target.value)}
                   className="w-full pl-10 pr-4 py-3 t-bg-input border t-border-strong rounded-lg t-text t-placeholder t-focus transition-all"
                   placeholder="请输入用户名"
+                  autoComplete="off"
                   disabled={submitting}
                 />
               </div>
@@ -86,6 +93,7 @@ function Login() {
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full pl-10 pr-4 py-3 t-bg-input border t-border-strong rounded-lg t-text t-placeholder t-focus transition-all"
                   placeholder="请输入密码"
+                  autoComplete="new-password"
                   disabled={submitting}
                 />
               </div>
