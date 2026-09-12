@@ -3,6 +3,7 @@ import os
 import asyncio
 import sys
 import json
+import logging
 from datetime import datetime
 
 # Add packages directory to sys.path for third-party dependencies
@@ -1130,19 +1131,39 @@ async def stream_llm(prompt: str, model_id: str = None):
 
 if __name__ == "__main__":
     import uvicorn
+
+    # 统一所有日志（含 uvicorn）的时间格式：YYYY-MM-DD HH:MM:SS
+    LOG_FMT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    LOG_DATE_FMT = "%Y-%m-%d %H:%M:%S"
+    LOG_CONFIG = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {"format": LOG_FMT, "datefmt": LOG_DATE_FMT},
+            "access": {"format": LOG_FMT, "datefmt": LOG_DATE_FMT},
+        },
+        "handlers": {
+            "default": {"formatter": "default", "class": "logging.StreamHandler", "stream": "ext://sys.stderr"},
+            "access": {"formatter": "access", "class": "logging.StreamHandler", "stream": "ext://sys.stdout"},
+        },
+        "loggers": {
+            "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+            "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": False},
+            "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+        },
+    }
+
     logger.info("Starting uvicorn server...")
     try:
-        # 使用更稳定的配置
-        config = uvicorn.Config(
+        uvicorn.run(
             app=app,
             host="0.0.0.0",
             port=8888,
             log_level="info",
             access_log=True,
-            timeout_keep_alive=30
+            log_config=LOG_CONFIG,
+            timeout_keep_alive=30,
         )
-        server = uvicorn.Server(config)
-        server.run()
         logger.info("Server exited normally")
     except Exception as e:
         logger.error(f"Server failed with exception: {e}")
