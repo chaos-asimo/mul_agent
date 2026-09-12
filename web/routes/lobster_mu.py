@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Request, Depends, File, UploadFile
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 
-from lobster_mu import db, user_store
+from lobster_mu import db, user_store, tools
 from lobster_mu.security import verify_password, get_mu_user, require_admin
 
 router = APIRouter(prefix="/api/lobster-mu")
@@ -32,16 +32,26 @@ class MuLoginRequest(BaseModel):
 @router.post("/login")
 async def mu_login(request: Request, body: MuLoginRequest):
     ensure_db()
+    ip = request.client.host if request.client else ""
     row = user_store.get_by_username(body.username)
     if not row or row["disabled"] or not verify_password(body.password, row["salt"], row["password_hash"]):
+        # 登录失败也记日志（user_id 用 0 表示未知用户）
+        tools.log_operation(0, "login_failed", f"用户 {body.username} 登录失败", success=False, ip=ip)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"]}
     user_store.update_last_login(row["id"])
+    tools.log_operation(row["id"], "login", f"{row['username']} 登录成功", ip=ip)
     return {"status": "success", "user": {"id": row["id"], "username": row["username"], "role": row["role"]}}
 
 
 @router.post("/logout")
 async def mu_logout(request: Request):
+    u = request.session.get("mu_user")
+    uid = u["id"] if u else 0
+    username = u["username"] if u else ""
+    ip = request.client.host if request.client else ""
+    if u:
+        tools.log_operation(uid, "logout", f"{username} 退出登录", ip=ip)
     request.session.pop("mu_user", None)
     return {"status": "success", "message": "退出成功"}
 
@@ -80,10 +90,14 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
         user_store.update_user(row["id"], display_name=display_name)
 
     if row["disabled"]:
+        tools.log_operation(0, "login_failed", f"已禁用用户 {username} 尝试登录", success=False,
+                            ip=request.client.host if request.client else "")
         raise HTTPException(status_code=403, detail="账号已禁用")
 
+    ip = request.client.host if request.client else ""
     request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"]}
     user_store.update_last_login(row["id"])
+    tools.log_operation(row["id"], "login", f"{row['username']} 登录成功" + ("（自动创建账号）" if created else ""), ip=ip)
     return {
         "status": "success",
         "user": {"id": row["id"], "username": row["username"], "role": row["role"]},
@@ -184,6 +198,86 @@ async def admin_get_session_messages(user_id: int, session_id: str, admin: dict 
     return {"success": True, "session": {"id": session_id, "messages": msgs}}
 
 
+# ============ 管理员日志管理 ============
+
+@router.get("/admin/logs")
+async def admin_list_logs(
+    user_id: Optional[int] = None,
+    operation: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+    admin: dict = Depends(require_admin),
+):
+    """管理员查询操作日志（可按用户/操作类型筛选，分页）"""
+    ensure_db()
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
+    where = "1=1"
+    params: list = []
+    if user_id is not None:
+        where += " AND l.user_id = ?"
+        params.append(user_id)
+    if operation:
+        where += " AND l.operation = ?"
+        params.append(operation)
+    conn = db.get_conn()
+    try:
+        total = conn.execute(
+            f"SELECT COUNT(*) c FROM mu_operation_logs l WHERE {where}", params
+        ).fetchone()["c"]
+        rows = conn.execute(
+            f"SELECT l.id, l.user_id, l.operation, l.detail, l.success, l.ip, l.created_at, u.username "
+            f"FROM mu_operation_logs l LEFT JOIN users u ON u.id = l.user_id "
+            f"WHERE {where} ORDER BY l.id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+    finally:
+        conn.close()
+    logs = [dict(r) for r in rows]
+    for log in logs:
+        # user_id=0 为登录失败等无归属记录
+        log["username"] = log["username"] or (f"未知用户({log['user_id']})" if log["user_id"] else "未记录")
+    return {"success": True, "logs": logs, "total": total}
+
+
+@router.delete("/admin/logs/{record_id}")
+async def admin_delete_log(record_id: int, admin: dict = Depends(require_admin)):
+    """管理员删除单条日志"""
+    ensure_db()
+    conn = db.get_conn()
+    try:
+        cur = conn.execute("DELETE FROM mu_operation_logs WHERE id = ?", (record_id,))
+        conn.commit()
+        ok = cur.rowcount > 0
+    finally:
+        conn.close()
+    if ok:
+        tools.log_operation(admin["id"], "admin:delete_log", f"删除日志 #{record_id}")
+    return {"success": ok}
+
+
+@router.delete("/admin/logs")
+async def admin_clear_logs(
+    user_id: Optional[int] = None,
+    admin: dict = Depends(require_admin),
+):
+    """管理员清空日志（可按用户）"""
+    ensure_db()
+    conn = db.get_conn()
+    try:
+        if user_id is not None:
+            cur = conn.execute("DELETE FROM mu_operation_logs WHERE user_id = ?", (user_id,))
+        else:
+            cur = conn.execute("DELETE FROM mu_operation_logs")
+        conn.commit()
+        deleted = cur.rowcount
+    finally:
+        conn.close()
+    scope = f"用户 {user_id}" if user_id is not None else "全部"
+    tools.log_operation(admin["id"], "admin:clear_logs", f"清空{scope}日志（{deleted} 条）")
+    return {"success": True, "deleted": deleted}
+
+
 # ============ 通用：每用户限流（100 次/60s） ============
 
 import time as _time
@@ -214,12 +308,16 @@ async def mu_chat_models(user: dict = Depends(get_mu_user)):
 
 
 @router.post("/chat/message")
-async def mu_chat_message(body: ChatMessageRequest, user: dict = Depends(check_user_rate)):
+async def mu_chat_message(body: ChatMessageRequest, request: Request, user: dict = Depends(check_user_rate)):
+    ip = request.client.host if request.client else ""
+    tools.log_operation(user["id"], "chat", f"发送消息: {body.message[:100]}", ip=ip)
     return chat_service.chat_message_once(user["id"], body)
 
 
 @router.post("/chat/stream")
-async def mu_chat_stream(body: ChatStreamRequest, user: dict = Depends(check_user_rate)):
+async def mu_chat_stream(body: ChatStreamRequest, request: Request, user: dict = Depends(check_user_rate)):
+    ip = request.client.host if request.client else ""
+    tools.log_operation(user["id"], "chat", f"发送消息: {body.message[:100]}", ip=ip)
     return chat_service.chat_stream_response(user["id"], body)
 
 

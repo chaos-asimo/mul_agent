@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2 } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client'
 import ThemeSwitcher from '../components/ThemeSwitcher'
@@ -161,6 +161,80 @@ function AdminUsers() {
     setChatMaximized(false)
   }
 
+  // 日志管理
+  const [showLogs, setShowLogs] = useState(false)
+  const [logFilter, setLogFilter] = useState({ username: '', operation: '' })
+  const [logs, setLogs] = useState([])
+  const [logTotal, setLogTotal] = useState(0)
+  const [logsLoading, setLogsLoading] = useState(false)
+  const [logError, setLogError] = useState('')
+
+  const loadLogs = useCallback(async () => {
+    setLogsLoading(true)
+    setLogError('')
+    try {
+      const params = new URLSearchParams()
+      if (logFilter.username) {
+        const u = users.find((x) => x.username === logFilter.username)
+        if (u) params.set('user_id', u.id)
+      }
+      if (logFilter.operation) params.set('operation', logFilter.operation)
+      const res = await apiGet(`/admin/logs?${params.toString()}`)
+      if (res.success) {
+        setLogs(res.logs || [])
+        setLogTotal(res.total || 0)
+      } else {
+        setLogError(res.error || '加载日志失败')
+      }
+    } catch (e) {
+      setLogError(e.message)
+    } finally {
+      setLogsLoading(false)
+    }
+  }, [logFilter, users])
+
+  useEffect(() => {
+    if (showLogs) loadLogs()
+  }, [showLogs, loadLogs])
+
+  const handleDeleteLog = async (log) => {
+    if (!window.confirm(`确定删除日志 #${log.id}（${log.username} · ${log.operation}）吗？`)) return
+    try {
+      await apiDelete(`/admin/logs/${log.id}`)
+      loadLogs()
+    } catch (e) {
+      setLogError(e.message)
+    }
+  }
+
+  const handleClearLogs = async () => {
+    const scope = logFilter.username ? `用户 ${logFilter.username} 的` : '全部'
+    if (!window.confirm(`确定清空${scope}日志吗？此操作不可恢复。`)) return
+    try {
+      const params = new URLSearchParams()
+      if (logFilter.username) {
+        const u = users.find((x) => x.username === logFilter.username)
+        if (u) params.set('user_id', u.id)
+      }
+      await apiDelete(`/admin/logs?${params.toString()}`)
+      loadLogs()
+    } catch (e) {
+      setLogError(e.message)
+    }
+  }
+
+  // 操作类型显示名
+  const OP_LABELS = {
+    login: '登录',
+    login_failed: '登录失败',
+    logout: '退出登录',
+    chat: '聊天',
+    tool: '工具调用',
+    'admin:delete_log': '管理员·删除日志',
+    'admin:clear_logs': '管理员·清空日志',
+  }
+  const opLabel = (op) => OP_LABELS[op] || op
+
   const inputCls =
     'px-3 py-2 t-bg-input border t-border-strong rounded-lg text-sm t-text t-placeholder t-focus'
   const btnGhost =
@@ -219,6 +293,10 @@ function AdminUsers() {
             <button onClick={loadUsers} className={btnGhost} disabled={loading}>
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               刷新
+            </button>
+            <button onClick={() => setShowLogs(true)} className={btnGhost}>
+              <ClipboardList className="w-3.5 h-3.5" />
+              日志管理
             </button>
             <button
               onClick={() => setShowCreate(!showCreate)}
@@ -531,6 +609,133 @@ function AdminUsers() {
                     </div>
                   )}
                 </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 日志管理 Modal */}
+      {showLogs && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70"
+          onClick={() => setShowLogs(false)}
+        >
+          <div
+            className="t-bg-panel border t-border-strong rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3.5 border-b t-border shrink-0">
+              <h3 className="text-sm font-semibold t-text flex items-center gap-2">
+                <ClipboardList className="w-4 h-4 t-text-accent" />
+                操作日志（共 {logTotal} 条）
+              </h3>
+              <div className="flex items-center gap-2">
+                <button onClick={loadLogs} className="t-text-faint t-hover-text transition-colors" title="刷新">
+                  <RefreshCw className={`w-4 h-4 ${logsLoading ? 'animate-spin' : ''}`} />
+                </button>
+                <button onClick={() => setShowLogs(false)} className="t-text-faint t-hover-text transition-colors">
+                  <XCircle className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* 筛选栏 */}
+            <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-b t-border shrink-0">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 t-text-faint absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  className="px-3 py-1.5 pl-8 text-xs t-bg-input border t-border-strong rounded-lg t-text w-44"
+                  placeholder="按用户名筛选"
+                  value={logFilter.username}
+                  onChange={(e) => setLogFilter({ ...logFilter, username: e.target.value })}
+                  list="log-usernames"
+                />
+                <datalist id="log-usernames">
+                  {users.map((u) => (
+                    <option key={u.id} value={u.username} />
+                  ))}
+                </datalist>
+              </div>
+              <select
+                className="px-3 py-1.5 text-xs t-bg-input border t-border-strong rounded-lg t-text"
+                value={logFilter.operation}
+                onChange={(e) => setLogFilter({ ...logFilter, operation: e.target.value })}
+              >
+                <option value="">全部操作</option>
+                <option value="login">登录</option>
+                <option value="login_failed">登录失败</option>
+                <option value="logout">退出登录</option>
+                <option value="chat">聊天</option>
+                <option value="tool">工具调用</option>
+              </select>
+              {(logFilter.username || logFilter.operation) && (
+                <button onClick={() => setLogFilter({ username: '', operation: '' })} className={btnGhost}>
+                  清除筛选
+                </button>
+              )}
+              <button
+                onClick={handleClearLogs}
+                className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border t-border-danger t-text-danger t-bg-danger-soft transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                清空
+              </button>
+            </div>
+
+            {/* 日志列表 */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {logError && <p className="text-xs t-text-danger mb-3">{logError}</p>}
+              {logsLoading ? (
+                <p className="text-xs t-text-faint text-center py-8 loading-pulse">加载中...</p>
+              ) : logs.length === 0 ? (
+                <p className="text-xs t-text-fainter text-center py-8">暂无日志</p>
+              ) : (
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 t-bg-panel">
+                    <tr className="text-left t-text-faint border-b t-border">
+                      <th className="px-2 py-2">时间</th>
+                      <th className="px-2 py-2">用户</th>
+                      <th className="px-2 py-2">操作</th>
+                      <th className="px-2 py-2">详情</th>
+                      <th className="px-2 py-2">IP</th>
+                      <th className="px-2 py-2">状态</th>
+                      <th className="px-2 py-2 text-right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {logs.map((log) => (
+                      <tr key={log.id} className="border-b t-border t-hover-bg align-top">
+                        <td className="px-2 py-2 t-text-faint whitespace-nowrap">
+                          {log.created_at?.replace('T', ' ').slice(0, 19)}
+                        </td>
+                        <td className="px-2 py-2 whitespace-nowrap font-medium">{log.username}</td>
+                        <td className="px-2 py-2 whitespace-nowrap">
+                          <span className={log.operation === 'login_failed' ? 't-text-danger' : 't-text-2'}>
+                            {opLabel(log.operation)}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2 t-text-faint max-w-[220px]">
+                          <div className="truncate" title={log.detail}>{log.detail || '-'}</div>
+                        </td>
+                        <td className="px-2 py-2 t-text-faint whitespace-nowrap">{log.ip || '-'}</td>
+                        <td className="px-2 py-2 whitespace-nowrap">
+                          {log.success ? (
+                            <span className="text-ok">成功</span>
+                          ) : (
+                            <span className="t-text-danger">失败</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-right whitespace-nowrap">
+                          <button onClick={() => handleDeleteLog(log)} className="t-text-faint t-hover-text-danger transition-colors" title="删除">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               )}
             </div>
           </div>
