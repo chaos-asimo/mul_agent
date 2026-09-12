@@ -84,7 +84,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Multi-Agent Document Enhancer", version="1.0", lifespan=lifespan)
 
-app.add_middleware(SessionMiddleware, secret_key="mul_agent_secret_key_2026")
+app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET_KEY", "mul_agent_secret_key_2026"))
 
 
 async def safe_send_json(websocket: WebSocket, data: dict):
