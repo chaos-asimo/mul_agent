@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run build:v2 && npm run build:v3",
+    "build:v2": "vite build",
     "preview": "vite preview",
     "dev:v3": "vite --config v3/vite.config.js",
     "build:v3": "vite build --config v3/vite.config.js"
