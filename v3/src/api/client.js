@@ -2,13 +2,18 @@ import { useAuthStore } from '../stores/authStore'
 
 export const API_BASE = '/api/lobster-mu'
 
+// 入口前缀由后端注入 window.__BASE__（"/v3" 或 "/clow"），
+// 401 跳转登录页时用它拼接，避免硬编码导致 /clow 入口跳错。
+const BASE = (typeof window !== 'undefined' && window.__BASE__) || '/v3'
+
 /**
- * 401/403 时清除本地登录态并跳转 /v3/login（已在登录页则只清状态）
+ * 401/403 时清除本地登录态并跳转到 {BASE}/login（已在登录页则只清状态）
  */
 function handleUnauthorized() {
   useAuthStore.getState().clearUser()
-  if (!window.location.pathname.startsWith('/v3/login')) {
-    window.location.replace('/v3/login')
+  const loginPath = `${BASE}/login`
+  if (!window.location.pathname.startsWith(loginPath)) {
+    window.location.replace(loginPath)
   }
 }
 

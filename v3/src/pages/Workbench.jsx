@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  Shell, LogOut, Shield, Plus, Trash2, MessageSquare,
+  Shell, Shield, ShieldCheck, Plus, Trash2, MessageSquare,
   FolderOpen, FileCode, Brain, Clock, BookOpen, Wrench, Bot,
-  PanelRightClose, PanelRightOpen,
+  PanelRightClose, PanelRightOpen, Lightbulb, Send, X,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
-import { apiGet, apiDelete, readFileContent } from '../api/client'
+import { apiGet, apiPost, apiDelete, readFileContent } from '../api/client'
 import ChatPane from '../components/ChatPane'
 import FilesTab from '../components/FilesTab'
 import ScriptsTab from '../components/ScriptsTab'
@@ -16,6 +16,7 @@ import KnowledgeTab from '../components/KnowledgeTab'
 import McpTab from '../components/McpTab'
 import AgentTab from '../components/AgentTab'
 import ThemeSwitcher from '../components/ThemeSwitcher'
+import SecuritySettings from '../components/SecuritySettings'
 
 const TABS = [
   { key: 'files', label: '文件', icon: FolderOpen },
@@ -52,6 +53,15 @@ function Workbench() {
   // 功能 Tab
   const [activeTab, setActiveTab] = useState('files')
   const [rightCollapsed, setRightCollapsed] = useState(false)
+
+  // 安全设置弹窗
+  const [showSecurity, setShowSecurity] = useState(false)
+
+  // 建议弹窗
+  const [showSuggestion, setShowSuggestion] = useState(false)
+  const [suggestionText, setSuggestionText] = useState('')
+  const [mySuggestions, setMySuggestions] = useState([])
+  const [sending, setSending] = useState(false)
 
   const loadSessions = useCallback(async () => {
     try {
@@ -126,14 +136,47 @@ function Workbench() {
     navigate('/login')
   }
 
+  const loadMySuggestions = useCallback(async () => {
+    try {
+      const result = await apiGet('/suggestions')
+      setMySuggestions(result.suggestions || [])
+    } catch (e) {
+      console.error('加载建议列表失败:', e)
+    }
+  }, [])
+
+  const openSuggestion = () => {
+    setShowSuggestion(true)
+    loadMySuggestions()
+  }
+
+  const handleSubmitSuggestion = async (e) => {
+    e.preventDefault()
+    const content = suggestionText.trim()
+    if (!content || sending) return
+    setSending(true)
+    try {
+      await apiPost('/suggestions', { content })
+      setSuggestionText('')
+      loadMySuggestions()
+    } catch (err) {
+      alert('提交建议失败：' + (err?.message || '未知错误'))
+    } finally {
+      setSending(false)
+    }
+  }
+
   return (
     <div className="h-screen flex flex-col t-bg-app t-text">
       {/* 顶栏 */}
       <header className="flex items-center justify-between px-4 py-2.5 border-b t-border t-bg-panel shrink-0">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg t-bg-accent flex items-center justify-center">
+          <button
+            onClick={handleLogout}
+            className="w-8 h-8 rounded-lg t-bg-accent flex items-center justify-center cursor-default"
+          >
             <Shell className="w-5 h-5 text-white" />
-          </div>
+          </button>
           <div>
             <h1 className="text-sm font-semibold leading-tight">龙虾Claw 多用户版</h1>
             <p className="text-[10px] t-text-faint leading-tight">v3 · Multi-User Workbench</p>
@@ -141,7 +184,7 @@ function Workbench() {
         </div>
         <div className="flex items-center gap-2.5 text-sm">
           <ThemeSwitcher />
-          <span className="t-text-muted">{user?.username}</span>
+          <span className="t-text-muted">{user?.display_name || user?.username}</span>
           <span
             className={`text-xs px-2 py-0.5 rounded-full border ${
               user?.role === 'admin' ? 't-badge-accent' : 't-badge-neutral'
@@ -159,11 +202,20 @@ function Workbench() {
             </Link>
           )}
           <button
-            onClick={handleLogout}
+            onClick={() => setShowSecurity(true)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors"
+            title="安全设置（两步认证）"
           >
-            <LogOut className="w-3.5 h-3.5" />
-            退出
+            <ShieldCheck className="w-3.5 h-3.5" />
+            安全
+          </button>
+          <button
+            onClick={user?.role === 'admin' ? () => navigate('/admin/users') : openSuggestion}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors"
+            title={user?.role === 'admin' ? '查看并回复用户建议' : '给管理员提建议'}
+          >
+            <Lightbulb className="w-3.5 h-3.5" />
+            建议
           </button>
         </div>
       </header>
@@ -295,6 +347,92 @@ function Workbench() {
           )}
         </aside>
       </div>
+
+      {showSecurity && <SecuritySettings onClose={() => setShowSecurity(false)} />}
+
+      {/* 建议弹窗（非管理员提交 + 查看自己的建议） */}
+      {showSuggestion && user?.role !== 'admin' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70">
+          <div className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-xl border t-border-strong t-bg-panel shadow-2xl">
+            <div className="flex items-center justify-between px-4 py-3 border-b t-border shrink-0">
+              <h2 className="text-sm font-semibold flex items-center gap-2">
+                <Lightbulb className="w-4 h-4 t-text-accent" />
+                我的建议
+              </h2>
+              <button
+                onClick={() => setShowSuggestion(false)}
+                className="p-1.5 rounded-lg t-text-faint t-hover-bg t-hover-text transition-colors"
+                title="关闭"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* 提交框 */}
+            <form onSubmit={handleSubmitSuggestion} className="px-4 py-3 border-b t-border shrink-0">
+              <textarea
+                value={suggestionText}
+                onChange={(e) => setSuggestionText(e.target.value)}
+                placeholder="给管理员提一条建议（功能改进、使用问题等），最多 2000 字..."
+                rows={3}
+                className="w-full resize-none rounded-lg border t-border-strong t-bg-app t-text px-3 py-2 text-xs outline-none focus:border-accent"
+              />
+              <div className="flex justify-end mt-2">
+                <button
+                  type="submit"
+                  disabled={!suggestionText.trim() || sending}
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs rounded-lg t-bg-accent t-hover-accent text-white transition-colors disabled:opacity-50"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  {sending ? '提交中...' : '提交建议'}
+                </button>
+              </div>
+            </form>
+
+            {/* 自己的建议列表 */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {mySuggestions.length === 0 ? (
+                <div className="text-center t-text-fainter py-10">
+                  <Lightbulb className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                  <p className="text-xs">暂无建议，提交后会显示在这里</p>
+                </div>
+              ) : (
+                mySuggestions.map((s) => (
+                  <div
+                    key={s.id}
+                    className={`rounded-lg border p-3 ${
+                      s.status === 'replied' ? 't-border-accent' : 't-border'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full border t-border-strong t-text-muted">
+                        {s.created_at?.slice(0, 19).replace('T', ' ') || ''}
+                      </span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                          s.status === 'replied' ? 't-badge-accent' : 't-badge-neutral'
+                        }`}
+                      >
+                        {s.status === 'replied' ? '已回复' : '待处理'}
+                      </span>
+                    </div>
+                    <p className="text-xs whitespace-pre-wrap break-words t-text">{s.content}</p>
+                    {s.status === 'replied' && s.reply && (
+                      <div className="mt-2 rounded-lg border t-border-accent/40 p-2.5">
+                        <p className="text-[10px] font-semibold t-text-accent mb-1">管理员回复</p>
+                        <p className="text-xs whitespace-pre-wrap break-words t-text-2">{s.reply}</p>
+                        {s.replied_at && (
+                          <p className="text-[10px] t-text-faint mt-1.5">{s.replied_at?.slice(0, 19).replace('T', ' ')}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

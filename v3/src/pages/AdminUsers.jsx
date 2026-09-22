@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search, ArrowLeftRight, Lightbulb, Send, X } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client'
 import ThemeSwitcher from '../components/ThemeSwitcher'
@@ -117,7 +117,7 @@ function AdminUsers() {
   const [chatMaximized, setChatMaximized] = useState(false)
 
   const handleViewChat = async (u) => {
-    setChatUser({ id: u.id, username: u.username })
+    setChatUser({ id: u.id, username: u.username, display_name: u.display_name })
     setChatSessions([])
     setChatError('')
     setViewSession(null)
@@ -211,7 +211,7 @@ function AdminUsers() {
   }
 
   const handleDeleteLog = async (log) => {
-    if (!window.confirm(`确定删除日志 #${log.id}（${log.username} · ${log.operation}）吗？`)) return
+    if (!window.confirm(`确定删除日志 #${log.id}（${log.display_name || log.username} · ${log.operation}）吗？`)) return
     try {
       await apiDelete(`/admin/logs/${log.id}`)
       loadLogs()
@@ -248,6 +248,176 @@ function AdminUsers() {
   }
   const opLabel = (op) => OP_LABELS[op] || op
 
+  // 接口访问日志
+  const [showApiLogs, setShowApiLogs] = useState(false)
+  const [apiLogs, setApiLogs] = useState([])
+  const [apiLogTotal, setApiLogTotal] = useState(0)
+  const [apiLogsLoading, setApiLogsLoading] = useState(false)
+  const [apiLogError, setApiLogError] = useState('')
+  const [apiLogPage, setApiLogPage] = useState(1)
+  const [apiLogMaximized, setApiLogMaximized] = useState(false)
+  const [apiLogFilter, setApiLogFilter] = useState({ username: '', path: '', status: '' })
+  const API_LOG_PAGE_SIZE = 20
+
+  const loadApiLogs = useCallback(async (page = 1) => {
+    setApiLogsLoading(true)
+    setApiLogError('')
+    try {
+      const params = new URLSearchParams()
+      if (apiLogFilter.username) {
+        const u = users.find((x) => x.username === apiLogFilter.username)
+        if (u) params.set('user_id', u.id)
+      }
+      if (apiLogFilter.path) params.set('path', apiLogFilter.path)
+      if (apiLogFilter.status) params.set('status', apiLogFilter.status)
+      params.set('limit', API_LOG_PAGE_SIZE)
+      params.set('offset', (page - 1) * API_LOG_PAGE_SIZE)
+      const res = await apiGet(`/admin/api-access-logs?${params.toString()}`)
+      if (res.success) {
+        setApiLogs(res.logs || [])
+        setApiLogTotal(res.total || 0)
+        setApiLogPage(page)
+      } else {
+        setApiLogError(res.error || '加载接口日志失败')
+      }
+    } catch (e) {
+      setApiLogError(e.message)
+    } finally {
+      setApiLogsLoading(false)
+    }
+  }, [apiLogFilter, users])
+
+  useEffect(() => {
+    if (showApiLogs) loadApiLogs(1)
+  }, [showApiLogs, loadApiLogs])
+
+  const closeApiLogsModal = () => {
+    setShowApiLogs(false)
+    setApiLogFilter({ username: '', path: '', status: '' })
+    setApiLogPage(1)
+    setApiLogMaximized(false)
+  }
+
+  const handleDeleteApiLog = async (log) => {
+    if (!window.confirm(`确定删除接口日志 #${log.id}（${log.display_name || log.username} · ${log.method} ${log.path}）吗？`)) return
+    try {
+      await apiDelete(`/admin/api-access-logs/${log.id}`)
+      loadApiLogs(apiLogPage)
+    } catch (e) {
+      setApiLogError(e.message)
+    }
+  }
+
+  const handleClearApiLogs = async () => {
+    const scope = apiLogFilter.username ? `用户 ${apiLogFilter.username} 的` : '全部'
+    if (!window.confirm(`确定清空${scope}接口访问日志吗？此操作不可恢复。`)) return
+    try {
+      const params = new URLSearchParams()
+      if (apiLogFilter.username) {
+        const u = users.find((x) => x.username === apiLogFilter.username)
+        if (u) params.set('user_id', u.id)
+      }
+      await apiDelete(`/admin/api-access-logs?${params.toString()}`)
+      loadApiLogs(1)
+    } catch (e) {
+      setApiLogError(e.message)
+    }
+  }
+
+  // 用户建议管理
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [suggestions, setSuggestions] = useState([])
+  const [suggestionTotal, setSuggestionTotal] = useState(0)
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false)
+  const [suggestionError, setSuggestionError] = useState('')
+  const [suggestionPage, setSuggestionPage] = useState(1)
+  const [suggestionMaximized, setSuggestionMaximized] = useState(false)
+  const [suggestionStatusFilter, setSuggestionStatusFilter] = useState('')
+  const [replyingId, setReplyingId] = useState(null)
+  const [replyText, setReplyText] = useState('')
+  const [replying, setReplying] = useState(false)
+  const SUGGESTION_PAGE_SIZE = 20
+
+  const loadSuggestions = useCallback(async (page = 1) => {
+    setSuggestionsLoading(true)
+    setSuggestionError('')
+    try {
+      const params = new URLSearchParams()
+      if (suggestionStatusFilter) params.set('status', suggestionStatusFilter)
+      params.set('limit', SUGGESTION_PAGE_SIZE)
+      params.set('offset', (page - 1) * SUGGESTION_PAGE_SIZE)
+      const res = await apiGet(`/admin/suggestions?${params.toString()}`)
+      if (res.success) {
+        setSuggestions(res.suggestions || [])
+        setSuggestionTotal(res.total || 0)
+        setSuggestionPage(page)
+      } else {
+        setSuggestionError(res.error || '加载建议失败')
+      }
+    } catch (e) {
+      setSuggestionError(e.message)
+    } finally {
+      setSuggestionsLoading(false)
+    }
+  }, [suggestionStatusFilter])
+
+  useEffect(() => {
+    if (showSuggestions) loadSuggestions(1)
+  }, [showSuggestions, loadSuggestions])
+
+  const closeSuggestionsModal = () => {
+    setShowSuggestions(false)
+    setSuggestionStatusFilter('')
+    setSuggestionPage(1)
+    setSuggestionMaximized(false)
+    setReplyingId(null)
+    setReplyText('')
+  }
+
+  const openReply = (sug) => {
+    setReplyingId(sug.id)
+    setReplyText(sug.reply || '')
+  }
+
+  const handleReplySuggestion = async (sug) => {
+    const reply = replyText.trim()
+    if (!reply || replying) return
+    setReplying(true)
+    try {
+      await apiPut(`/admin/suggestions/${sug.id}/reply`, { reply })
+      setReplyingId(null)
+      setReplyText('')
+      loadSuggestions(suggestionPage)
+    } catch (e) {
+      setSuggestionError(e.message)
+    } finally {
+      setReplying(false)
+    }
+  }
+
+  const handleDeleteSuggestion = async (sug) => {
+    if (!window.confirm(`确定删除建议 #${sug.id}（来自 ${sug.display_name || sug.username || '未知用户'}）吗？`)) return
+    try {
+      await apiDelete(`/admin/suggestions/${sug.id}`)
+      loadSuggestions(suggestionPage)
+    } catch (e) {
+      setSuggestionError(e.message)
+    }
+  }
+
+  const handleClearSuggestions = async () => {
+    const scope = suggestionStatusFilter ? `「${suggestionStatusFilter === 'replied' ? '已回复' : '待处理'}」状态的` : '全部'
+    if (!window.confirm(`确定清空${scope}用户建议吗？此操作不可恢复。`)) return
+    try {
+      const params = new URLSearchParams()
+      if (suggestionStatusFilter) params.set('status', suggestionStatusFilter)
+      await apiDelete(`/admin/suggestions?${params.toString()}`)
+      loadSuggestions(1)
+    } catch (e) {
+      setSuggestionError(e.message)
+    }
+  }
+
   const inputCls =
     'px-3 py-2 t-bg-input border t-border-strong rounded-lg text-sm t-text t-placeholder t-focus'
   const btnGhost =
@@ -276,7 +446,7 @@ function AdminUsers() {
           </div>
           <div className="flex items-center gap-3 text-sm">
             <span className="t-text-muted">
-              {user?.username}
+              {user?.display_name || user?.username}
               <span className="ml-2 text-xs px-2 py-0.5 rounded-full t-badge-accent">
                 管理员
               </span>
@@ -310,6 +480,14 @@ function AdminUsers() {
             <button onClick={() => { setLogPage(1); setLogMaximized(false); setShowLogs(true) }} className={btnGhost}>
               <ClipboardList className="w-3.5 h-3.5" />
               日志管理
+            </button>
+            <button onClick={() => { setApiLogPage(1); setShowApiLogs(true) }} className={btnGhost}>
+              <ArrowLeftRight className="w-3.5 h-3.5" />
+              接口日志
+            </button>
+            <button onClick={() => { setSuggestionPage(1); setSuggestionStatusFilter(''); setShowSuggestions(true) }} className={btnGhost}>
+              <Lightbulb className="w-3.5 h-3.5" />
+              建议管理
             </button>
             <button
               onClick={() => setShowCreate(!showCreate)}
@@ -538,7 +716,7 @@ function AdminUsers() {
                     返回会话列表
                   </button>
                 ) : (
-                  `${chatUser.username} 的聊天记录`
+                  `${chatUser.display_name || chatUser.username} 的聊天记录`
                 )}
               </h3>
               <div className="flex items-center gap-2">
@@ -676,7 +854,7 @@ function AdminUsers() {
                 />
                 <datalist id="log-usernames">
                   {users.map((u) => (
-                    <option key={u.id} value={u.username} />
+                    <option key={u.id} value={u.username} label={u.display_name || u.username} />
                   ))}
                 </datalist>
               </div>
@@ -732,7 +910,7 @@ function AdminUsers() {
                         <td className="px-2 py-2 t-text-faint whitespace-nowrap">
                           {log.created_at?.replace('T', ' ').slice(0, 19)}
                         </td>
-                        <td className="px-2 py-2 whitespace-nowrap font-medium">{log.username}</td>
+                        <td className="px-2 py-2 whitespace-nowrap font-medium">{log.display_name || log.username}</td>
                         <td className="px-2 py-2 whitespace-nowrap">
                           <span className={log.operation === 'login_failed' ? 't-text-danger' : 't-text-2'}>
                             {opLabel(log.operation)}
@@ -778,6 +956,346 @@ function AdminUsers() {
                   <button
                     onClick={() => loadLogs(logPage + 1)}
                     disabled={logPage >= Math.ceil(logTotal / LOG_PAGE_SIZE) || logsLoading}
+                    className={`${btnGhost} disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 接口访问日志 Modal */}
+      {showApiLogs && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70"
+          onClick={closeApiLogsModal}
+        >
+          <div
+            className={`t-bg-panel border t-border-strong rounded-2xl shadow-2xl flex flex-col transition-all duration-200 ${
+              apiLogMaximized ? 'w-full max-w-none h-full max-h-none' : 'w-full max-w-4xl max-h-[85vh]'
+            }`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3.5 border-b t-border shrink-0">
+              <h3 className="text-sm font-semibold t-text flex items-center gap-2">
+                <ArrowLeftRight className="w-4 h-4 t-text-accent" />
+                接口访问日志（共 {apiLogTotal} 条）
+              </h3>
+              <div className="flex items-center gap-2">
+                <button onClick={() => loadApiLogs(apiLogPage)} className="t-text-faint t-hover-text transition-colors" title="刷新">
+                  <RefreshCw className={`w-4 h-4 ${apiLogsLoading ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                  onClick={() => setApiLogMaximized(!apiLogMaximized)}
+                  title={apiLogMaximized ? '还原' : '最大化'}
+                  className="t-text-faint t-hover-text transition-colors"
+                >
+                  {apiLogMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                </button>
+                <button onClick={closeApiLogsModal} className="t-text-faint t-hover-text transition-colors">
+                  <XCircle className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* 筛选栏 */}
+            <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-b t-border shrink-0">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 t-text-faint absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  className="px-3 py-1.5 pl-8 text-xs t-bg-input border t-border-strong rounded-lg t-text w-36"
+                  placeholder="按用户名筛选"
+                  value={apiLogFilter.username}
+                  onChange={(e) => setApiLogFilter({ ...apiLogFilter, username: e.target.value })}
+                  list="api-log-usernames"
+                />
+                <datalist id="api-log-usernames">
+                  {users.map((u) => (<option key={u.id} value={u.username} label={u.display_name || u.username} />))}
+                </datalist>
+              </div>
+              <input
+                className="px-3 py-1.5 text-xs t-bg-input border t-border-strong rounded-lg t-text w-40"
+                placeholder="按路径筛选（如 /chat）"
+                value={apiLogFilter.path}
+                onChange={(e) => setApiLogFilter({ ...apiLogFilter, path: e.target.value })}
+              />
+              <select
+                className="px-3 py-1.5 text-xs t-bg-input border t-border-strong rounded-lg t-text"
+                value={apiLogFilter.status}
+                onChange={(e) => setApiLogFilter({ ...apiLogFilter, status: e.target.value })}
+              >
+                <option value="">全部状态</option>
+                <option value="200">200</option>
+                <option value="401">401</option>
+                <option value="403">403</option>
+                <option value="404">404</option>
+                <option value="429">429</option>
+                <option value="500">500</option>
+              </select>
+              {(apiLogFilter.username || apiLogFilter.path || apiLogFilter.status) && (
+                <button onClick={() => setApiLogFilter({ username: '', path: '', status: '' })} className={btnGhost}>
+                  清除筛选
+                </button>
+              )}
+              <button
+                onClick={handleClearApiLogs}
+                className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border t-border-danger t-text-danger t-bg-danger-soft transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                清空
+              </button>
+            </div>
+
+            {/* 日志列表 */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {apiLogError && <p className="text-xs t-text-danger mb-3">{apiLogError}</p>}
+              {apiLogsLoading ? (
+                <p className="text-xs t-text-faint text-center py-8 loading-pulse">加载中...</p>
+              ) : apiLogs.length === 0 ? (
+                <p className="text-xs t-text-fainter text-center py-8">暂无接口访问日志</p>
+              ) : (
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 t-bg-panel">
+                    <tr className="text-left t-text-faint border-b t-border">
+                      <th className="px-2 py-2">时间</th>
+                      <th className="px-2 py-2">方法</th>
+                      <th className="px-2 py-2">路径</th>
+                      <th className="px-2 py-2">状态</th>
+                      <th className="px-2 py-2">耗时</th>
+                      <th className="px-2 py-2">用户</th>
+                      <th className="px-2 py-2">IP</th>
+                      <th className="px-2 py-2">认证</th>
+                      <th className="px-2 py-2 text-right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {apiLogs.map((log) => (
+                      <tr key={log.id} className="border-b t-border t-hover-bg align-top">
+                        <td className="px-2 py-2 t-text-faint whitespace-nowrap">
+                          {log.created_at?.replace('T', ' ').slice(0, 19)}
+                        </td>
+                        <td className="px-2 py-2 whitespace-nowrap font-medium">{log.method}</td>
+                        <td className="px-2 py-2 max-w-[200px]">
+                          <div className="truncate" title={log.path}>{log.path}</div>
+                        </td>
+                        <td className="px-2 py-2 whitespace-nowrap">
+                          <span className={log.status >= 400 ? 't-text-danger' : 't-text-ok'}>{log.status}</span>
+                        </td>
+                        <td className="px-2 py-2 t-text-faint whitespace-nowrap">{log.duration_ms}ms</td>
+                        <td className="px-2 py-2 whitespace-nowrap font-medium">{log.display_name || log.username || '-'}</td>
+                        <td className="px-2 py-2 t-text-faint whitespace-nowrap">{log.ip || '-'}</td>
+                        <td className="px-2 py-2 t-text-faint whitespace-nowrap">{log.auth_type}</td>
+                        <td className="px-2 py-2 text-right whitespace-nowrap">
+                          <button onClick={() => handleDeleteApiLog(log)} className="t-text-faint t-hover-text-danger transition-colors" title="删除">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* 分页控制 */}
+            {apiLogTotal > API_LOG_PAGE_SIZE && (
+              <div className="flex items-center justify-between px-5 py-3 border-t t-border shrink-0">
+                <span className="text-xs t-text-faint">
+                  第 {apiLogPage} / {Math.ceil(apiLogTotal / API_LOG_PAGE_SIZE)} 页
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => loadApiLogs(apiLogPage - 1)}
+                    disabled={apiLogPage <= 1 || apiLogsLoading}
+                    className={`${btnGhost} disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    上一页
+                  </button>
+                  <button
+                    onClick={() => loadApiLogs(apiLogPage + 1)}
+                    disabled={apiLogPage >= Math.ceil(apiLogTotal / API_LOG_PAGE_SIZE) || apiLogsLoading}
+                    className={`${btnGhost} disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 用户建议管理 Modal */}
+      {showSuggestions && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70"
+          onClick={closeSuggestionsModal}
+        >
+          <div
+            className={`t-bg-panel border t-border-strong rounded-2xl shadow-2xl flex flex-col transition-all duration-200 ${
+              suggestionMaximized ? 'w-full max-w-none h-full max-h-none' : 'w-full max-w-4xl max-h-[85vh]'
+            }`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3.5 border-b t-border shrink-0">
+              <h3 className="text-sm font-semibold t-text flex items-center gap-2">
+                <Lightbulb className="w-4 h-4 t-text-accent" />
+                用户建议（共 {suggestionTotal} 条）
+              </h3>
+              <div className="flex items-center gap-2">
+                <button onClick={() => loadSuggestions(suggestionPage)} className="t-text-faint t-hover-text transition-colors" title="刷新">
+                  <RefreshCw className={`w-4 h-4 ${suggestionsLoading ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                  onClick={() => setSuggestionMaximized(!suggestionMaximized)}
+                  title={suggestionMaximized ? '还原' : '最大化'}
+                  className="t-text-faint t-hover-text transition-colors"
+                >
+                  {suggestionMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                </button>
+                <button onClick={closeSuggestionsModal} className="t-text-faint t-hover-text transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* 筛选栏 */}
+            <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-b t-border shrink-0">
+              <select
+                className="px-3 py-1.5 text-xs t-bg-input border t-border-strong rounded-lg t-text"
+                value={suggestionStatusFilter}
+                onChange={(e) => setSuggestionStatusFilter(e.target.value)}
+              >
+                <option value="">全部状态</option>
+                <option value="pending">待处理</option>
+                <option value="replied">已回复</option>
+              </select>
+              {suggestionStatusFilter && (
+                <button onClick={() => setSuggestionStatusFilter('')} className={btnGhost}>
+                  清除筛选
+                </button>
+              )}
+              <button
+                onClick={handleClearSuggestions}
+                className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border t-border-danger t-text-danger t-bg-danger-soft transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                清空
+              </button>
+            </div>
+
+            {/* 建议列表 */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {suggestionError && <p className="text-xs t-text-danger">{suggestionError}</p>}
+              {suggestionsLoading ? (
+                <p className="text-xs t-text-faint text-center py-8 loading-pulse">加载中...</p>
+              ) : suggestions.length === 0 ? (
+                <div className="text-center t-text-fainter py-10">
+                  <Lightbulb className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                  <p className="text-xs">暂无用户建议</p>
+                </div>
+              ) : (
+                suggestions.map((s) => (
+                  <div key={s.id} className="rounded-xl border t-border p-3.5">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-semibold t-text">{s.display_name || s.username || `用户#${s.user_id}`}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full border t-border-strong t-text-muted">
+                          {s.created_at?.replace('T', ' ').slice(0, 19) || ''}
+                        </span>
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                            s.status === 'replied' ? 't-badge-accent' : 't-badge-neutral'
+                          }`}
+                        >
+                          {s.status === 'replied' ? '已回复' : '待处理'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={() => openReply(s)}
+                          className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors"
+                        >
+                          <MessageSquare className="w-3 h-3" />
+                          {s.status === 'replied' ? '修改回复' : '回复'}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteSuggestion(s)}
+                          className="t-text-faint t-hover-text-danger transition-colors"
+                          title="删除"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-xs whitespace-pre-wrap break-words t-text-2">{s.content}</p>
+
+                    {/* 已有回复 */}
+                    {s.status === 'replied' && s.reply && (
+                      <div className="mt-2.5 rounded-lg border t-border-accent/40 p-2.5">
+                        <p className="text-[10px] font-semibold t-text-accent mb-1">管理员回复</p>
+                        <p className="text-xs whitespace-pre-wrap break-words t-text-2">{s.reply}</p>
+                        {s.replied_at && (
+                          <p className="text-[10px] t-text-faint mt-1.5">{s.replied_at?.replace('T', ' ').slice(0, 19)}</p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* 回复编辑框 */}
+                    {replyingId === s.id && (
+                      <div className="mt-2.5">
+                        <textarea
+                          value={replyText}
+                          onChange={(e) => setReplyText(e.target.value)}
+                          placeholder="输入回复内容..."
+                          rows={2}
+                          className="w-full resize-none rounded-lg border t-border-strong t-bg-input t-text px-3 py-2 text-xs outline-none focus:border-accent"
+                        />
+                        <div className="flex justify-end gap-2 mt-2">
+                          <button
+                            onClick={() => { setReplyingId(null); setReplyText('') }}
+                            className="px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors"
+                          >
+                            取消
+                          </button>
+                          <button
+                            onClick={() => handleReplySuggestion(s)}
+                            disabled={!replyText.trim() || replying}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg t-bg-accent t-hover-accent text-white transition-colors disabled:opacity-50"
+                          >
+                            <Send className="w-3 h-3" />
+                            {replying ? '回复中...' : '发送回复'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* 分页控制 */}
+            {suggestionTotal > SUGGESTION_PAGE_SIZE && (
+              <div className="flex items-center justify-between px-5 py-3 border-t t-border shrink-0">
+                <span className="text-xs t-text-faint">
+                  第 {suggestionPage} / {Math.ceil(suggestionTotal / SUGGESTION_PAGE_SIZE)} 页
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => loadSuggestions(suggestionPage - 1)}
+                    disabled={suggestionPage <= 1 || suggestionsLoading}
+                    className={`${btnGhost} disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    上一页
+                  </button>
+                  <button
+                    onClick={() => loadSuggestions(suggestionPage + 1)}
+                    disabled={suggestionPage >= Math.ceil(suggestionTotal / SUGGESTION_PAGE_SIZE) || suggestionsLoading}
                     className={`${btnGhost} disabled:opacity-40 disabled:cursor-not-allowed`}
                   >
                     下一页

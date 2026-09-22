@@ -15,9 +15,26 @@ export const useAuthStore = create(
             set({ user: result.user, loading: false })
             return { success: true }
           }
+          // TOTP 已启用：进入二次验证
+          if (result.status === 'needs_2fa') {
+            return { success: false, needs2fa: true, username: result.username }
+          }
           return { success: false, message: result.message || '登录失败' }
         } catch (error) {
           return { success: false, message: error.message || '登录失败' }
+        }
+      },
+
+      login2fa: async (username, totp) => {
+        try {
+          const result = await apiPost('/login/2fa', { username, totp })
+          if (result.status === 'success' && result.user) {
+            set({ user: result.user, loading: false })
+            return { success: true }
+          }
+          return { success: false, message: result.message || '二次验证失败' }
+        } catch (error) {
+          return { success: false, message: error.message || '二次验证失败' }
         }
       },
 

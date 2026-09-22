@@ -45,12 +45,50 @@ from web.routes import ai_chat as ai_chat_router
 from web.routes import lobster_claw as lobster_claw_router
 from web.routes import lobster_mu as lobster_mu_router
 from web.routes import feishu as feishu_router
+from web.auth import require_auth
 
 logger.info("Initializing FastAPI app...")
+
+def _sandbox_startup_check():
+    """沙箱启动自检（spec §5.2）：
+    - prod（LOBSTER_ENV=prod 或运行于 docker-compose 容器内）+ fallback=warn → 拒绝启动
+    - ENABLED=false → 输出显著告警
+    - 配置错误（SandboxConfigError）→ 拒绝启动
+    """
+    try:
+        from lobster_mu import sandbox_config
+        cfg = sandbox_config.config
+    except Exception as e:
+        logger.error(f"[沙箱] 配置加载失败，拒绝启动: {e}")
+        raise SystemExit(f"沙箱配置错误，服务无法启动: {e}")
+
+    # 判定是否 prod：显式 LOBSTER_ENV=prod，或容器内有 docker-compose 运行标志
+    env_flag = os.environ.get("LOBSTER_ENV", "").strip().lower()
+    in_container = os.path.exists("/.dockerenv")
+    is_prod = (env_flag == "prod") or (in_container and env_flag != "dev")
+
+    if is_prod and cfg.fallback == "warn":
+        logger.error("[沙箱] 配置错误：prod 环境禁止 SANDBOX_FALLBACK=warn，请改为 deny")
+        raise SystemExit("prod 环境 LOBSTER_SANDBOX_FALLBACK 必须为 deny，服务无法启动")
+
+    if not cfg.enabled:
+        logger.warning("=" * 60)
+        logger.warning("[沙箱] 沙箱已禁用（LOBSTER_SANDBOX_ENABLED=false）")
+        logger.warning("[沙箱] 所有用户命令将在宿主机直接执行，存在安全风险！")
+        logger.warning("=" * 60)
+
+    logger.info(
+        f"[沙箱] 配置: enabled={cfg.enabled}, mode={cfg.mode}, image={cfg.image}, "
+        f"fallback={cfg.fallback}, admin_mode={cfg.admin_mode}, network={cfg.network}"
+    )
+
 
 # 启动定时任务调度器和飞书长连接
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 沙箱配置自检（§5.2）：prod+warn 组合拒绝启动；ENABLED=false 显著告警
+    _sandbox_startup_check()
+
     logger.info("Starting cron scheduler...")
     await lobster_claw_router.cron_scheduler.start()
 
@@ -71,7 +109,18 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Knowledge embedding model warmup failed: {e}")
     _threading.Thread(target=_kb_warmup, daemon=True).start()
 
+    # 定期清理登录限流器的过期记录（防内存泄漏）
+    import asyncio as _asyncio
+    async def _limiter_cleanup():
+        from web.routes.lobster_mu import login_limiter
+        while True:
+            await _asyncio.sleep(300)  # 每 5 分钟清理一次
+            login_limiter.cleanup()
+    _cleanup_task = _asyncio.create_task(_limiter_cleanup())
+
     yield
+
+    _cleanup_task.cancel()
 
     logger.info("Stopping cron scheduler...")
     await lobster_claw_router.cron_scheduler.stop()
@@ -84,7 +133,75 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Multi-Agent Document Enhancer", version="1.0", lifespan=lifespan)
 
+# CORS：允许外部页面（如 direct-login.html）跨域调用 /api/lobster-mu 接口
+# "null" 用于 file:// 打开的 HTML（Origin 为 null）
+from starlette.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*", "null"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET_KEY", "mul_agent_secret_key_2026"))
+
+
+# 修改 session cookie 属性：SameSite=None + Secure，允许 file:// 跨域页面设置 cookie
+# Starlette 0.52 的 SessionMiddleware 不支持 samesite 参数，用中间件拦截 Set-Cookie 头
+@app.middleware("http")
+async def fix_session_cookie(request, call_next):
+    response = await call_next(request)
+    set_cookie = response.headers.get("set-cookie", "")
+    if set_cookie and "session=" in set_cookie:
+        # 替换 samesite=lax → samesite=none; secure
+        new_cookie = set_cookie.replace("; samesite=lax", "; samesite=none; secure")
+        if new_cookie == set_cookie:
+            # 如果原头没有 samesite，追加
+            new_cookie = set_cookie + "; samesite=none; secure"
+        response.headers["set-cookie"] = new_cookie
+    return response
+
+# ---- 接口访问日志中间件（记录 /api/lobster-mu 请求，仅管理员可查） ----
+import asyncio as _asyncio
+import time as _time_mod
+from starlette.middleware.base import BaseHTTPMiddleware
+from lobster_mu.api_log import log_api_access
+
+
+class ApiAccessLogMiddleware(BaseHTTPMiddleware):
+    """记录 v3 多用户模块（/api/lobster-mu）的每次 API 访问。
+    异步写库（run_in_executor），不阻塞响应；任何异常静默吞掉，绝不影响请求。"""
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if not path.startswith("/api/lobster-mu"):
+            return await call_next(request)
+        start = _time_mod.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            self._safe_log(request, path, 500, int((_time_mod.perf_counter() - start) * 1000))
+            raise
+        self._safe_log(request, path, response.status_code, int((_time_mod.perf_counter() - start) * 1000))
+        return response
+
+    def _safe_log(self, request, path: str, status: int, duration_ms: int):
+        try:
+            ip = request.client.host if request.client else ""
+            session = getattr(request, "session", None) or {}
+            mu_user = session.get("mu_user") or {}
+            username = mu_user.get("username", "")
+            user_id = mu_user.get("id", 0)
+            auth_type = "session" if mu_user else "anon"
+            loop = _asyncio.get_running_loop()
+            loop.run_in_executor(None, log_api_access,
+                request.method, path, status, duration_ms, ip, username, user_id, auth_type)
+        except Exception:
+            pass
+
+
+app.add_middleware(ApiAccessLogMiddleware)
 
 
 async def safe_send_json(websocket: WebSocket, data: dict):
@@ -120,6 +237,9 @@ os.makedirs("web/static/v2/assets", exist_ok=True)
 app.mount("/v2/assets", StaticFiles(directory="web/static/v2/assets"), name="v2-assets")
 os.makedirs("web/static/v3/assets", exist_ok=True)
 app.mount("/v3/assets", StaticFiles(directory="web/static/v3/assets"), name="v3-assets")
+# vite base="/" 构建后资源引用为 /assets/...（绝对根路径），
+# 挂载 /assets → v3 资源目录，使 /v3 入口能加载资源。
+app.mount("/assets", StaticFiles(directory="web/static/v3/assets"), name="v3-absolute-assets")
 
 # 全局管理器
 logger.info("Initializing managers...")
@@ -185,18 +305,58 @@ from llm.model_call_logger import model_call_logger
 model_call_logger.set_log_callback(on_model_call_log)
 
 # 注册路由
-app.include_router(models_router.router, prefix="/api")
-app.include_router(agents_router.router, prefix="/api")
-app.include_router(search_router.router, prefix="/api")
-app.include_router(skills_router.router, prefix="/api")
-app.include_router(attachments_router.router, prefix="/api")
-app.include_router(system_router.router, prefix="")
-app.include_router(image_router.router, prefix="/api")
-app.include_router(video_router.router, prefix="/api")
-app.include_router(ai_chat_router.router, prefix="/api")
-app.include_router(lobster_claw_router.router, prefix="")
+# 对外 API 统一挂 require_auth 认证（API Key 或 session）：
+#   - 9 个 v1 router + lobster_claw（命令/文件/网络等高危能力）
+#   - lobster_mu 自带 get_mu_user 认证，feishu webhook 自带 token 校验，均不重复挂
+_API_AUTH = [Depends(require_auth)]
+app.include_router(models_router.router, prefix="/api", dependencies=_API_AUTH)
+app.include_router(agents_router.router, prefix="/api", dependencies=_API_AUTH)
+app.include_router(search_router.router, prefix="/api", dependencies=_API_AUTH)
+app.include_router(skills_router.router, prefix="/api", dependencies=_API_AUTH)
+app.include_router(attachments_router.router, prefix="/api", dependencies=_API_AUTH)
+app.include_router(system_router.router, prefix="", dependencies=_API_AUTH)
+app.include_router(image_router.router, prefix="/api", dependencies=_API_AUTH)
+app.include_router(video_router.router, prefix="/api", dependencies=_API_AUTH)
+app.include_router(ai_chat_router.router, prefix="/api", dependencies=_API_AUTH)
+app.include_router(lobster_claw_router.router, prefix="", dependencies=_API_AUTH)
 app.include_router(lobster_mu_router.router, prefix="")
 app.include_router(feishu_router.router)
+
+# 为 OpenAPI 文档端点（/docs、/redoc、/openapi.json）加上认证，防止接口清单对外泄露。
+# FastAPI 在 app 初始化时已注册这三个端点，其依赖在 __init__ 时就编译进 dependant，
+# 运行时改 route.dependencies 不生效；因此移除原路由，重新注册带 require_auth 的版本。
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+from fastapi.responses import HTMLResponse as _HTMLResponse, JSONResponse as _JSONResponse
+from starlette.requests import Request as _StarletteRequest
+from fastapi.responses import Response as _Response
+
+
+def _secure_doc_routes():
+    doc_paths = {"/docs", "/redoc", "/openapi.json"}
+    kept = [r for r in app.routes if getattr(r, "path", None) not in doc_paths]
+    app.routes[:] = kept  # 原地替换，保留 app 对 routes 列表的引用
+
+    @app.get("/openapi.json", include_in_schema=False, dependencies=[Depends(require_auth)])
+    async def _secure_openapi():
+        return _JSONResponse(app.openapi())
+
+    @app.get("/docs", include_in_schema=False, dependencies=[Depends(require_auth)])
+    async def _secure_docs():
+        openapi_url = app.openapi_url
+        return get_swagger_ui_html(
+            openapi_url=openapi_url,
+            title=f"{app.title} - Docs",
+            oauth2_redirect_url="/docs/oauth2-redirect",
+            init_oauth=None,
+        )
+
+    @app.get("/redoc", include_in_schema=False, dependencies=[Depends(require_auth)])
+    async def _secure_redoc():
+        openapi_url = app.openapi_url
+        return get_redoc_html(openapi_url=openapi_url, title=f"{app.title} - ReDoc")
+
+
+_secure_doc_routes()
 
 # 初始化控制器
 controller = IterationController(
@@ -224,6 +384,12 @@ async def get_current_user(request: Request):
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
+    # 已登录非 admin → 跳 v3；已登录 admin → 跳 v1
+    user = request.session.get("user") if hasattr(request, "session") else None
+    if user:
+        if user.get("role") == "admin":
+            return RedirectResponse(url="/")
+        return RedirectResponse(url="/v3")
     template = jinja_env.get_template("login.html")
     return HTMLResponse(content=template.render())
 
@@ -236,15 +402,20 @@ async def login(request: Request, login_data: LoginRequest):
     from lobster_mu.security import verify_password
 
     ip = request.client.host if request.client else ""
-    login_limiter.check(ip)
+    login_limiter.check(ip, login_data.username)
 
     ensure_db()
     row = user_store.get_by_username(login_data.username)
     if not row or row["disabled"] or not verify_password(login_data.password, row["salt"], row["password_hash"]):
-        login_limiter.record_failure(ip)
+        login_limiter.record_failure(ip, login_data.username)
         return {"status": "error", "message": "用户名或密码错误"}
 
-    login_limiter.record_success(ip)
+    # v1/v2 仅允许管理员登录
+    if row["role"] != "admin":
+        login_limiter.record_success(ip, login_data.username)
+        return {"status": "error", "message": "该账号无权限访问此系统，请使用管理员账号或前往 v3 多用户版"}
+
+    login_limiter.record_success(ip, login_data.username)
     request.session["user"] = {"username": login_data.username, "id": row["id"], "role": row["role"]}
     user_store.update_last_login(row["id"])
     return {"status": "success", "message": "登录成功"}
@@ -258,10 +429,13 @@ async def logout(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, user=Depends(get_current_user)):
-    """主页面"""
+    """主页面（v1）"""
     if not user:
         return RedirectResponse(url="/login")
-    
+    # v1 仅允许管理员访问
+    if user.get("role") != "admin":
+        return RedirectResponse(url="/v3")
+
     models = [m.to_dict() for m in model_manager.get_all()]
     
     agent_groups = {
@@ -318,9 +492,11 @@ async def chat_history_viewer(request: Request, session_id: str):
 # ============ React v2 前端路由 ============
 @app.get("/v2", response_class=HTMLResponse)
 @app.get("/v2/{path:path}", response_class=HTMLResponse)
-async def v2_index(request: Request):
-    """React v2 前端入口"""
+async def v2_index(request: Request, user=Depends(get_current_user)):
+    """React v2 前端入口（仅管理员）"""
     import os
+    if not user or user.get("role") != "admin":
+        return RedirectResponse(url="/v3")
     index_path = os.path.join("web", "static", "v2", "index.html")
     if os.path.exists(index_path):
         with open(index_path, "r", encoding="utf-8") as f:
@@ -330,22 +506,34 @@ async def v2_index(request: Request):
         return HTMLResponse(content="<h1>React v2 应用尚未构建</h1><p>请运行 pnpm install && pnpm build</p>", status_code=503)
 
 # ============ React v3（多用户龙虾Claw）前端路由 ============
+# 注入 window.__BASE__="/v3"，前端 BrowserRouter basename 读该值
+# （main.jsx/client.js 兼容 __BASE__ 动态前缀，当前仅 /v3 入口）。
+# vite base="/"，资源走绝对 /assets/... 路径。
 @app.get("/v3", response_class=HTMLResponse)
 @app.get("/v3/{path:path}", response_class=HTMLResponse)
 async def v3_index(request: Request):
-    """React v3 前端入口"""
-    import os
+    """React v3 前端入口，注入 window.__BASE__ 供前端感知入口前缀"""
+    import os, re
     index_path = os.path.join("web", "static", "v3", "index.html")
-    if os.path.exists(index_path):
-        with open(index_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        return HTMLResponse(content=content)
-    else:
+    if not os.path.exists(index_path):
         return HTMLResponse(content="<h1>React v3 应用尚未构建</h1><p>请运行 pnpm build:v3</p>", status_code=503)
+    with open(index_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    # 当前仅 /v3 入口，固定注入 "/v3"
+    base = "/v3"
+    # 注入 window.__BASE__（若 index.html 已有则替换，否则插到 </head> 前）
+    inject = f'<script>window.__BASE__="{base}";</script>'
+    if 'window.__BASE__' in content:
+        content = re.sub(r'<script>window\.__BASE__="[^"]*";</script>', inject, content)
+    elif '</head>' in content:
+        content = content.replace('</head>', inject + '\n</head>')
+    # 禁止 index.html 被浏览器缓存（避免旧版缓存导致 basename 不匹配）。
+    # JS/CSS 文件名带 hash，仍可长期缓存（由 StaticFiles 处理）。
+    return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"})
 
 # ============ 文档处理 API（保留在 web_server.py） ============
 
-@app.post("/api/process")
+@app.post("/api/process", dependencies=[Depends(require_auth)])
 async def process_document(request: ProcessRequest):
     """处理文档"""
     global current_document, processing_status, processing_log, controller
@@ -585,7 +773,7 @@ async def process_document(request: ProcessRequest):
     asyncio.create_task(run_processing())
     return {"status": "success", "message": "处理已开始"}
 
-@app.post("/api/stop")
+@app.post("/api/stop", dependencies=[Depends(require_auth)])
 async def stop_processing():
     """停止处理"""
     global processing_status
@@ -594,7 +782,7 @@ async def stop_processing():
     controller.stop()
     return {"status": "success", "message": "已停止处理"}
 
-@app.get("/api/status")
+@app.get("/api/status", dependencies=[Depends(require_auth)])
 async def get_status():
     """获取处理状态"""
     # 实时更新运行时长
@@ -655,7 +843,7 @@ async def get_status():
         "agent_results": agent_results
     }
 
-@app.post("/api/clear")
+@app.post("/api/clear", dependencies=[Depends(require_auth)])
 async def clear_all():
     """清空所有内容"""
     global current_document, processing_status, processing_log, agent_results
@@ -696,7 +884,7 @@ async def clear_all():
 
     return {"status": "success", "message": "已清空所有内容"}
 
-@app.post("/api/stream-process")
+@app.post("/api/stream-process", dependencies=[Depends(require_auth)])
 async def stream_process(request: ProcessRequest):
     """流式处理文档，实时返回结果"""
     from fastapi.responses import StreamingResponse
@@ -803,8 +991,10 @@ async def websocket_process(websocket: WebSocket):
     global controller, current_document, processing_status, processing_log, agent_results
     global selected_agent_count
 
-    session_cookie = websocket.cookies.get("session")
-    if not session_cookie:
+    # 认证：要求 session 中真实登录用户（cookie 非空不再足够）
+    _sess = websocket.session if hasattr(websocket, "session") else {}
+    _ws_user = _sess.get("user") or _sess.get("mu_user") if _sess else None
+    if not _ws_user:
         await websocket.close(code=1008)
         return
 
@@ -1039,8 +1229,10 @@ async def websocket_process(websocket: WebSocket):
 @app.websocket("/ws/ai-chat")
 async def websocket_ai_chat(websocket: WebSocket):
     """WebSocket endpoint for AI chat streaming"""
-    session_cookie = websocket.cookies.get("session")
-    if not session_cookie:
+    # 认证：要求 session 中真实登录用户（cookie 非空不再足够）
+    _sess = websocket.session if hasattr(websocket, "session") else {}
+    _ws_user = _sess.get("user") or _sess.get("mu_user") if _sess else None
+    if not _ws_user:
         await websocket.close(code=1008)
         return
 
@@ -1103,7 +1295,7 @@ async def websocket_ai_chat(websocket: WebSocket):
                 ai_chat_manager.chat_task = None
 
 
-@app.post("/api/stream-llm")
+@app.post("/api/stream-llm", dependencies=[Depends(require_auth)])
 async def stream_llm(prompt: str, model_id: str = None):
     """直接流式调用大模型"""
     from fastapi.responses import StreamingResponse

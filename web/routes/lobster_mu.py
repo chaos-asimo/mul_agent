@@ -1,12 +1,22 @@
 # -*- coding: utf-8 -*-
 """多用户龙虾Claw子项目 - 路由层（前缀 /api/lobster-mu）"""
 import os
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request, Depends, File, UploadFile, Form
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 
 from lobster_mu import db, user_store, tools
 from lobster_mu.security import verify_password, get_mu_user, require_admin
+
+import pyotp
+import qrcode
+import io
+import base64
+import json as _json
+import time as _time2
+import hashlib
+import hmac
 
 router = APIRouter(prefix="/api/lobster-mu")
 
@@ -29,30 +39,49 @@ class MuLoginRequest(BaseModel):
     password: str
 
 
-# ---- 登录 IP 速率限制（防暴力破解） ----
+class MuTwoFactorRequest(BaseModel):
+    username: str
+    totp: str
+
+
+class TOTPConfirmRequest(BaseModel):
+    totp: str
+
+
+class TOTPDisableRequest(BaseModel):
+    password: str
+
+
+# ---- 登录速率限制（IP+账户组合，防暴力破解） ----
 import time as _time
 
 class LoginRateLimiter:
-    """基于 IP 的登录失败计数 + 锁定
+    """基于 IP+账户 组合的登录失败计数 + 锁定
 
-    - 15 分钟内失败超过 MAX_FAILS 次 → 锁定 LOCK_SECONDS 秒
-    - 锁定期间直接返回 429
+    - 同一 IP 登录同一账户，15 分钟内失败超过 MAX_FAILS 次 → 锁定 LOCK_SECONDS 秒
+    - 不同账户、不同 IP 分别计数，互不影响
+    - 锁定期间该 IP+账户组合直接返回 429
     """
     MAX_FAILS = 5
     WINDOW = 900      # 15 分钟
     LOCK_SECONDS = 900  # 锁定 15 分钟
 
-    def __init__(self):
-        self._fails: Dict[str, list] = {}      # ip -> [timestamps]
-        self._locks: Dict[str, float] = {}     # ip -> 解锁时间戳
+    @staticmethod
+    def _key(ip: str, username: str) -> str:
+        return f"{ip}:{username}"
 
-    def check(self, ip: str):
+    def __init__(self):
+        self._fails: Dict[str, list] = {}      # "ip:username" -> [timestamps]
+        self._locks: Dict[str, float] = {}     # "ip:username" -> 解锁时间戳
+
+    def check(self, ip: str, username: str):
         """锁定中则抛 429，否则返回剩余重试次数（供响应头使用）"""
         if not ip:
             return self.MAX_FAILS
+        key = self._key(ip, username)
         now = _time.time()
         # 检查锁定
-        unlock_at = self._locks.get(ip, 0)
+        unlock_at = self._locks.get(key, 0)
         if now < unlock_at:
             remaining = int(unlock_at - now)
             raise HTTPException(
@@ -60,11 +89,11 @@ class LoginRateLimiter:
                 detail=f"登录失败次数过多，请 {remaining} 秒后重试",
             )
         # 检查窗口内失败次数
-        bucket = [t for t in self._fails.get(ip, []) if now - t < self.WINDOW]
-        self._fails[ip] = bucket
+        bucket = [t for t in self._fails.get(key, []) if now - t < self.WINDOW]
+        self._fails[key] = bucket
         if len(bucket) >= self.MAX_FAILS:
-            self._locks[ip] = now + self.LOCK_SECONDS
-            self._fails[ip] = []
+            self._locks[key] = now + self.LOCK_SECONDS
+            self._fails[key] = []
             remaining = self.LOCK_SECONDS
             raise HTTPException(
                 status_code=429,
@@ -72,39 +101,203 @@ class LoginRateLimiter:
             )
         return self.MAX_FAILS - len(bucket)
 
-    def record_failure(self, ip: str):
+    def record_failure(self, ip: str, username: str):
         if not ip:
             return
+        key = self._key(ip, username)
         now = _time.time()
-        bucket = [t for t in self._fails.get(ip, []) if now - t < self.WINDOW]
+        bucket = [t for t in self._fails.get(key, []) if now - t < self.WINDOW]
         bucket.append(now)
-        self._fails[ip] = bucket
+        self._fails[key] = bucket
 
-    def record_success(self, ip: str):
+    def record_success(self, ip: str, username: str):
         if ip:
-            self._fails.pop(ip, None)
-            self._locks.pop(ip, None)
+            key = self._key(ip, username)
+            self._fails.pop(key, None)
+            self._locks.pop(key, None)
+
+    def cleanup(self):
+        """定期清理过期的失败记录和锁定（防止内存泄漏）"""
+        now = _time.time()
+        expired_keys = [
+            k for k, t in self._locks.items() if now >= t
+        ]
+        for k in expired_keys:
+            self._locks.pop(k, None)
+        # 清理窗口外的失败记录
+        for k in list(self._fails.keys()):
+            self._fails[k] = [t for t in self._fails[k] if now - t < self.WINDOW]
+            if not self._fails[k]:
+                self._fails.pop(k, None)
 
 
 login_limiter = LoginRateLimiter()
+
+# TOTP 登录 pending 存储（用户名 → {user_id, expires_at}）
+_totp_pending: Dict[str, dict] = {}
+_TOTP_PENDING_TTL = 300  # 5 分钟
+
+# TOTP 绑定 pending 存储（user_id → {secret, expires_at}）
+_totp_bind_pending: Dict[int, dict] = {}
+_TOTP_BIND_TTL = 300  # 5 分钟
+
+
+def _cleanup_totp_pending():
+    now = _time.time()
+    for k in list(_totp_pending):
+        if _totp_pending[k]["expires_at"] < now:
+            del _totp_pending[k]
+    for k in list(_totp_bind_pending):
+        if _totp_bind_pending[k]["expires_at"] < now:
+            del _totp_bind_pending[k]
+
+
+def _verify_totp_code(secret: str, code: str) -> bool:
+    """验证 TOTP 6 位码（pyotp 标准，window=1 允许 ±30s 容差）"""
+    try:
+        return pyotp.TOTP(secret).verify(code, valid_window=1)
+    except Exception:
+        return False
 
 
 @router.post("/login")
 async def mu_login(request: Request, body: MuLoginRequest):
     ensure_db()
     ip = request.client.host if request.client else ""
-    # 速率限制检查
-    login_limiter.check(ip)
+    # 速率限制检查（IP+账户组合）
+    login_limiter.check(ip, body.username)
     row = user_store.get_by_username(body.username)
     if not row or row["disabled"] or not verify_password(body.password, row["salt"], row["password_hash"]):
-        login_limiter.record_failure(ip)
+        login_limiter.record_failure(ip, body.username)
         tools.log_operation(0, "login_failed", f"用户 {body.username} 登录失败", success=False, ip=ip)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
-    login_limiter.record_success(ip)
+    login_limiter.record_success(ip, body.username)
+
+    # TOTP 已启用：不直接登录，返回 needs_2fa
+    if row["totp_enabled"] and row["totp_secret"]:
+        _cleanup_totp_pending()
+        _totp_pending[row["username"]] = {
+            "user_id": row["id"],
+            "expires_at": _time.time() + _TOTP_PENDING_TTL,
+        }
+        tools.log_operation(row["id"], "login_2fa_required",
+                            f"{row['username']} 需二次验证", ip=ip)
+        return {"status": "needs_2fa", "username": row["username"],
+                "totp": {"issuer": "LobsterClaw", "label": row["username"]}}
+
+    # 未启用 TOTP：直接登录
     request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"]}
     user_store.update_last_login(row["id"])
     tools.log_operation(row["id"], "login", f"{row['username']} 登录成功", ip=ip)
-    return {"status": "success", "user": {"id": row["id"], "username": row["username"], "role": row["role"]}}
+    return {"status": "success", "user": {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}}
+
+
+@router.post("/login/2fa")
+async def mu_login_2fa(request: Request, body: MuTwoFactorRequest):
+    ensure_db()
+    ip = request.client.host if request.client else ""
+    login_limiter.check(ip, body.username)
+    _cleanup_totp_pending()
+    pending = _totp_pending.get(body.username)
+    if not pending or pending["expires_at"] < _time.time():
+        raise HTTPException(status_code=400, detail="二次验证已过期，请重新登录")
+    row = user_store.get_by_id(pending["user_id"])
+    if not row or row["disabled"]:
+        raise HTTPException(status_code=403, detail="账号已禁用")
+    if not _verify_totp_code(row["totp_secret"], body.totp.strip()):
+        login_limiter.record_failure(ip, body.username)
+        tools.log_operation(row["id"], "login_2fa_failed",
+                            f"{row['username']} 二次验证失败", success=False, ip=ip)
+        raise HTTPException(status_code=401, detail="验证码错误")
+    # 验证通过，清除 pending + 登录
+    del _totp_pending[body.username]
+    login_limiter.record_success(ip, body.username)
+    request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"]}
+    user_store.update_last_login(row["id"])
+    tools.log_operation(row["id"], "login_2fa_success",
+                        f"{row['username']} 二次验证登录成功", ip=ip)
+    return {"status": "success", "user": {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}}
+
+
+# ============ TOTP 绑定/解绑 ============
+
+def _totp_status(user_id: int) -> dict:
+    row = user_store.get_by_id(user_id)
+    return {"enabled": bool(row["totp_enabled"]) if row else False}
+
+
+@router.get("/totp/status")
+async def mu_totp_status(user: dict = Depends(get_mu_user)):
+    ensure_db()
+    return _totp_status(user["id"])
+
+
+@router.post("/totp/setup")
+async def mu_totp_setup(user: dict = Depends(get_mu_user)):
+    ensure_db()
+    """生成 TOTP 密钥 + QR 码（base64 PNG），保存到 pending 存储。
+    前端展示 QR 码，用户输入 6 位码后调 /totp/confirm 验证。"""
+    username = user["username"]
+    secret = pyotp.random_base32()
+    provisioning_uri = pyotp.totp.TOTP(secret).provisioning_uri(name=username, issuer_name="LobsterClaw")
+    # 生成 QR 码 base64 PNG
+    qr = qrcode.QRCode(box_size=4, border=2)
+    qr.add_data(provisioning_uri)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    # 保存到 pending（5 分钟内有效）
+    _cleanup_totp_pending()
+    _totp_bind_pending[user["id"]] = {"secret": secret, "expires_at": _time.time() + _TOTP_BIND_TTL}
+    return {
+        "status": "pending",
+        "qr": f"data:image/png;base64,{qr_b64}",
+        "secret": secret,
+        "provisioning_uri": provisioning_uri,
+        "issuer": "LobsterClaw",
+        "label": username,
+        "ttl": _TOTP_BIND_TTL,
+    }
+
+
+@router.post("/totp/confirm")
+async def mu_totp_confirm(request: Request, body: TOTPConfirmRequest, user: dict = Depends(get_mu_user)):
+    ensure_db()
+    ip = request.client.host if request.client else ""
+    _cleanup_totp_pending()
+    pending = _totp_bind_pending.get(user["id"])
+    if not pending or pending["expires_at"] < _time.time():
+        raise HTTPException(status_code=400, detail="绑定已过期，请重新生成")
+    if not _verify_totp_code(pending["secret"], body.totp.strip()):
+        tools.log_operation(user["id"], "totp_confirm_failed",
+                            f"{user['username']} TOTP 确认码错误", success=False, ip=ip)
+        raise HTTPException(status_code=401, detail="验证码错误，请重试")
+    # 验证通过，正式启用
+    user_store.set_totp_secret(user["id"], pending["secret"])
+    user_store.enable_totp(user["id"])
+    del _totp_bind_pending[user["id"]]
+    tools.log_operation(user["id"], "totp_enabled",
+                        f"{user['username']} 启用微软 Authenticator", ip=ip)
+    return {"status": "success", "message": "已启用微软 Authenticator"}
+
+
+@router.post("/totp/disable")
+async def mu_totp_disable(request: Request, body: TOTPDisableRequest, user: dict = Depends(get_mu_user)):
+    ensure_db()
+    ip = request.client.host if request.client else ""
+    row = user_store.get_by_id(user["id"])
+    if not row or not row["totp_enabled"]:
+        raise HTTPException(status_code=400, detail="TOTP 未启用")
+    if not verify_password(body.password, row["salt"], row["password_hash"]):
+        tools.log_operation(user["id"], "totp_disable_failed",
+                            f"{user['username']} 解绑密码错误", success=False, ip=ip)
+        raise HTTPException(status_code=401, detail="密码错误")
+    user_store.disable_totp(user["id"])
+    tools.log_operation(user["id"], "totp_disabled",
+                        f"{user['username']} 关闭微软 Authenticator", ip=ip)
+    return {"status": "success", "message": "已关闭微软 Authenticator"}
 
 
 @router.post("/logout")
@@ -124,11 +317,51 @@ async def mu_logout(request: Request):
 class MuDirectLoginRequest(BaseModel):
     username: str
     display_name: str
+    login_token: Optional[str] = None  # 平台登录 token，存入 session 供调用平台能力
 
 
 @router.post("/login/direct")
 async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
-    """按用户名直接登录；若用户不存在则自动新建（密码固定为 用户名+sy），已存在则直接登录。"""
+    """按用户名直接登录；若用户不存在则自动新建（密码固定为 用户名+sy），已存在则直接登录。
+
+    来源校验：环境变量 DIRECT_LOGIN_ALLOWED_ORIGINS 配置允许的 Origin 列表（逗号分隔）。
+    若未配置则禁止跨域调用（仅允许同源请求）。
+    """
+    # ---- 来源校验（支持 * 通配符，如 *.jbysoft.com）----
+    allowed_origins = [o.strip().lower() for o in os.environ.get("DIRECT_LOGIN_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    origin = (request.headers.get("origin") or "").lower()
+    referer = (request.headers.get("referer") or "").lower()
+
+    def _origin_allowed(o: str) -> bool:
+        for a in allowed_origins:
+            if a == o:
+                return True
+            if a.startswith("*."):
+                if o.endswith(a[1:]):  # *.jbysoft.com → .jbysoft.com
+                    return True
+        return False
+
+    # Origin 为 null（file:// 打开 HTML）→ 放行，记录日志
+    if origin == "null":
+        tools.log_operation(0, "login_direct_file", f"file:// 请求（Origin=null）", ip=request.client.host if request.client else "")
+    elif origin:
+        # 有 Origin 且非 null → 跨域请求
+        if allowed_origins:
+            if _origin_allowed(origin):
+                pass  # 允许
+            else:
+                tools.log_operation(0, "login_direct_blocked", f"来源被拒绝: {origin}", success=False,
+                                    ip=request.client.host if request.client else "")
+                raise HTTPException(status_code=403, detail="来源不被允许")
+        else:
+            # 未配置允许列表 → 拒绝所有跨域请求
+            tools.log_operation(0, "login_direct_blocked", f"跨域请求被拒绝(未配置允许列表): {origin}", success=False,
+                                ip=request.client.host if request.client else "")
+            raise HTTPException(status_code=403, detail="来源不被允许")
+    # origin 为空（同源请求）→ 放行
+    if not origin and referer:
+        tools.log_operation(0, "login_direct_referer", f"Referer: {referer}", ip=request.client.host if request.client else "")
+
     ensure_db()
     username = (body.username or "").strip()
     display_name = (body.display_name or "").strip()
@@ -159,11 +392,13 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
 
     ip = request.client.host if request.client else ""
     request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"]}
+    if body.login_token:
+        request.session["mu_login_token"] = body.login_token
     user_store.update_last_login(row["id"])
     tools.log_operation(row["id"], "login", f"{row['username']} 登录成功" + ("（自动创建账号）" if created else ""), ip=ip)
     return {
         "status": "success",
-        "user": {"id": row["id"], "username": row["username"], "role": row["role"]},
+        "user": {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]},
         "created": created,
     }
 
@@ -187,6 +422,14 @@ class AdminUserUpdate(BaseModel):
     display_name: Optional[str] = None
     disabled: Optional[bool] = None
     new_password: Optional[str] = None
+
+
+class SuggestionCreate(BaseModel):
+    content: str
+
+
+class SuggestionReply(BaseModel):
+    reply: str
 
 
 @router.get("/admin/users")
@@ -289,7 +532,7 @@ async def admin_list_logs(
             f"SELECT COUNT(*) c FROM mu_operation_logs l WHERE {where}", params
         ).fetchone()["c"]
         rows = conn.execute(
-            f"SELECT l.id, l.user_id, l.operation, l.detail, l.success, l.ip, l.created_at, u.username "
+            f"SELECT l.id, l.user_id, l.operation, l.detail, l.success, l.ip, l.created_at, u.username, u.display_name "
             f"FROM mu_operation_logs l LEFT JOIN users u ON u.id = l.user_id "
             f"WHERE {where} ORDER BY l.id DESC LIMIT ? OFFSET ?",
             params + [limit, offset],
@@ -300,6 +543,7 @@ async def admin_list_logs(
     for log in logs:
         # user_id=0 为登录失败等无归属记录
         log["username"] = log["username"] or (f"未知用户({log['user_id']})" if log["user_id"] else "未记录")
+        log["display_name"] = log.get("display_name") or log["username"]
     return {"success": True, "logs": logs, "total": total}
 
 
@@ -338,6 +582,233 @@ async def admin_clear_logs(
         conn.close()
     scope = f"用户 {user_id}" if user_id is not None else "全部"
     tools.log_operation(admin["id"], "admin:clear_logs", f"清空{scope}日志（{deleted} 条）")
+    return {"success": True, "deleted": deleted}
+
+
+# ============ 接口访问日志（仅管理员） ============
+
+@router.get("/admin/api-access-logs")
+async def admin_api_access_logs(
+    user_id: Optional[int] = None,
+    path: Optional[str] = None,
+    status: Optional[int] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    admin: dict = Depends(require_admin),
+):
+    """管理员查询接口访问日志（可按用户/路径/状态码/时间范围筛选，分页）"""
+    ensure_db()
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
+    where = "1=1"
+    params: list = []
+    if user_id is not None:
+        where += " AND l.user_id = ?"
+        params.append(user_id)
+    if path:
+        where += " AND l.path LIKE ?"
+        params.append(f"%{path}%")
+    if status is not None:
+        where += " AND l.status = ?"
+        params.append(status)
+    if start_time:
+        where += " AND l.created_at >= ?"
+        params.append(start_time)
+    if end_time:
+        where += " AND l.created_at <= ?"
+        params.append(end_time)
+    conn = db.get_conn()
+    try:
+        total = conn.execute(
+            f"SELECT COUNT(*) c FROM mu_api_access_logs l WHERE {where}", params
+        ).fetchone()["c"]
+        rows = conn.execute(
+            f"SELECT l.id, l.method, l.path, l.status, l.duration_ms, l.ip, l.username, l.user_id, l.auth_type, l.created_at, u.display_name "
+            f"FROM mu_api_access_logs l LEFT JOIN users u ON u.id = l.user_id "
+            f"WHERE {where} ORDER BY l.id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+    finally:
+        conn.close()
+    logs = [dict(r) for r in rows]
+    for log in logs:
+        log["display_name"] = log.get("display_name") or log.get("username") or "-"
+    return {"success": True, "logs": logs, "total": total}
+
+
+@router.delete("/admin/api-access-logs/{log_id}")
+async def admin_delete_api_log(log_id: int, admin: dict = Depends(require_admin)):
+    """管理员删除单条接口访问日志"""
+    ensure_db()
+    conn = db.get_conn()
+    try:
+        cur = conn.execute("DELETE FROM mu_api_access_logs WHERE id = ?", (log_id,))
+        conn.commit()
+        ok = cur.rowcount > 0
+    finally:
+        conn.close()
+    if ok:
+        tools.log_operation(admin["id"], "admin:delete_api_log", f"删除接口日志 #{log_id}")
+    return {"success": ok}
+
+
+@router.delete("/admin/api-access-logs")
+async def admin_clear_api_logs(
+    user_id: Optional[int] = None,
+    admin: dict = Depends(require_admin),
+):
+    """管理员清空接口访问日志（可按用户）"""
+    ensure_db()
+    conn = db.get_conn()
+    try:
+        if user_id is not None:
+            cur = conn.execute("DELETE FROM mu_api_access_logs WHERE user_id = ?", (user_id,))
+        else:
+            cur = conn.execute("DELETE FROM mu_api_access_logs")
+        conn.commit()
+        deleted = cur.rowcount
+    finally:
+        conn.close()
+    scope = f"用户 {user_id}" if user_id is not None else "全部"
+    tools.log_operation(admin["id"], "admin:clear_api_logs", f"清空{scope}接口访问日志（{deleted} 条）")
+    return {"success": True, "deleted": deleted}
+
+
+# ============ 用户建议（非管理员提建议，管理员查看/回复/删除） ============
+
+@router.post("/suggestions")
+async def mu_create_suggestion(body: SuggestionCreate, user: dict = Depends(get_mu_user)):
+    """提交一条建议（任何已登录用户），content 非空"""
+    ensure_db()
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="建议内容不能为空")
+    if len(content) > 2000:
+        raise HTTPException(status_code=400, detail="建议内容过长（最多 2000 字）")
+    conn = db.get_conn()
+    try:
+        cur = conn.execute(
+            "INSERT INTO mu_suggestions (user_id, username, content, status, created_at) "
+            "VALUES (?, ?, ?, 'pending', ?)",
+            (user["id"], user.get("username", ""), content, datetime.now().isoformat()),
+        )
+        conn.commit()
+        sug_id = cur.lastrowid
+    finally:
+        conn.close()
+    tools.log_operation(user["id"], "suggestion:create", f"提交建议 #{sug_id}")
+    return {"success": True, "id": sug_id}
+
+
+@router.get("/suggestions")
+async def mu_my_suggestions(user: dict = Depends(get_mu_user)):
+    """查询自己的建议列表（含管理员回复），按时间倒序"""
+    ensure_db()
+    conn = db.get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, content, status, reply, replied_at, created_at "
+            "FROM mu_suggestions WHERE user_id = ? ORDER BY id DESC LIMIT 200",
+            (user["id"],),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {"success": True, "suggestions": [dict(r) for r in rows]}
+
+
+@router.get("/admin/suggestions")
+async def admin_list_suggestions(
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    admin: dict = Depends(require_admin),
+):
+    """管理员查询全部建议（可按状态筛选，分页）"""
+    ensure_db()
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
+    where = "1=1"
+    params: list = []
+    if status:
+        where += " AND s.status = ?"
+        params.append(status)
+    conn = db.get_conn()
+    try:
+        total = conn.execute(f"SELECT COUNT(*) c FROM mu_suggestions s WHERE {where}", params).fetchone()["c"]
+        rows = conn.execute(
+            f"SELECT s.id, s.user_id, s.username, s.content, s.status, s.reply, s.replied_by, s.replied_at, s.created_at, u.display_name "
+            f"FROM mu_suggestions s LEFT JOIN users u ON u.id = s.user_id "
+            f"WHERE {where} ORDER BY s.id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+    finally:
+        conn.close()
+    sugs = [dict(r) for r in rows]
+    for s in sugs:
+        s["display_name"] = s.get("display_name") or s.get("username") or f"用户#{s.get('user_id')}"
+    return {"success": True, "suggestions": sugs, "total": total}
+
+
+@router.put("/admin/suggestions/{sug_id}/reply")
+async def admin_reply_suggestion(sug_id: int, body: SuggestionReply, admin: dict = Depends(require_admin)):
+    """管理员回复建议（status 置为 replied，可多次回复覆盖）"""
+    ensure_db()
+    reply = (body.reply or "").strip()
+    if not reply:
+        raise HTTPException(status_code=400, detail="回复内容不能为空")
+    conn = db.get_conn()
+    try:
+        cur = conn.execute(
+            "UPDATE mu_suggestions SET reply = ?, status = 'replied', replied_by = ?, replied_at = ? "
+            "WHERE id = ?",
+            (reply, admin["id"], datetime.now().isoformat(), sug_id),
+        )
+        conn.commit()
+        ok = cur.rowcount > 0
+    finally:
+        conn.close()
+    if ok:
+        tools.log_operation(admin["id"], "admin:reply_suggestion", f"回复建议 #{sug_id}")
+    return {"success": ok}
+
+
+@router.delete("/admin/suggestions/{sug_id}")
+async def admin_delete_suggestion(sug_id: int, admin: dict = Depends(require_admin)):
+    """管理员删除单条建议"""
+    ensure_db()
+    conn = db.get_conn()
+    try:
+        cur = conn.execute("DELETE FROM mu_suggestions WHERE id = ?", (sug_id,))
+        conn.commit()
+        ok = cur.rowcount > 0
+    finally:
+        conn.close()
+    if ok:
+        tools.log_operation(admin["id"], "admin:delete_suggestion", f"删除建议 #{sug_id}")
+    return {"success": ok}
+
+
+@router.delete("/admin/suggestions")
+async def admin_clear_suggestions(
+    status: Optional[str] = None,
+    admin: dict = Depends(require_admin),
+):
+    """管理员清空建议（可按状态，如 pending/replied）"""
+    ensure_db()
+    conn = db.get_conn()
+    try:
+        if status:
+            cur = conn.execute("DELETE FROM mu_suggestions WHERE status = ?", (status,))
+        else:
+            cur = conn.execute("DELETE FROM mu_suggestions")
+        conn.commit()
+        deleted = cur.rowcount
+    finally:
+        conn.close()
+    scope = f"{status} 状态" if status else "全部"
+    tools.log_operation(admin["id"], "admin:clear_suggestions", f"清空{scope}建议（{deleted} 条）")
     return {"success": True, "deleted": deleted}
 
 
@@ -676,34 +1147,37 @@ class WebSearchRequest(BaseModel):
 
 @router.post("/exec")
 async def mu_exec(body: ExecCommandRequest, user: dict = Depends(check_user_rate)):
-    from lobster_mu import tools
-    if not tools.is_command_safe(body.command):
-        tools.log_operation(user["id"], "exec", body.command[:100], success=False, error="危险命令")
-        return {"success": False, "error": "危险命令禁止执行"}
-    result = await _async_shell(body.command, body.timeout)
-    tools.log_operation(user["id"], "exec", body.command[:100], success=result.get("success", False))
-    return result
-
-
-async def _async_shell(command: str, timeout: int) -> Dict[str, Any]:
+    """HTTP 命令执行端点（spec §2.3 T5）：
+    复用 exec_cmd 的白名单+黑名单校验（修复现状 /exec 无白名单缺口），
+    再经沙箱执行器取结构化结果（user 角色走 Docker 沙箱，admin 直通）。"""
     import asyncio
-    import subprocess as _sp
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            command, stdout=_sp.PIPE, stderr=_sp.PIPE, shell=True,
-            cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        return {
-            "success": True,
-            "stdout": stdout.decode('utf-8', errors='replace'),
-            "stderr": stderr.decode('utf-8', errors='replace'),
-            "return_code": proc.returncode,
-        }
-    except asyncio.TimeoutError:
-        return {"success": False, "error": f"命令执行超时（{timeout}秒）"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    from lobster_mu import tools
+    uid = user["id"]
+    # 1. 白名单+黑名单校验（与 Agent exec 工具一致）
+    if not body.command or not body.command.strip():
+        return {"success": False, "error": "命令不能为空"}
+    cmd_lower = body.command.strip().lower().split()[0]
+    if cmd_lower in tools.DANGEROUS_COMMANDS:
+        tools.log_operation(uid, "exec", body.command[:100], success=False, error="危险命令")
+        return {"success": False, "error": f"危险命令禁止执行: {cmd_lower}"}
+    if cmd_lower not in tools.ALLOWED_COMMANDS:
+        tools.log_operation(uid, "exec", body.command[:100], success=False, error="命令不在允许列表")
+        return {"success": False, "error": f"命令不在允许列表中: {cmd_lower}"}
+    if not tools.is_command_safe(body.command):
+        tools.log_operation(uid, "exec", body.command[:100], success=False, error="危险命令")
+        return {"success": False, "error": "危险命令禁止执行"}
+    # 2. 沙箱执行（同步 exec_shell 放线程池避免阻塞事件循环）
+    loop = asyncio.get_event_loop()
+    sr = await loop.run_in_executor(
+        None, lambda: tools.execute_shell_command(body.command, body.timeout, uid, raw=True)
+    )
+    tools.log_operation(uid, "exec", body.command[:100], success=sr.success,
+                        error=sr.error or "")
+    d = {"success": sr.success, "stdout": sr.stdout, "stderr": sr.stderr,
+         "return_code": sr.return_code}
+    if sr.error:
+        d["error"] = sr.error
+    return d
 
 
 @router.post("/read_file")

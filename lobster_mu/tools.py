@@ -67,30 +67,25 @@ def is_command_safe(command: str) -> bool:
     return True
 
 
-def execute_shell_command(command: str, timeout: int = 30) -> Dict[str, Any]:
-    """执行shell命令（同步实现，语义与原版一致，输出按 utf-8 解码）"""
-    try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            timeout=timeout,
-            cwd=str(BASE_DIR)
-        )
-        return {
-            "success": True,
-            "stdout": proc.stdout.decode('utf-8', errors='replace'),
-            "stderr": proc.stderr.decode('utf-8', errors='replace'),
-            "return_code": proc.returncode
-        }
-    except subprocess.TimeoutExpired:
-        return {"success": False, "error": f"命令执行超时（{timeout}秒）"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+def execute_shell_command(command: str, timeout: int = 30, user_id: int = 0,
+                          raw: bool = False):
+    """执行shell命令（同步实现，语义与原版一致，输出按 utf-8 解码）。
+    user_id 用于沙箱角色分派（spec §2.3）：
+    - raw=False: 返回 dict {success, stdout, stderr, return_code, error}（结构不变）
+    - raw=True:  返回 sandbox.SandboxResult（供路由层取结构化数据）"""
+    from lobster_mu import sandbox
+    sr = sandbox.get_executor(user_id).exec_shell(command, user_id=user_id, timeout=timeout)
+    if raw:
+        return sr
+    d = {"success": sr.success, "stdout": sr.stdout, "stderr": sr.stderr,
+         "return_code": sr.return_code}
+    if sr.error:
+        d["error"] = sr.error
+    return d
 
 
-def exec_cmd(command: str) -> str:
-    """exec 工具：危险命令黑名单 + 允许命令白名单双重校验后执行"""
+def exec_cmd(command: str, user_id: int = 0) -> str:
+    """exec 工具：危险命令黑名单 + 允许命令白名单双重校验后执行（沙箱隔离）"""
     if not command or not command.strip():
         return "❌ 命令不能为空"
     cmd_lower = command.strip().lower().split()[0]
@@ -101,7 +96,7 @@ def exec_cmd(command: str) -> str:
     if not is_command_safe(command):
         return "❌ 安全警告：该命令不在白名单中，禁止执行"
 
-    result = execute_shell_command(command, timeout=30)
+    result = execute_shell_command(command, timeout=30, user_id=user_id)
     if not result.get("success"):
         return f"❌ 命令执行失败: {result.get('error', '未知错误')}"
 
@@ -488,7 +483,7 @@ def execute_tool_call(tool_call: dict, user_id: int) -> str:
     if tool == "generate_pdf":
         result = _tool_generate_pdf(tool_call.get("content", ""), user_id)
     elif tool == "exec":
-        result = exec_cmd(tool_call.get("command", ""))
+        result = exec_cmd(tool_call.get("command", ""), user_id)
     elif tool == "read_file":
         result = read_file(tool_call.get("path", ""), user_id)
     elif tool == "write_file":

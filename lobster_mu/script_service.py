@@ -578,44 +578,25 @@ def _decode_subprocess_output(data: bytes) -> str:
 
 
 def execute_python_script(user_id: int, code: str, timeout: int = 60) -> Dict[str, Any]:
-    """执行Python脚本（按 user_id 隔离）：脚本写入该用户产物目录后以 python -B 执行，
-    packages/ 注入 sys.path 与 PYTHONPATH，新生成文件重命名后归档到该用户目录。"""
+    """执行Python脚本（按 user_id 隔离，spec §2.3 T6）：
+    脚本经沙箱执行器执行（user 角色走 Docker 沙箱，admin 直通），
+    新生成文件重命名后归档到该用户目录，归档后清理非白名单残留。"""
     work_dir = files_dir(user_id)
-    script_path = os.path.join(work_dir, gen_filename("script.py"))
     try:
-        # 脚本先写到用户产物目录再执行
-        with open(script_path, 'w', encoding='utf-8') as f:
-            f.write(code)
+        # 记录执行前目录中的文件
+        before_files = set(os.listdir(work_dir))
 
-        # 设置环境变量，确保子进程使用UTF-8编码
-        env = os.environ.copy()
-        env['PYTHONIOENCODING'] = 'utf-8'
-        env['PYTHONUTF8'] = '1'
-
-        # packages/ 注入当前进程 sys.path，保证已安装包可被导入
+        # packages/ 注入当前进程 sys.path，保证已安装包可被导入（主进程侧）
         if PACKAGES_DIR not in sys.path:
             sys.path.insert(0, PACKAGES_DIR)
 
-        # 设置PYTHONPATH环境变量，供子进程使用
-        current_pythonpath = env.get('PYTHONPATH', '')
-        if current_pythonpath:
-            env['PYTHONPATH'] = PACKAGES_DIR + os.pathsep + current_pythonpath
-        else:
-            env['PYTHONPATH'] = PACKAGES_DIR
-
-        # 记录执行前目录中的文件（脚本文件本身已包含在内）
-        before_files = set(os.listdir(work_dir))
-
-        # 使用subprocess执行脚本，捕获输出
-        proc = subprocess.run(
-            ['python', '-B', script_path],
-            capture_output=True,
-            timeout=timeout,
-            cwd=work_dir,
-            env=env
+        # 沙箱执行（spec T6）：替换原 subprocess.run(['python','-B',script_path])
+        from lobster_mu import sandbox
+        sr = sandbox.get_executor(user_id).exec_script(
+            code, user_id=user_id, timeout=timeout, work_dir=work_dir
         )
-        stdout_output = _decode_subprocess_output(proc.stdout or b'')
-        stderr_output = _decode_subprocess_output(proc.stderr or b'')
+        stdout_output = sr.stdout
+        stderr_output = sr.stderr
 
         # 检测脚本执行后新生成的文件（白名单扩展名），重命名归档
         generated_files = []
@@ -635,7 +616,29 @@ def execute_python_script(user_id: int, code: str, timeout: int = 60) -> Dict[st
                         "download_url": f"/api/lobster-mu/script/files/download/{new_filename}"
                     })
 
+        # 归档后残留清理（spec §4.1 写回策略）：
+        # 删除 /files 中非白名单且不在 before_files 的残留文件
+        for entry in os.listdir(work_dir):
+            entry_path = os.path.join(work_dir, entry)
+            if not os.path.isfile(entry_path):
+                continue
+            if entry in before_files:
+                continue
+            ext = os.path.splitext(entry)[1].lower()
+            if ext not in ALLOWED_FILE_EXTENSIONS:
+                try:
+                    os.unlink(entry_path)
+                except OSError:
+                    pass
+
         # 构建结果
+        if not sr.success and sr.error:
+            # 沙箱级错误（不可用/超时/执行异常）
+            return {
+                "success": False,
+                "result": f"❌ 脚本执行失败: {sr.error}\n",
+                "generated_files": generated_files
+            }
         result_str = ""
         if stdout_output:
             result_str += stdout_output
@@ -643,9 +646,11 @@ def execute_python_script(user_id: int, code: str, timeout: int = 60) -> Dict[st
             result_str += stderr_output
         if not stdout_output and not stderr_output:
             result_str += "脚本执行完成，无输出\n"
+        if sr.return_code != 0:
+            result_str += f"\n(退出码: {sr.return_code})"
 
         return {
-            "success": True,
+            "success": sr.success,
             "result": result_str,
             "generated_files": generated_files
         }
@@ -663,12 +668,6 @@ def execute_python_script(user_id: int, code: str, timeout: int = 60) -> Dict[st
             "result": f"❌ 执行错误: {str(e)}\n\n{traceback.format_exc()}",
             "generated_files": []
         }
-    finally:
-        try:
-            if os.path.exists(script_path):
-                os.unlink(script_path)
-        except OSError:
-            pass
 
 
 # ============ 产物文件 ============

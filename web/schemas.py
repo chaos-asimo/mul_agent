@@ -55,3 +55,11 @@ class VideoGenerateRequest(BaseModel):
     frame_rate: int = 24
     image_url: Optional[str] = None
     negative_prompt: str = ""
+
+    def _validate_num_frames(self) -> int:
+        """API 要求 num_frames = 8n + 1（如 9, 17, 25, 33, 41, 49, ...）"""
+        if self.num_frames < 1 or (self.num_frames - 1) % 8 != 0:
+            n = round((self.num_frames - 1) / 8)
+            n = max(0, n)
+            self.num_frames = 8 * n + 1
+        return self.num_frames

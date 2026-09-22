@@ -767,7 +767,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                 video_data = {
                     "model": model.model_name,
                     "prompt": prompt,
-                    "width": 1024, "height": 576, "num_frames": 48, "frame_rate": 8,
+                    "width": 1024, "height": 576, "num_frames": 49, "frame_rate": 8,
                 }
                 response = adapter.generate(**video_data)
                 if response.success and (hasattr(response, 'video_id') or hasattr(response, 'task_id')):

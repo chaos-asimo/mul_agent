@@ -5,26 +5,55 @@ services:
       dockerfile: Dockerfile
     container_name: mul-agent
     restart: unless-stopped
+    # 端口暴露模式：容器内应用监听 0.0.0.0:8888，映射到宿主机 8888
+    # 访问地址：http://服务器IP:8888
     ports:
-      - "${HOST_PORT:-8888}:8888"
+      - "8888:8888"
+    # 把 shineyue.ai 打进容器内 /etc/hosts
+    extra_hosts:
+      - "shineyue.ai:10.0.87.165"
     working_dir: /app
     environment:
       - TZ=Asia/Shanghai
+      - LOBSTER_SANDBOX_IMAGE=${LOBSTER_SANDBOX_IMAGE:-lobster-claw-sandbox:local}
+      - API_KEYS=${API_KEYS:-}
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY:-mul_agent_secret_key_2026}
+      - MU_ADMIN_USERNAME=${MU_ADMIN_USERNAME:-shineyue}
+      - MU_ADMIN_PASSWORD=${MU_ADMIN_PASSWORD:-shineyue@2026}
     volumes:
       # 持久化数据（可写）
       - ./data:/app/data
       - ./uploads:/app/uploads
       - ./logs:/app/logs
       - packages_data:/app/packages
+      # RAG embedding 模型缓存（持久化，避免每次重启重下；镜像已预载默认模型）
+      - hf_cache:/root/.cache/huggingface
       # 用户文件目录
       - ./web/static/uploads:/app/web/static/uploads
       - ./web/static/lobster-claw-files:/app/web/static/lobster-claw-files
       - ./web/static/mu-files:/app/web/static/mu-files
-      # 配置文件（只读挂载，在宿主机编辑）
-      - ./models.json:/app/models.json:ro
-      - ./agents.json:/app/agents.json:ro
-      - ./skills.json:/app/skills.json:ro
-      - ./search_engines.json:/app/search_engines.json:ro
+      # 配置文件（读写挂载，容器内可直接编辑；改动即时生效无需重建镜像）
+      - ./models.json:/app/models.json
+      - ./agents.json:/app/agents.json
+      - ./skills.json:/app/skills.json
+      - ./search_engines.json:/app/search_engines.json
+
+  # 用户命令沙箱镜像（仅构建不常驻，供 mul-agent 直跑时 docker run 调用）
+  lobster-sandbox:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+      # 中国网络无法直连 Docker Hub 时，用国内镜像源覆盖基础镜像，例如：
+      #   BASE_IMAGE=docker.xuanyuan.me/langgenius/dify-agent-local-sandbox:1.16.1 docker compose build lobster-sandbox
+      # 可用源（2026 实测）：docker.xuanyuan.me / docker.1ms.run / docker.m.daocloud.io / docker.aityp.com
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-langgenius/dify-agent-local-sandbox:1.16.1}
+    image: ${LOBSTER_SANDBOX_IMAGE:-lobster-claw-sandbox:local}
+    container_name: lobster-sandbox-builder
+    restart: "no"
+    # 无 ports / volumes：纯构建目标，docker compose build 产出镜像后即弃
+    entrypoint: ["true"]
 
 volumes:
   packages_data:
+  hf_cache:

@@ -157,3 +157,37 @@ def count_admins_excluding(user_id: int) -> int:
         ).fetchone()["c"]
     finally:
         conn.close()
+
+
+# ============ TOTP（微软 Authenticator） ============
+
+def set_totp_secret(user_id: int, secret: str):
+    """设置 TOTP 密钥（临时保存，未启用前 totp_enabled=0）"""
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE users SET totp_secret = ?, totp_enabled = 0 WHERE id = ?",
+                     (secret, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def enable_totp(user_id: int):
+    """启用 TOTP（确认码验证通过后调用）"""
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE users SET totp_enabled = 1 WHERE id = ?", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def disable_totp(user_id: int):
+    """禁用 TOTP（清空密钥）"""
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE users SET totp_enabled = 0, totp_secret = '' WHERE id = ?",
+                     (user_id,))
+        conn.commit()
+    finally:
+        conn.close()

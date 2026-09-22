@@ -48,8 +48,33 @@ COPY requirements-deploy.txt ./
 RUN pip install --no-cache-dir -r requirements-deploy.txt \
     -i https://pypi.tuna.tsinghua.edu.cn/simple
 
+# RAG 本地向量化依赖
+# torch 2.14.0 从清华源拉取（清华源有 linux manylinux wheel，本机已验证可下载）。
+# CPU 机器上 torch 2.14.0 的 PyPI wheel（含 CUDA 依赖）可正常运行（不加载 CUDA，nvidia 包是可选的）。
+# 构建时多 1-2 分钟下载 torch（~528MB），但无需预打包 wheel，源码包保持精简（~2.6MB）。
+RUN pip install --no-cache-dir \
+    torch==2.14.0 \
+    transformers sentence-transformers huggingface-hub safetensors tokenizers \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# numpy 版本守卫：RAG 依赖可能把 numpy 传递性升级到 2.4+（AVX512 版），
+# 老 CPU（不支持 X86_V2/AVX2）上 import 会崩溃。强制回退到 2.2.6（baseline manylinux2014）。
+RUN python -c "import numpy,sys; v=tuple(int(x) for x in numpy.__version__.split('.')[:2]); print('numpy', numpy.__version__); sys.exit(0 if v<(2,3) else 1)" \
+    || pip install --no-cache-dir "numpy==2.2.6" -i https://pypi.tuna.tsinghua.edu.cn/simple
+
 # COPY 项目源码（.dockerignore 已排除 packages/node_modules/data/logs 等）
 COPY . .
+
+# 构建期预下载 RAG embedding 模型到镜像缓存，避免生产首启时联网下载
+# 默认模型 BAAI/bge-base-zh-v1.5（约 400MB）；可用 ARG 覆盖
+# 用 huggingface-cli 下载（仅拉文件，不加载 torch/model 架构，比 import SentenceTransformer 快）
+# 注意：RUN 用 /bin/sh（dash），不支持 ${var//} bash 扩展，--local-dir 用固定路径
+ARG EMBEDDING_MODEL=BAAI/bge-base-zh-v1.5
+ENV HF_ENDPOINT=https://hf-mirror.com \
+    HF_HOME=/root/.cache/huggingface
+RUN huggingface-cli download "${EMBEDDING_MODEL}" \
+        --local-dir /root/.cache/huggingface/hub/models--BAAI--bge-base-zh-v1.5 \
+    || echo "[WARN] RAG embedding 模型预下载失败，将在首次运行时联网下载（需容器可访问 hf-mirror.com）"
 
 # 从 Stage 1 拷贝前端构建产物
 COPY --from=frontend /build/web/static/v3 ./web/static/v3

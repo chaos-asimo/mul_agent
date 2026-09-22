@@ -1801,7 +1801,7 @@ async def chat_stream(request: ChatStreamRequest):
                     "prompt": prompt,
                     "width": 1024,
                     "height": 576,
-                    "num_frames": 48,
+                    "num_frames": 49,
                     "frame_rate": 8
                 }
                 

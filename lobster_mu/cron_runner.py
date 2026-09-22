@@ -192,8 +192,10 @@ class MuCronScheduler:
 
             timeout = min(task.get("timeout", 300), 300)
             # tools.execute_shell_command 是同步实现，放线程池执行避免阻塞事件循环
+            # spec T7：透传 user_id 用于沙箱角色分派
             result = await asyncio.get_event_loop().run_in_executor(
-                None, functools.partial(tools.execute_shell_command, content, timeout)
+                None, functools.partial(tools.execute_shell_command, content, timeout,
+                                        task["user_id"])
             )
             if result.get("success"):
                 output = result.get("stdout", "")

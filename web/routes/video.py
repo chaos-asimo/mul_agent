@@ -38,6 +38,7 @@ async def generate_video(request: VideoGenerateRequest, managers: dict = Depends
         if not adapter:
             return {"status": "error", "message": "无法创建视频适配器"}
 
+        request._validate_num_frames()
         video_data = {
             "model": model.model_name,
             "prompt": request.prompt,

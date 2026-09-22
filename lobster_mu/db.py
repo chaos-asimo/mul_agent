@@ -17,7 +17,9 @@ DDL = [
         display_name  TEXT    DEFAULT '',
         disabled      INTEGER NOT NULL DEFAULT 0,
         created_at    TEXT    NOT NULL,
-        last_login_at TEXT
+        last_login_at TEXT,
+        totp_secret   TEXT    DEFAULT '',
+        totp_enabled  INTEGER NOT NULL DEFAULT 0
     )""",
     # 聊天会话
     """CREATE TABLE IF NOT EXISTS mu_chat_sessions (
@@ -195,6 +197,36 @@ DDL = [
         UNIQUE(session_id)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_mu_summary_user ON mu_session_summaries(user_id, session_id)",
+    # 接口访问日志（记录所有 /api/lobster-mu 请求，仅管理员可查）
+    """CREATE TABLE IF NOT EXISTS mu_api_access_logs (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        method      TEXT NOT NULL,
+        path        TEXT NOT NULL,
+        status      INTEGER NOT NULL,
+        duration_ms INTEGER DEFAULT 0,
+        ip          TEXT DEFAULT '',
+        username    TEXT DEFAULT '',
+        user_id     INTEGER DEFAULT 0,
+        auth_type   TEXT DEFAULT '',
+        created_at  TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_mu_api_logs_user ON mu_api_access_logs(user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_mu_api_logs_path ON mu_api_access_logs(path)",
+    "CREATE INDEX IF NOT EXISTS idx_mu_api_logs_time ON mu_api_access_logs(created_at DESC)",
+    # 用户建议（非管理员向管理员提建议，管理员可查看/回复/删除）
+    """CREATE TABLE IF NOT EXISTS mu_suggestions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL,
+        username    TEXT NOT NULL DEFAULT '',
+        content     TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'pending',
+        reply       TEXT,
+        replied_by  INTEGER,
+        replied_at  TEXT,
+        created_at  TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_mu_sug_user ON mu_suggestions(user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_mu_sug_status ON mu_suggestions(status, created_at DESC)",
 ]
 
 # 已有库的列迁移：mu_agents 新增人格化字段（avatar/tone），mu_agent_memories 新增来源
@@ -206,6 +238,11 @@ _AGENT_MIGRATION_COLUMNS = [
 
 _MEMO_MIGRATION_COLUMNS = [
     ("source", "TEXT DEFAULT 'manual'"),
+]
+
+_USER_MIGRATION_COLUMNS = [
+    ("totp_secret", "TEXT DEFAULT ''"),
+    ("totp_enabled", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -226,8 +263,9 @@ def init_db():
     try:
         for ddl in DDL:
             conn.execute(ddl)
-        # 已有库迁移：mu_agents / mu_agent_memories 缺失列补齐
-        for table, cols in (("mu_agents", _AGENT_MIGRATION_COLUMNS),
+        # 已有库迁移：users / mu_agents / mu_agent_memories 缺失列补齐
+        for table, cols in (("users", _USER_MIGRATION_COLUMNS),
+                            ("mu_agents", _AGENT_MIGRATION_COLUMNS),
                             ("mu_agent_memories", _MEMO_MIGRATION_COLUMNS)):
             existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
             for col, coldef in cols:
