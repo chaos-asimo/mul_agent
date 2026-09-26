@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search, ArrowLeftRight, Lightbulb, Send, X } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, Smartphone, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search, ArrowLeftRight, Lightbulb, Send, X, BookOpen, Zap } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client'
 import ThemeSwitcher from '../components/ThemeSwitcher'
@@ -99,6 +99,21 @@ function AdminUsers() {
       }
     } catch (e2) {
       setError(e2.message || '删除失败')
+    }
+  }
+
+  const handleDisableTotp = async (u) => {
+    if (!window.confirm(`确定解绑用户 "${u.display_name || u.username}" 的微软 Authenticator 两步认证吗？解绑后该用户登录将不再需要二次验证。`)) return
+    setError('')
+    try {
+      const result = await apiPost(`/admin/users/${u.id}/totp/disable`, {})
+      if (result.status === 'success') {
+        loadUsers()
+      } else {
+        setError(result.detail || result.message || '解绑失败')
+      }
+    } catch (e2) {
+      setError(e2.message || '解绑失败')
     }
   }
 
@@ -489,6 +504,14 @@ function AdminUsers() {
               <Lightbulb className="w-3.5 h-3.5" />
               建议管理
             </button>
+            <Link to="/admin/knowledge" className={btnGhost}>
+              <BookOpen className="w-3.5 h-3.5" />
+              知识库共享
+            </Link>
+            <Link to="/admin/model-speed" className={btnGhost}>
+              <Zap className="w-3.5 h-3.5" />
+              模型速度
+            </Link>
             <button
               onClick={() => setShowCreate(!showCreate)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg t-bg-accent t-hover-accent text-white"
@@ -568,6 +591,7 @@ function AdminUsers() {
                 <th className="px-4 py-3">用户名</th>
                 <th className="px-4 py-3">显示名 / 角色</th>
                 <th className="px-4 py-3">状态</th>
+                <th className="px-4 py-3">两步认证</th>
                 <th className="px-4 py-3">最后登录</th>
                 <th className="px-4 py-3 text-right">操作</th>
               </tr>
@@ -575,13 +599,13 @@ function AdminUsers() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="6" className="px-4 py-10 text-center t-text-faint loading-pulse">
+                  <td colSpan="7" className="px-4 py-10 text-center t-text-faint loading-pulse">
                     加载中...
                   </td>
                 </tr>
               ) : users.length === 0 ? (
                 <tr>
-                  <td colSpan="6" className="px-4 py-10 text-center t-text-faint">
+                  <td colSpan="7" className="px-4 py-10 text-center t-text-faint">
                     暂无用户
                   </td>
                 </tr>
@@ -650,6 +674,16 @@ function AdminUsers() {
                         </span>
                       )}
                     </td>
+                    <td className="px-4 py-3">
+                      {u.totp_enabled ? (
+                        <span className="inline-flex items-center gap-1 text-xs t-text-ok">
+                          <Smartphone className="w-3.5 h-3.5" />
+                          已启用
+                        </span>
+                      ) : (
+                        <span className="text-xs t-text-faint">未启用</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 t-text-faint text-xs">{u.last_login_at || '从未登录'}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2">
@@ -676,6 +710,12 @@ function AdminUsers() {
                                 </>
                               )}
                             </button>
+                            {u.totp_enabled && (
+                              <button onClick={() => handleDisableTotp(u)} className={btnGhost} title="解绑微软 Authenticator 两步认证">
+                                <ShieldOff className="w-3.5 h-3.5" />
+                                解绑认证
+                              </button>
+                            )}
                             {u.id !== user?.id && (
                               <button onClick={() => handleDelete(u)} className={btnDanger}>
                                 <Trash2 className="w-3.5 h-3.5" />

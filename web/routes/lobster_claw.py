@@ -2570,7 +2570,10 @@ async def knowledge_upload(files: List[UploadFile] = File(...)):
             with open(file_path, 'wb') as f:
                 f.write(content)
 
-            result = knowledge_base.add_document(str(file_path), file.filename, len(content))
+            # add_document 内部含本地 embedding（CPU 密集），丢线程池避免阻塞事件循环
+            result = await asyncio.to_thread(
+                knowledge_base.add_document, str(file_path), file.filename, len(content)
+            )
             results.append({
                 'success': True,
                 'doc_id': result['doc_id'],
@@ -2603,7 +2606,10 @@ async def knowledge_search(request: KnowledgeSearchRequest):
     knowledge_base.set_model_manager(ModelManager())
 
     try:
-        results = knowledge_base.search(request.query, top_k=request.top_k, threshold=request.threshold)
+        # search 内含本地 embed_query（CPU 密集），丢线程池避免阻塞事件循环
+        results = await asyncio.to_thread(
+            knowledge_base.search, request.query, request.top_k, request.threshold
+        )
         return {"success": True, "data": results}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -3293,7 +3299,8 @@ async def script_execute(request: ScriptExecuteRequest):
                 "message": f"脚本需要安装以下依赖: {', '.join(missing)}"
             }
         
-        script_result = execute_python_script(code)
+        # execute_python_script 同步跑 subprocess（可能较久），丢线程池避免阻塞事件循环
+        script_result = await asyncio.to_thread(execute_python_script, code)
         
         response = {
             "success": script_result["success"],
@@ -3311,11 +3318,8 @@ class PdfGenerateRequest(BaseModel):
     title: str = "文档"
 
 
-@router.post("/script/generate-pdf")
-async def script_generate_pdf(request: PdfGenerateRequest):
-    content = request.content
-    title = request.title
-    """生成中文PDF文档"""
+def _generate_pdf_sync(content: str, title: str) -> Dict[str, Any]:
+    """同步生成中文 PDF（含 pip 安装 fpdf2 与渲染），供 async 路由经 to_thread 调用"""
     try:
         # 检查fpdf2是否安装
         try:
@@ -3324,9 +3328,9 @@ async def script_generate_pdf(request: PdfGenerateRequest):
             # 自动安装fpdf2
             packages_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'packages')
             os.makedirs(packages_dir, exist_ok=True)
-            
+
             subprocess.run(
-                [sys.executable, '-m', 'pip', 'install', '--target', packages_dir, 
+                [sys.executable, '-m', 'pip', 'install', '--target', packages_dir,
                  '--index-url', 'https://pypi.tuna.tsinghua.edu.cn/simple',
                  '--trusted-host', 'pypi.tuna.tsinghua.edu.cn', 'fpdf2'],
                 capture_output=True,
@@ -3334,20 +3338,20 @@ async def script_generate_pdf(request: PdfGenerateRequest):
                 encoding='utf-8',
                 timeout=120
             )
-            
+
             # 添加到sys.path
             if packages_dir not in sys.path:
                 sys.path.insert(0, packages_dir)
-        
+
         from fpdf import FPDF
-        
+
         # 查找系统中文字体
         def find_chinese_font():
             font_paths = [
                 'C:/Windows/Fonts/msyh.ttc',
                 'C:/Windows/Fonts/simsun.ttc',
-                'C:/Windows/Fonts/simhei.ttf',
-                'C:/Windows/Fonts/kaiu.ttf',
+                'C:/Windows/Fonts/simhei.ttc',
+                'C:/Windows/Fonts/kaiu.ttc',
                 'C:/Windows/Fonts/arialuni.ttf',
                 '/Library/Fonts/Noto Sans CJK SC.ttc',
                 '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
@@ -3357,50 +3361,42 @@ async def script_generate_pdf(request: PdfGenerateRequest):
                 if os.path.exists(font_path):
                     return font_path
             return None
-        
+
         font_path = find_chinese_font()
-        
+
         # 创建PDF对象
         pdf = FPDF()
         pdf.add_page()
-        
+
         if font_path:
             font_name = 'ChineseFont'
-            # 注册常规字体
             pdf.add_font(font_name, '', font_path, uni=True)
-            # 尝试注册粗体字体（如果是ttc文件，需要指定索引）
             try:
-                # 对于ttc字体文件，尝试用索引1作为粗体
                 pdf.add_font(font_name, 'B', font_path, uni=True)
             except:
-                # 如果注册粗体失败，标题就用常规字体
                 pass
         else:
             font_name = 'Arial'
-        
-        # 设置标题（使用常规字体，避免粗体字体未注册的问题）
+
         pdf.set_font(font_name, '', 18)
         pdf.cell(0, 20, title, ln=True, align='C')
-        
-        # 设置正文
+
         pdf.set_font(font_name, '', 12)
         pdf.ln(10)
-        
-        # 处理内容
+
         paragraphs = content.split('\n')
         for para in paragraphs:
             para = para.strip()
             if para:
                 pdf.multi_cell(0, 12, para, align='L')
                 pdf.ln(5)
-        
-        # 保存到文件（使用英文文件名，避免中文路径问题）
+
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"document_{timestamp}.pdf"
         filepath = os.path.join(LOBSTER_CLAW_FILES_DIR, filename)
-        
+
         pdf.output(filepath)
-        
+
         return {
             "success": True,
             "message": f"PDF文件已生成",
@@ -3409,10 +3405,16 @@ async def script_generate_pdf(request: PdfGenerateRequest):
             "download_url": f"/api/lobster-claw/script/files/download/{filename}",
             "font_used": font_path if font_path else "Arial (无中文字体)"
         }
-        
+
     except Exception as e:
         import traceback
         return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
+
+
+@router.post("/script/generate-pdf")
+async def script_generate_pdf(request: PdfGenerateRequest):
+    # pip 安装与 FPDF 渲染均为 CPU/阻塞操作，丢线程池避免阻塞事件循环
+    return await asyncio.to_thread(_generate_pdf_sync, request.content, request.title)
 
 
 def extract_important_facts(user_message, ai_response):

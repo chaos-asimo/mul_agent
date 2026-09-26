@@ -84,7 +84,7 @@ function Login() {
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl t-bg-accent mb-4 shadow-lg shadow-black/30">
             <Shell className="w-8 h-8 text-white" />
           </div>
-          <h1 className="text-2xl font-bold t-text">龙虾Claw 多用户版</h1>
+          <h1 className="text-2xl font-bold t-text">个人助理多用户版</h1>
           <p className="t-text-faint mt-2">Multi-User Lobster Claw · v3</p>
         </div>
 

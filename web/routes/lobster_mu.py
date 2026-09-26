@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """多用户龙虾Claw子项目 - 路由层（前缀 /api/lobster-mu）"""
 import os
+import asyncio
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request, Depends, File, UploadFile, Form
 from pydantic import BaseModel
@@ -186,7 +187,7 @@ async def mu_login(request: Request, body: MuLoginRequest):
                 "totp": {"issuer": "LobsterClaw", "label": row["username"]}}
 
     # 未启用 TOTP：直接登录
-    request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"]}
+    request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}
     user_store.update_last_login(row["id"])
     tools.log_operation(row["id"], "login", f"{row['username']} 登录成功", ip=ip)
     return {"status": "success", "user": {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}}
@@ -212,7 +213,8 @@ async def mu_login_2fa(request: Request, body: MuTwoFactorRequest):
     # 验证通过，清除 pending + 登录
     del _totp_pending[body.username]
     login_limiter.record_success(ip, body.username)
-    request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"]}
+    request.session.pop("mu_2fa_pending", None)
+    request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}
     user_store.update_last_login(row["id"])
     tools.log_operation(row["id"], "login_2fa_success",
                         f"{row['username']} 二次验证登录成功", ip=ip)
@@ -309,6 +311,7 @@ async def mu_logout(request: Request):
     if u:
         tools.log_operation(uid, "logout", f"{username} 退出登录", ip=ip)
     request.session.pop("mu_user", None)
+    request.session.pop("mu_2fa_pending", None)
     return {"status": "success", "message": "退出成功"}
 
 
@@ -391,7 +394,30 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
         raise HTTPException(status_code=403, detail="账号已禁用")
 
     ip = request.client.host if request.client else ""
-    request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"]}
+
+    # 已启用微软 Authenticator：建立“待二次验证”受限会话，返回 success 让外部页面跳转，
+    # 跳转后由前端接管弹出验证窗口；受限会话不授予业务访问权（get_mu_user 会拦截）
+    if row["totp_enabled"] and row["totp_secret"]:
+        _cleanup_totp_pending()
+        _totp_pending[row["username"]] = {
+            "user_id": row["id"],
+            "expires_at": _time.time() + _TOTP_PENDING_TTL,
+        }
+        tools.log_operation(row["id"], "login_2fa_required",
+                            f"{row['username']} direct 登录需二次验证", ip=ip)
+        pending_user = {"id": row["id"], "username": row["username"], "role": row["role"],
+                        "display_name": row["display_name"] or row["username"]}
+        # 关键：必须清除可能残留的 mu_user（用户之前登录过、cookie 仍有效时），
+        # 否则 /me 会优先返回 mu_user 而看不到 needs_2fa，导致 2FA 被绕过、直接进工作台
+        request.session.pop("mu_user", None)
+        request.session["mu_2fa_pending"] = pending_user
+        if body.login_token:
+            request.session["mu_login_token"] = body.login_token
+        user_store.update_last_login(row["id"])
+        return {"status": "success", "user": pending_user, "needs_2fa": True, "created": created}
+
+    request.session.pop("mu_2fa_pending", None)
+    request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}
     if body.login_token:
         request.session["mu_login_token"] = body.login_token
     user_store.update_last_login(row["id"])
@@ -404,8 +430,20 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
 
 
 @router.get("/me")
-async def mu_me(user: dict = Depends(get_mu_user)):
-    return {"user": user}
+async def mu_me(request: Request):
+    """返回当前登录态。优先识别“待二次验证”受限会话（mu_2fa_pending），
+    避免残留的 mu_user 遮蔽 2FA 需求导致绕过；受限会话不携带 mu_user，
+    其余业务接口会被 get_mu_user 拦截。"""
+    pending = request.session.get("mu_2fa_pending")
+    if pending:
+        return {"user": pending, "needs_2fa": True}
+    u = request.session.get("mu_user")
+    if u:
+        if user_store.is_disabled(u["id"]):
+            request.session.pop("mu_user", None)
+            raise HTTPException(status_code=401, detail="账号已禁用")
+        return {"user": u}
+    raise HTTPException(status_code=401, detail="未登录")
 
 
 # ============ 管理员用户管理（仅管理员创建账号） ============
@@ -482,6 +520,23 @@ async def admin_delete_user(user_id: int, admin: dict = Depends(require_admin)):
     if not ok:
         raise HTTPException(status_code=404, detail="用户不存在")
     return {"status": "success"}
+
+
+@router.post("/admin/users/{user_id}/totp/disable")
+async def admin_disable_user_totp(user_id: int, request: Request, admin: dict = Depends(require_admin)):
+    """管理员强制解绑指定用户的微软 Authenticator 两步认证（无需该用户密码）。
+    用于用户丢失手机/换设备后无法自助解绑的场景。"""
+    ensure_db()
+    row = user_store.get_by_id(user_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if not row["totp_enabled"]:
+        raise HTTPException(status_code=400, detail="该用户未启用两步认证")
+    ip = request.client.host if request.client else ""
+    user_store.disable_totp(user_id)
+    tools.log_operation(admin["id"], "admin:totp_disabled",
+                        f"管理员解绑用户 {row['username']} 的两步认证", ip=ip)
+    return {"status": "success", "message": f"已解绑 {row['username']} 的两步认证"}
 
 
 @router.get("/admin/users/{user_id}/sessions")
@@ -1685,9 +1740,13 @@ async def mu_knowledge_upload(files: List[UploadFile] = File(...),
             with open(file_path, "wb") as f:
                 f.write(content)
 
-            text_content = extract_text(file_path, ext, raw=content)
-            result = knowledge_store.add_document(user["id"], file.filename, len(content),
-                                                  text_content)
+            # 文本抽取与本地 embedding 均为 CPU 密集，必须丢到线程池执行，
+            # 避免阻塞 asyncio 事件循环导致全站不可用。
+            text_content = await asyncio.to_thread(extract_text, file_path, ext, raw=content)
+            result = await asyncio.to_thread(
+                knowledge_store.add_document,
+                user["id"], file.filename, len(content), text_content,
+            )
             results.append({
                 "success": True,
                 "doc_id": result["doc_id"],
@@ -1719,8 +1778,10 @@ async def mu_knowledge_delete(doc_id: str, user: dict = Depends(get_mu_user)):
 async def mu_knowledge_search(body: KnowledgeMuSearchRequest,
                               user: dict = Depends(get_mu_user)):
     try:
-        results = knowledge_store.search(user["id"], body.query, top_k=body.top_k,
-                                         threshold=body.threshold)
+        # search 内含本地 embed_query（CPU 密集），丢线程池避免阻塞事件循环
+        results = await asyncio.to_thread(
+            knowledge_store.search, user["id"], body.query, body.top_k, body.threshold
+        )
         return {"success": True, "data": results}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1729,6 +1790,30 @@ async def mu_knowledge_search(body: KnowledgeMuSearchRequest,
 @router.get("/knowledge/stats")
 async def mu_knowledge_stats(user: dict = Depends(get_mu_user)):
     return {"success": True, "data": knowledge_store.stats(user["id"])}
+
+
+@router.get("/admin/knowledge")
+async def admin_knowledge_overview(admin: dict = Depends(require_admin)):
+    """管理员查看所有用户的知识库情况（含共享文档统计）"""
+    ensure_db()
+    return {"success": True, "data": knowledge_store.admin_all_users_knowledge()}
+
+
+@router.get("/admin/model-speed")
+async def admin_model_speed(apply: int = 0, admin: dict = Depends(require_admin)):
+    """管理员查看各模型首字输出速度（TTFT）排名；?apply=1 时立即切换默认模型到最快"""
+    from llm.model_speed_stats import get_model_speed_ranking, apply_fastest_default
+    from models.model_manager import ModelManager
+    ranking = get_model_speed_ranking()
+    mm = ModelManager()
+    text_models = [m for m in mm.get_all() if m.api_key and m.model_type == "text"]
+    current_default = text_models[0].model_name if text_models else None
+    switched_to = apply_fastest_default() if apply else None
+    return {"success": True, "data": {
+        "ranking": ranking,
+        "current_default": current_default,
+        "switched_to": switched_to,
+    }}
 
 
 # ============ Skills（全局只读 + 以用户身份执行） ============

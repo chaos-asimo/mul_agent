@@ -23,8 +23,9 @@ class ModelCallLog:
     completion_tokens: int
     duration: float  # 调用耗时（秒）
     tokens_per_second: float = 0.0  # 每秒token输出量
+    ttft: float = 0.0  # 首字输出耗时（Time To First Token，秒）
     error: Optional[str] = None
-    
+
     def to_dict(self) -> Dict:
         return {
             "id": self.id,
@@ -37,6 +38,7 @@ class ModelCallLog:
             "completion_tokens": self.completion_tokens,
             "duration": self.duration,
             "tokens_per_second": self.tokens_per_second,
+            "ttft": self.ttft,
             "error": self.error
         }
     
@@ -290,13 +292,14 @@ class ModelCallLogger:
         """设置日志回调函数，用于实时通知前端"""
         self._on_log_callback = callback
     
-    def log_call(self, model_name: str, messages: List[Dict[str, str]], 
-                 response: str, total_tokens: int, prompt_tokens: int, 
-                 completion_tokens: int, duration: float, error: Optional[str] = None):
+    def log_call(self, model_name: str, messages: List[Dict[str, str]],
+                 response: str, total_tokens: int, prompt_tokens: int,
+                 completion_tokens: int, duration: float, error: Optional[str] = None,
+                 ttft: float = 0.0):
         """记录模型调用（高性能版）"""
         # 计算每秒token输出量
         tokens_per_second = completion_tokens / duration if duration > 0 else 0.0
-        
+
         log_entry = ModelCallLog(
             id=str(uuid.uuid4()),
             timestamp=datetime.now(),
@@ -308,6 +311,7 @@ class ModelCallLogger:
             completion_tokens=completion_tokens,
             duration=duration,
             tokens_per_second=tokens_per_second,
+            ttft=ttft,
             error=error
         )
         

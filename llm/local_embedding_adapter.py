@@ -99,7 +99,18 @@ class LocalEmbeddingAdapter(LLMAdapter):
         try:
             # sentence-transformers encode returns numpy array
             import numpy as np
-            embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+            # 分批编码：避免一次性对上千块文本推理长时间独占 CPU，
+            # 批间短暂让出，降低上传知识库时对其它请求的 CPU 挤压。
+            BATCH_SIZE = 64
+            all_vecs = []
+            for i in range(0, len(texts), BATCH_SIZE):
+                batch = texts[i:i + BATCH_SIZE]
+                vecs = model.encode(batch, convert_to_numpy=True,
+                                    show_progress_bar=False, batch_size=32)
+                all_vecs.append(vecs)
+                if i + BATCH_SIZE < len(texts):
+                    time.sleep(0.02)
+            embeddings = np.concatenate(all_vecs, axis=0) if len(all_vecs) > 1 else all_vecs[0]
             embed_ms = (time.time() - embed_start) * 1000
 
             # Convert numpy arrays to plain lists for JSON serialization

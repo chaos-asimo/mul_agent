@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>二次验证 - 多用户工作台</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #0f172a;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 40px;
+    width: 400px;
+    box-shadow: 0 25px 50px rgba(0,0,0,0.4);
+  }
+  h1 { color: #f1f5f9; font-size: 20px; margin-bottom: 8px; text-align: center; }
+  .sub { color: #64748b; font-size: 13px; margin-bottom: 24px; text-align: center; }
+  .user-tag { color: #38bdf8; font-weight: 600; }
+  label { display: block; color: #94a3b8; font-size: 13px; margin-bottom: 6px; }
+  input[type="text"] {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    background: #0f172a;
+    color: #f1f5f9;
+    font-size: 18px;
+    letter-spacing: 0.4em;
+    text-align: center;
+    margin-bottom: 16px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  input[type="text"]:focus { border-color: #3b82f6; }
+  .btn {
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    background: #3b82f6;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .btn:hover { background: #2563eb; }
+  .btn:disabled { background: #475569; cursor: not-allowed; }
+  .result {
+    margin-top: 16px;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.6;
+    display: none;
+    text-align: center;
+  }
+  .result.ok { display: block; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); color: #34d399; }
+  .result.err { display: block; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #f87171; }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+    vertical-align: middle; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .close-hint { margin-top: 16px; color: #64748b; font-size: 12px; text-align: center; display: none; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>两步验证</h1>
+  <p class="sub">请输入 <span class="user-tag" id="userLabel"></span> 的微软 Authenticator 验证码</p>
+
+  <label>6 位动态码</label>
+  <input type="text" id="totpCode" placeholder="000000" autocomplete="one-time-code" inputmode="numeric" maxlength="6">
+
+  <button class="btn" id="verifyBtn" onclick="doVerify()">验证并登录</button>
+  <div class="result" id="result"></div>
+  <p class="close-hint" id="closeHint">验证成功，可关闭本窗口</p>
+</div>
+
+<script>
+// 本页面由本系统域 serve，同源调用，Cookie 为第一方上下文
+const BASE = window.location.origin;
+
+// 从 URL 读取父窗口传入的待验证用户名
+const params = new URLSearchParams(window.location.search);
+const username = (params.get('username') || '').trim();
+document.getElementById('userLabel').textContent = username || '(未知用户)';
+
+// 若 opener 不存在或无 username，提示
+if (!username) {
+  const r = document.getElementById('result');
+  r.className = 'result err';
+  r.textContent = '缺少用户名参数，请从登录页重新发起';
+}
+
+document.getElementById('totpCode').focus();
+
+// 回车提交
+document.getElementById('totpCode').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doVerify();
+});
+
+async function doVerify() {
+  const code = document.getElementById('totpCode').value.trim();
+  const btn = document.getElementById('verifyBtn');
+  const result = document.getElementById('result');
+  if (!username) {
+    result.className = 'result err';
+    result.textContent = '缺少用户名参数';
+    return;
+  }
+  if (!/^\d{6}$/.test(code)) {
+    result.className = 'result err';
+    result.textContent = '请输入 6 位数字验证码';
+    return;
+  }
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>验证中...';
+  result.className = 'result';
+  result.textContent = '';
+  try {
+    const res = await fetch(BASE + '/api/lobster-mu/login/2fa', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ username: username, totp: code })
+    });
+    let data = {};
+    try { data = await res.json(); } catch (e) {}
+    if (res.ok && data.status === 'success') {
+      result.className = 'result ok';
+      result.innerHTML = '验证成功！<br><small>用户: ' + (data.user.display_name || data.user.username) + '</small>';
+      document.getElementById('closeHint').style.display = 'block';
+      // 通知父窗口（direct-login 所在页）登录完成，由其决定跳转
+      notifyOpener({ type: '2fa_success', user: data.user });
+    } else {
+      result.className = 'result err';
+      result.textContent = (data && (data.detail || data.message)) || ('验证失败 (HTTP ' + res.status + ')');
+      notifyOpener({ type: '2fa_failed', detail: result.textContent });
+      document.getElementById('totpCode').value = '';
+      document.getElementById('totpCode').focus();
+    }
+  } catch (e) {
+    result.className = 'result err';
+    result.textContent = '网络错误: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '验证并登录';
+  }
+}
+
+// 向打开本窗口的父窗口发送消息（校验目标 origin 为本系统域）
+function notifyOpener(payload) {
+  try {
+    if (window.opener && !window.opener.closed) {
+      const msg = Object.assign({ source: 'lobster_mu_2fa' }, payload);
+      window.opener.postMessage(msg, BASE);
+    }
+  } catch (e) { /* 父窗口已关闭或跨域无权限，忽略 */ }
+}
+</script>
+</body>
+</html>

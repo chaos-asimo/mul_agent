@@ -77,11 +77,12 @@ class OpenAIAdapter(LLMAdapter):
         import time
         import json
         start_time = time.time()
+        first_token_time = None
         full_response = ""
         total_tokens = 0
         prompt_tokens = 0
         completion_tokens = 0
-        
+
         try:
             create_kwargs = dict(
                 model=self.model_name,
@@ -97,6 +98,8 @@ class OpenAIAdapter(LLMAdapter):
             
             for chunk in stream:
                 if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content is not None:
+                    if first_token_time is None:
+                        first_token_time = time.time()
                     content = chunk.choices[0].delta.content
                     full_response += content
                     yield content
@@ -117,6 +120,7 @@ class OpenAIAdapter(LLMAdapter):
             total_tokens = prompt_tokens + completion_tokens
             
             # 记录调用日志
+            ttft = (first_token_time - start_time) if first_token_time else 0.0
             model_call_logger.log_call(
                 model_name=self.model_name,
                 messages=messages,
@@ -124,7 +128,8 @@ class OpenAIAdapter(LLMAdapter):
                 total_tokens=total_tokens,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                duration=duration
+                duration=duration,
+                ttft=ttft
             )
             
             # 发送 token 统计信息（作为特殊的 chunk）

@@ -21,6 +21,10 @@ DDL = [
         totp_secret   TEXT    DEFAULT '',
         totp_enabled  INTEGER NOT NULL DEFAULT 0
     )""",
+    # 用户表索引：登录按 username、列表按 created_at 排序、活跃度查询
+    "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)",
+    "CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_users_last_login ON users(last_login_at)",
     # 聊天会话
     """CREATE TABLE IF NOT EXISTS mu_chat_sessions (
         id         TEXT PRIMARY KEY,
@@ -160,6 +164,21 @@ DDL = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_mu_vec_doc ON mu_knowledge_vectors(doc_id)",
     "CREATE INDEX IF NOT EXISTS idx_mu_vec_user ON mu_knowledge_vectors(user_id)",
+    # 知识库共享内容（内容寻址：相同文件内容全局只存一次，多用户共享）
+    """CREATE TABLE IF NOT EXISTS kb_content (
+        content_hash TEXT PRIMARY KEY,
+        filename     TEXT NOT NULL,
+        file_size    INTEGER,
+        chunk_count  INTEGER DEFAULT 0,
+        created_at   TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS kb_content_vectors (
+        content_hash TEXT NOT NULL,
+        chunk_index  INTEGER,
+        content      TEXT,
+        vector       TEXT,
+        PRIMARY KEY (content_hash, chunk_index)
+    )""",
     # 操作日志（安全审计 + history 端点数据源）
     """CREATE TABLE IF NOT EXISTS mu_operation_logs (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -245,6 +264,10 @@ _USER_MIGRATION_COLUMNS = [
     ("totp_enabled", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
+_KB_DOCS_MIGRATION_COLUMNS = [
+    ("content_hash", "TEXT DEFAULT ''"),
+]
+
 
 def get_conn() -> sqlite3.Connection:
     """获取新连接（短连接模式，WAL 下读写不互斥）"""
@@ -266,7 +289,8 @@ def init_db():
         # 已有库迁移：users / mu_agents / mu_agent_memories 缺失列补齐
         for table, cols in (("users", _USER_MIGRATION_COLUMNS),
                             ("mu_agents", _AGENT_MIGRATION_COLUMNS),
-                            ("mu_agent_memories", _MEMO_MIGRATION_COLUMNS)):
+                            ("mu_agent_memories", _MEMO_MIGRATION_COLUMNS),
+                            ("mu_knowledge_docs", _KB_DOCS_MIGRATION_COLUMNS)):
             existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
             for col, coldef in cols:
                 if col not in existing:

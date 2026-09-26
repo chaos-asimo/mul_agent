@@ -24,6 +24,7 @@ def _row_to_dict(r) -> dict:
         "role": r["role"],
         "display_name": r["display_name"],
         "disabled": bool(r["disabled"]),
+        "totp_enabled": bool(r["totp_enabled"]),
         "created_at": r["created_at"],
         "last_login_at": r["last_login_at"],
     }
@@ -88,7 +89,12 @@ def create_user(username: str, password: str, role: str = "user", display_name: 
 def list_users() -> list:
     conn = get_conn()
     try:
-        rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+        # 只取前端展示所需列（排除 password_hash/salt/totp_secret 等敏感大字段），
+        # 按 created_at 降序命中 idx_users_created 索引，避免全表 filesort
+        rows = conn.execute(
+            "SELECT id, username, role, display_name, disabled, totp_enabled,"
+            " created_at, last_login_at FROM users ORDER BY created_at DESC"
+        ).fetchall()
         return [_row_to_dict(r) for r in rows]
     finally:
         conn.close()
@@ -128,10 +134,14 @@ def delete_user(user_id: int) -> bool:
         if not row:
             return False
         # 删除各业务数据（同库，直接按 user_id 清理）
+        # 注意：mu_knowledge_docs 只删引用行，kb_content/kb_content_vectors 共享内容保留
+        # （其他用户可能还在用），由 gc_orphaned_content() 定期清理无引用孤儿
         for table in ["mu_chat_messages", "mu_chat_sessions", "mu_memories", "mu_scripts",
                       "mu_cron_runs", "mu_cron_tasks", "mu_agent_memories", "mu_agents",
-                      "mu_knowledge_vectors", "mu_knowledge_docs", "mu_operation_logs"]:
+                      "mu_knowledge_docs", "mu_operation_logs"]:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+        # 旧表兼容：清理该用户在 mu_knowledge_vectors 的遗留向量（未迁移的旧数据）
+        conn.execute("DELETE FROM mu_knowledge_vectors WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
         conn.commit()
     finally:

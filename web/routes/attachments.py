@@ -1,4 +1,5 @@
 import os
+import asyncio
 from fastapi import APIRouter, Request, Depends, File, UploadFile
 from utils.logger import logger
 
@@ -22,7 +23,8 @@ async def upload_attachment(file: UploadFile = File(...), managers: dict = Depen
         with open(filepath, 'wb') as f:
             f.write(content)
 
-        attachment_manager.add_attachment(filepath)
+        # add_attachment 内含 docx/pdf 解析（CPU/IO 密集），丢线程池避免阻塞事件循环
+        await asyncio.to_thread(attachment_manager.add_attachment, filepath)
         return {"status": "success", "message": "附件上传成功", "filename": file.filename}
     except Exception as e:
         return {"status": "error", "message": f"上传失败: {str(e)}"}

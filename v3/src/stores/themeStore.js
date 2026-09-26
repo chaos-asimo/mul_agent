@@ -30,7 +30,9 @@ function applyThemeClass(theme) {
 export const useThemeStore = create(
   persist(
     (set, get) => ({
-      theme: 'dark',
+      // 默认跟随系统：新用户首次进入登录页时按系统亮/暗偏好显示，
+      // 用户手动切换后 persist 持久化所选值
+      theme: 'auto',
       resolvedTheme: 'dark',
 
       setTheme: (theme) => {

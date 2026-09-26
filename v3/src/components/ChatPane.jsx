@@ -57,7 +57,7 @@ function MessageBubble({ msg }) {
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[78%] ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
+      <div className={`${isUser ? 'max-w-[78%]' : 'w-full'} ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
         {images.length > 0 && (
           <div className={`flex flex-wrap gap-2 mb-2 ${isUser ? 'justify-end' : ''}`}>
             {images.map((img, i) => (
@@ -141,7 +141,11 @@ function ChatPane({
   const [streamError, setStreamError] = useState('')
   const [pendingImages, setPendingImages] = useState([])
   const messagesEndRef = useRef(null)
+  const scrollContainerRef = useRef(null)
   const fileInputRef = useRef(null)
+  const prevMsgLenRef = useRef(0)
+  const prevSessionRef = useRef(sessionId)
+  const [showJumpBottom, setShowJumpBottom] = useState(false)
 
   useEffect(() => {
     const loadModels = async () => {
@@ -157,9 +161,55 @@ function ChatPane({
     loadModels()
   }, [])
 
+  // 判断滚动容器是否在底部附近（容错小数像素）
+  const isAtBottom = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return true
+    return Math.ceil(el.scrollTop + el.clientHeight) >= el.scrollHeight - 80
+  }, [])
+
+  const syncJumpButton = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    const canScroll = el.scrollHeight > el.clientHeight + 80
+    setShowJumpBottom(canScroll && !isAtBottom())
+  }, [isAtBottom])
+
+  // 监听滚动：仅当用户不在底部时显示「直达底部」按钮
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    const el = scrollContainerRef.current
+    if (!el) return
+    const onScroll = () => setShowJumpBottom(el.scrollHeight > el.clientHeight + 80 && !isAtBottom())
+    el.addEventListener('scroll', onScroll, { passive: true })
+    syncJumpButton()
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [isAtBottom, syncJumpButton])
+
+  // 消息变化：会话切换 / 新增消息 → 强制到底部；流式更新（长度不变）→ 仅在底部时跟随。
+  // 滚动放进 requestAnimationFrame，确保 DOM 已完成布局（规避非 iframe 下不定位底部）。
+  useEffect(() => {
+    const el = scrollContainerRef.current
+    const len = messages.length
+    const sessionChanged = sessionId !== prevSessionRef.current
+    const lenChanged = len !== prevMsgLenRef.current
+    prevSessionRef.current = sessionId
+    prevMsgLenRef.current = len
+    if (!el) return
+    const forceBottom = sessionChanged || lenChanged
+    const raf = requestAnimationFrame(() => {
+      if (forceBottom || isAtBottom()) {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
+      }
+      syncJumpButton()
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [messages, sessionId, isAtBottom, syncJumpButton])
+
+  const jumpToBottom = () => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }
 
   // 流式更新当前 assistant 消息
   const appendOrUpdateAssistant = (content, done, meta) => {
@@ -356,7 +406,7 @@ function ChatPane({
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* 消息区 */}
-      <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
         {isEmpty ? (
           <div className="flex flex-col items-center justify-center h-full t-text-fainter">
             <div className="w-20 h-20 rounded-full t-bg-panel flex items-center justify-center mb-4 border t-border">
@@ -379,6 +429,17 @@ function ChatPane({
             </div>
           </div>
         )}
+        <div className="flex justify-end">
+          {showJumpBottom && (
+            <button
+              onClick={jumpToBottom}
+              title="滚动到底部"
+              className="sticky bottom-4 w-8 h-8 rounded-full t-bg-panel border t-border shadow-lg flex items-center justify-center t-text-muted hover:t-text-accent transition-colors"
+            >
+              <ChevronDown className="w-4 h-4" />
+            </button>
+          )}
+        </div>
         <div ref={messagesEndRef} />
       </div>
 

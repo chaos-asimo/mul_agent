@@ -105,13 +105,19 @@
   <h1>快速登录</h1>
   <p class="sub">输入用户名，自动创建/登录并跳转至工作台</p>
 
+  <div id="loginView">
   <label>用户名</label>
   <input type="text" id="username" placeholder="例如: 3888" autocomplete="off">
 
   <label>显示名</label>
   <input type="text" id="displayName" placeholder="例如: 罗俊易" autocomplete="off">
 
+  <label>Login Token</label>
+  <input type="text" id="loginToken" placeholder="可选，留空则不需要" autocomplete="off">
+
   <button class="btn" id="loginBtn" onclick="doLogin()">登 录</button>
+  </div>
+
   <div class="result" id="result"></div>
 </div>
 
@@ -121,9 +127,33 @@ const BASE = (window.location.protocol === 'http:' || window.location.protocol =
   ? window.location.origin
   : "https://claw.jbysoft.com";
 
+// 预填的用户信息（可在此修改）
+const PRESET_USERNAME = "3888";
+const PRESET_DISPLAY_NAME = "罗俊同学";
+const PRESET_LOGIN_TOKEN = "test-token";
+// 二次验证步骤暂存的用户名
+let pendingUsername = "";
+
+// 页面加载后自动填入并登录
+document.addEventListener('DOMContentLoaded', function() {
+  const usernameInput = document.getElementById('username');
+  const displayNameInput = document.getElementById('displayName');
+  const loginTokenInput = document.getElementById('loginToken');
+  
+  usernameInput.value = PRESET_USERNAME;
+  displayNameInput.value = PRESET_DISPLAY_NAME;
+  loginTokenInput.value = PRESET_LOGIN_TOKEN;
+  
+  // 延迟一点再提交，让表单先展示出来
+  setTimeout(function() {
+    doLogin();
+  }, 300);
+});
+
 async function doLogin() {
   const username = document.getElementById('username').value.trim();
   const displayName = document.getElementById('displayName').value.trim();
+  const loginToken = document.getElementById('loginToken').value.trim();
   const btn = document.getElementById('loginBtn');
   const result = document.getElementById('result');
 
@@ -143,12 +173,18 @@ async function doLogin() {
   result.className = 'result';
   result.textContent = '';
 
+  // 构建请求体
+  const body = { username, display_name: displayName };
+  if (loginToken) {
+    body.login_token = loginToken;
+  }
+
   try {
     const res = await fetch(BASE + '/api/lobster-mu/login/direct', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ username, display_name: displayName })
+      body: JSON.stringify(body)
     });
 
     const data = await res.json();
@@ -158,6 +194,12 @@ async function doLogin() {
       result.innerHTML = '登录成功！即将跳转...<br><small>用户: ' + (data.user.display_name || data.user.username) + ' (' + data.user.role + ')</small>';
       // 立即跳转（cookie 已设好，无需等待）
       window.location.href = BASE + '/v3';
+    } else if (data.status === 'needs_2fa') {
+      // 用户启用了微软 Authenticator：弹窗到本系统域页面完成二次验证（第一方 Cookie 上下文）
+      pendingUsername = data.username || username;
+      openTotpWindow(pendingUsername);
+      result.className = 'result ok';
+      result.innerHTML = '已弹出二次验证窗口，请在该窗口输入微软 Authenticator 验证码。<br><small>用户: ' + pendingUsername + '</small>';
     } else {
       result.className = 'result err';
       result.textContent = data.detail || data.message || '登录失败';
@@ -171,11 +213,44 @@ async function doLogin() {
   }
 }
 
+// 弹出本系统域的独立二次验证窗口（第一方上下文，确保会话 Cookie 能正常写入）
+let totpWindow = null;
+function openTotpWindow(username) {
+  const url = BASE + '/static/totp-login.html?username=' + encodeURIComponent(username);
+  totpWindow = window.open(url, 'lobster_mu_2fa', 'width=440,height=600');
+  if (!totpWindow) {
+    const result = document.getElementById('result');
+    result.className = 'result err';
+    result.textContent = '弹出窗口被浏览器拦截，请允许本站弹窗后重试';
+  }
+}
+
+// 监听二次验证窗口通过 postMessage 回传的结果
+window.addEventListener('message', function (event) {
+  // 仅接受本系统域来源的消息
+  if (event.origin !== BASE) return;
+  const data = event.data || {};
+  if (!data.source || data.source !== 'lobster_mu_2fa') return;
+  const result = document.getElementById('result');
+  if (data.type === '2fa_success') {
+    result.className = 'result ok';
+    result.innerHTML = '二次验证通过！正在进入工作台...';
+    // 会话 Cookie 已在弹窗（本系统域）写入，跳转工作台
+    setTimeout(function () { window.location.href = BASE + '/v3'; }, 500);
+  } else if (data.type === '2fa_failed') {
+    result.className = 'result err';
+    result.textContent = '二次验证失败：' + (data.detail || '验证码错误');
+  }
+});
+
 // 回车提交
 document.getElementById('username').addEventListener('keydown', e => {
   if (e.key === 'Enter') doLogin();
 });
 document.getElementById('displayName').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+document.getElementById('loginToken').addEventListener('keydown', e => {
   if (e.key === 'Enter') doLogin();
 });
 </script>

@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STAGING = os.path.join(ROOT, "mul_agent")
@@ -52,10 +53,22 @@ def copy_tree(src_dir, dst_dir):
     return copied_files
 
 
+def _rmtree_retry(path, tries=16, delay=0.5):
+    """重试删除目录：规避 Windows 文件锁瞬态占用（如 .gitignore 被杀软/索引器持有）"""
+    for i in range(tries):
+        try:
+            shutil.rmtree(path)
+            return
+        except (PermissionError, OSError):
+            if i == tries - 1:
+                raise
+            time.sleep(delay)
+
+
 def main():
     # Clean old staging / dest
     if os.path.isdir(STAGING):
-        shutil.rmtree(STAGING)
+        _rmtree_retry(STAGING)
     if os.path.isfile(DEST):
         os.remove(DEST)
     os.makedirs(STAGING)
@@ -84,8 +97,8 @@ def main():
         check=True,
     )
 
-    # Cleanup staging
-    shutil.rmtree(STAGING)
+    # Cleanup staging（重试，规避 Windows 文件锁）
+    _rmtree_retry(STAGING)
 
     size = os.path.getsize(DEST)
     print("=" * 50)

@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import {
   Shell, Shield, ShieldCheck, Plus, Trash2, MessageSquare,
   FolderOpen, FileCode, Brain, Clock, BookOpen, Wrench, Bot,
-  PanelRightClose, PanelRightOpen, Lightbulb, Send, X,
+  PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen, Lightbulb, Send, X,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { apiGet, apiPost, apiDelete, readFileContent } from '../api/client'
@@ -52,7 +52,9 @@ function Workbench() {
 
   // 功能 Tab
   const [activeTab, setActiveTab] = useState('files')
-  const [rightCollapsed, setRightCollapsed] = useState(false)
+  // 登录后右侧功能栏默认收起（用户可手动展开）
+  const [rightCollapsed, setRightCollapsed] = useState(true)
+  const [leftCollapsed, setLeftCollapsed] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768)
 
   // 安全设置弹窗
   const [showSecurity, setShowSecurity] = useState(false)
@@ -178,11 +180,11 @@ function Workbench() {
             <Shell className="w-5 h-5 text-white" />
           </button>
           <div>
-            <h1 className="text-sm font-semibold leading-tight">龙虾Claw 多用户版</h1>
-            <p className="text-[10px] t-text-faint leading-tight">v3 · Multi-User Workbench</p>
+            <h1 className="text-sm font-semibold leading-tight">个人助理多用户版</h1>
+            <p className="text-[10px] t-text-faint leading-tight hidden sm:block">v3 · Multi-User Workbench</p>
           </div>
         </div>
-        <div className="flex items-center gap-2.5 text-sm">
+        <div className="flex items-center gap-2.5 text-sm overflow-x-auto flex-nowrap max-w-[60%]">
           <ThemeSwitcher />
           <span className="t-text-muted">{user?.display_name || user?.username}</span>
           <span
@@ -222,7 +224,8 @@ function Workbench() {
 
       <div className="flex-1 flex min-h-0">
         {/* 左栏：会话列表 */}
-        <aside className="w-64 shrink-0 border-r t-border flex flex-col t-bg-app">
+        <aside className={`${leftCollapsed ? 'w-0 border-r-0' : 'w-60 sm:w-64 lg:w-72 border-r'} shrink-0 flex flex-col t-bg-app overflow-hidden transition-all duration-200`}>
+          {!leftCollapsed && (
           <div className="p-3 flex items-center gap-2 border-b t-border">
             <button
               onClick={startNewSession}
@@ -231,8 +234,15 @@ function Workbench() {
               <Plus className="w-3.5 h-3.5" />
               新建会话
             </button>
-
+            <button
+              onClick={() => setLeftCollapsed(true)}
+              title="隐藏会话列表"
+              className="p-2 rounded-lg border t-border-strong t-text-muted t-hover-card t-hover-text-accent transition-colors"
+            >
+              <PanelLeftClose className="w-4 h-4" />
+            </button>
           </div>
+          )}
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
             {loadingSessions ? (
               <p className="text-xs t-text-faint text-center py-6 loading-pulse">加载中...</p>
@@ -277,6 +287,15 @@ function Workbench() {
 
         {/* 中栏：聊天流 */}
         <main className="flex-1 min-w-0 flex flex-col relative">
+          {leftCollapsed && (
+            <button
+              onClick={() => setLeftCollapsed(false)}
+              title="展开会话列表"
+              className="absolute left-2 top-2 z-10 p-1.5 rounded-lg border t-border-strong t-text-muted t-hover-card t-hover-text-accent transition-colors"
+            >
+              <PanelLeftOpen className="w-4 h-4" />
+            </button>
+          )}
           {rightCollapsed && (
             <button
               onClick={() => setRightCollapsed(false)}
@@ -300,7 +319,7 @@ function Workbench() {
         </main>
 
         {/* 右栏：功能 Tab */}
-        <aside className={`${rightCollapsed ? 'w-0 border-l-0' : 'w-80 border-l'} shrink-0 flex flex-col t-bg-app overflow-hidden transition-all duration-200`}>
+        <aside className={`${rightCollapsed ? 'w-0 border-l-0' : 'w-72 sm:w-80 lg:w-96 border-l'} shrink-0 flex flex-col t-bg-app overflow-hidden transition-all duration-200`}>
           {!rightCollapsed && (
             <>
           <div className="flex items-stretch border-b t-border shrink-0">

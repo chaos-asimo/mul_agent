@@ -118,6 +118,35 @@ async def lifespan(app: FastAPI):
             login_limiter.cleanup()
     _cleanup_task = _asyncio.create_task(_limiter_cleanup())
 
+    # 定期清理知识库共享内容的无引用孤儿（每小时一次，后台线程避免阻塞事件循环）
+    def _kb_gc_loop():
+        import time as _time
+        while True:
+            _time.sleep(3600)
+            try:
+                from lobster_mu import knowledge_store
+                n = knowledge_store.gc_orphaned_content()
+                if n:
+                    logger.info(f"[kb-gc] 清理孤儿内容 {n} 个")
+            except Exception as e:
+                logger.debug(f"[kb-gc] 清理失败: {e}")
+    _threading.Thread(target=_kb_gc_loop, daemon=True).start()
+
+    # 每小时根据首字输出速度（TTFT）自动把默认模型切换为最快的文本模型
+    def _model_speed_loop():
+        import time as _time
+        _time.sleep(300)  # 启动后先等 5 分钟，让调用数据积累
+        while True:
+            try:
+                from llm.model_speed_stats import apply_fastest_default
+                fastest = apply_fastest_default()
+                if fastest:
+                    logger.info(f"[model-speed] 默认模型已切换为最快: {fastest}")
+            except Exception as e:
+                logger.debug(f"[model-speed] 切换失败: {e}")
+            _time.sleep(3600)
+    _threading.Thread(target=_model_speed_loop, daemon=True).start()
+
     yield
 
     _cleanup_task.cancel()
@@ -171,7 +200,8 @@ from lobster_mu.api_log import log_api_access
 
 class ApiAccessLogMiddleware(BaseHTTPMiddleware):
     """记录 v3 多用户模块（/api/lobster-mu）的每次 API 访问。
-    异步写库（run_in_executor），不阻塞响应；任何异常静默吞掉，绝不影响请求。"""
+    日志非阻塞投递到内存队列，由后台守护线程批量落盘，不占用请求线程；
+    任何异常静默吞掉，绝不影响请求。"""
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -194,8 +224,8 @@ class ApiAccessLogMiddleware(BaseHTTPMiddleware):
             username = mu_user.get("username", "")
             user_id = mu_user.get("id", 0)
             auth_type = "session" if mu_user else "anon"
-            loop = _asyncio.get_running_loop()
-            loop.run_in_executor(None, log_api_access,
+            # 非阻塞投递到内存队列，由后台线程批量落盘（见 lobster_mu/api_log.py）
+            log_api_access(
                 request.method, path, status, duration_ms, ip, username, user_id, auth_type)
         except Exception:
             pass

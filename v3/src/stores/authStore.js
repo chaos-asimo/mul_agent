@@ -7,12 +7,13 @@ export const useAuthStore = create(
     (set, get) => ({
       user: null,
       loading: true,
+      needs2fa: false,
 
       login: async (username, password) => {
         try {
           const result = await apiPost('/login', { username, password })
           if (result.status === 'success' && result.user) {
-            set({ user: result.user, loading: false })
+            set({ user: result.user, loading: false, needs2fa: false })
             return { success: true }
           }
           // TOTP 已启用：进入二次验证
@@ -29,7 +30,7 @@ export const useAuthStore = create(
         try {
           const result = await apiPost('/login/2fa', { username, totp })
           if (result.status === 'success' && result.user) {
-            set({ user: result.user, loading: false })
+            set({ user: result.user, loading: false, needs2fa: false })
             return { success: true }
           }
           return { success: false, message: result.message || '二次验证失败' }
@@ -44,18 +45,22 @@ export const useAuthStore = create(
         } catch (error) {
           console.error('退出登录失败:', error)
         } finally {
-          set({ user: null })
+          set({ user: null, needs2fa: false })
         }
       },
 
-      clearUser: () => set({ user: null }),
+      clearUser: () => set({ user: null, needs2fa: false }),
 
       checkAuth: async () => {
         try {
           const result = await apiGet('/me')
-          set({ user: result.user || null, loading: false })
+          set({
+            user: result.user || null,
+            needs2fa: !!result.needs_2fa,
+            loading: false,
+          })
         } catch (error) {
-          set({ user: null, loading: false })
+          set({ user: null, needs2fa: false, loading: false })
         }
       },
 

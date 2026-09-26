@@ -20,6 +20,10 @@ services:
       - SESSION_SECRET_KEY=${SESSION_SECRET_KEY:-mul_agent_secret_key_2026}
       - MU_ADMIN_USERNAME=${MU_ADMIN_USERNAME:-shineyue}
       - MU_ADMIN_PASSWORD=${MU_ADMIN_PASSWORD:-shineyue@2026}
+      # 直接登录允许的跨域来源（逗号分隔，支持 *.xxx 通配符）
+      # 默认放行 *.jbysoft.com；.env 配置 DIRECT_LOGIN_ALLOWED_ORIGINS 时优先生效
+      # 设为空字符串 '' 则禁止所有跨域 /login/direct（仅允许同源）
+      - DIRECT_LOGIN_ALLOWED_ORIGINS=${DIRECT_LOGIN_ALLOWED_ORIGINS:-*.jbysoft.com}
     volumes:
       # 持久化数据（可写）
       - ./data:/app/data
