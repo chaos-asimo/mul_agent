@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, Smartphone, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search, ArrowLeftRight, Lightbulb, Send, X, BookOpen, Zap } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, Smartphone, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search, ArrowLeftRight, Lightbulb, Send, X, BookOpen, Zap, BarChart3, Database } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client'
 import ThemeSwitcher from '../components/ThemeSwitcher'
@@ -33,6 +33,30 @@ function AdminUsers() {
   useEffect(() => {
     loadUsers()
   }, [loadUsers])
+
+  // 用户列表搜索 + 前端分页
+  const [searchText, setSearchText] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+
+  const filteredUsers = (() => {
+    const kw = searchText.trim().toLowerCase()
+    if (!kw) return users
+    return users.filter(
+      (u) =>
+        (u.username || '').toLowerCase().includes(kw) ||
+        (u.display_name || '').toLowerCase().includes(kw)
+    )
+  })()
+
+  useEffect(() => {
+    // 搜索/每页条数变化时回到第一页
+    setPage(1)
+  }, [searchText, pageSize])
+
+  const totalPages = Math.max(1, Math.ceil(filteredUsers.length / pageSize))
+  const safePage = Math.min(page, totalPages)
+  const pagedUsers = filteredUsers.slice((safePage - 1) * pageSize, safePage * pageSize)
 
   const handleCreate = async (e) => {
     e.preventDefault()
@@ -133,6 +157,7 @@ function AdminUsers() {
 
   const handleViewChat = async (u) => {
     setChatUser({ id: u.id, username: u.username, display_name: u.display_name })
+    setChatMaximized(true)
     setChatSessions([])
     setChatError('')
     setViewSession(null)
@@ -313,6 +338,66 @@ function AdminUsers() {
     setApiLogMaximized(false)
   }
 
+  // 用户大模型使用排行
+  const [showRanking, setShowRanking] = useState(false)
+  const [ranking, setRanking] = useState([])
+  const [rankingLoading, setRankingLoading] = useState(false)
+  const [rankingError, setRankingError] = useState('')
+  const [rankingMaximized, setRankingMaximized] = useState(false)
+
+  const loadRanking = useCallback(async () => {
+    setRankingLoading(true)
+    setRankingError('')
+    try {
+      const res = await apiGet('/admin/usage-ranking')
+      if (res.success) {
+        setRanking(res.ranking || [])
+      } else {
+        setRankingError(res.error || '加载排行失败')
+      }
+    } catch (e) {
+      setRankingError(e.message || '加载排行失败')
+    } finally {
+      setRankingLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (showRanking) loadRanking()
+  }, [showRanking, loadRanking])
+
+  const closeRankingModal = () => {
+    setShowRanking(false)
+    setRankingMaximized(false)
+  }
+
+  const fmtTok = (n) => {
+    if (!n) return '0'
+    if (n >= 10000) return (n / 10000).toFixed(1) + '万'
+    return n.toLocaleString()
+  }
+
+  // 数据库维护（VACUUM 等）
+  const [maintaining, setMaintaining] = useState(false)
+  const handleDbMaintenance = async () => {
+    if (!window.confirm('执行数据库维护（回收空间/优化查询）？可能耗时数秒，期间短暂阻塞写入。')) return
+    setMaintaining(true)
+    try {
+      const res = await apiPost('/admin/db-maintenance')
+      if (res.success) {
+        const freed = ((res.info?.freed_bytes || 0) / 1048576).toFixed(2)
+        alert(`维护完成，释放 ${freed} MB 空间。`)
+        loadUsers()
+      } else {
+        alert(res.error || '维护失败')
+      }
+    } catch (e) {
+      alert('维护失败：' + (e.message || ''))
+    } finally {
+      setMaintaining(false)
+    }
+  }
+
   const handleDeleteApiLog = async (log) => {
     if (!window.confirm(`确定删除接口日志 #${log.id}（${log.display_name || log.username} · ${log.method} ${log.path}）吗？`)) return
     try {
@@ -444,7 +529,7 @@ function AdminUsers() {
     <div className="min-h-screen t-bg-app t-text">
       {/* 顶栏 */}
       <header className="border-b t-border t-bg-panel">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div className="w-full px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link
               to="/"
@@ -478,29 +563,46 @@ function AdminUsers() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-6">
+      <main className="w-full px-4 py-6">
         {error && (
           <div className="mb-4 p-3 t-bg-danger-soft border t-border-danger rounded-lg t-text-danger text-sm">
             {error}
           </div>
         )}
 
-        <div className="flex items-center justify-between mb-4">
-          <p className="text-sm t-text-muted">共 {users.length} 个用户</p>
+        <div className="flex items-center justify-between mb-4 gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <p className="text-sm t-text-muted">
+              共 {filteredUsers.length} 个用户{searchText.trim() ? `（已筛选）` : ''}
+            </p>
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 t-text-faint" />
+              <input
+                className={inputCls + ' pl-8 w-48'}
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                placeholder="搜索用户名 / 显示名"
+              />
+            </div>
+          </div>
           <div className="flex items-center gap-2">
             <button onClick={loadUsers} className={btnGhost} disabled={loading}>
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               刷新
             </button>
-            <button onClick={() => { setLogPage(1); setLogMaximized(false); setShowLogs(true) }} className={btnGhost}>
+            <button onClick={handleDbMaintenance} disabled={maintaining} className={btnGhost} title="VACUUM 回收空间、优化查询（变慢时执行）">
+              <Database className={`w-3.5 h-3.5 ${maintaining ? 'animate-spin' : ''}`} />
+              {maintaining ? '维护中' : '数据库维护'}
+            </button>
+            <button onClick={() => { setLogPage(1); setLogMaximized(true); setShowLogs(true) }} className={btnGhost}>
               <ClipboardList className="w-3.5 h-3.5" />
               日志管理
             </button>
-            <button onClick={() => { setApiLogPage(1); setShowApiLogs(true) }} className={btnGhost}>
+            <button onClick={() => { setApiLogPage(1); setApiLogMaximized(true); setShowApiLogs(true) }} className={btnGhost}>
               <ArrowLeftRight className="w-3.5 h-3.5" />
               接口日志
             </button>
-            <button onClick={() => { setSuggestionPage(1); setSuggestionStatusFilter(''); setShowSuggestions(true) }} className={btnGhost}>
+            <button onClick={() => { setSuggestionPage(1); setSuggestionStatusFilter(''); setSuggestionMaximized(true); setShowSuggestions(true) }} className={btnGhost}>
               <Lightbulb className="w-3.5 h-3.5" />
               建议管理
             </button>
@@ -512,6 +614,10 @@ function AdminUsers() {
               <Zap className="w-3.5 h-3.5" />
               模型速度
             </Link>
+            <button onClick={() => { setRankingMaximized(true); setShowRanking(true) }} className={btnGhost}>
+              <BarChart3 className="w-3.5 h-3.5" />
+              用户排行
+            </button>
             <button
               onClick={() => setShowCreate(!showCreate)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg t-bg-accent t-hover-accent text-white"
@@ -603,14 +709,14 @@ function AdminUsers() {
                     加载中...
                   </td>
                 </tr>
-              ) : users.length === 0 ? (
+              ) : filteredUsers.length === 0 ? (
                 <tr>
                   <td colSpan="7" className="px-4 py-10 text-center t-text-faint">
-                    暂无用户
+                    {searchText.trim() ? '未找到匹配的用户' : '暂无用户'}
                   </td>
                 </tr>
               ) : (
-                users.map((u) => (
+                pagedUsers.map((u) => (
                   <tr key={u.id} className="border-b t-border t-hover-bg">
                     <td className="px-4 py-3 t-text-faint">{u.id}</td>
                     <td className="px-4 py-3 font-medium">{u.username}</td>
@@ -731,8 +837,149 @@ function AdminUsers() {
               )}
             </tbody>
           </table>
+          {filteredUsers.length > 0 && (
+            <div className="flex items-center justify-between flex-wrap gap-2 px-4 py-3 border-t t-border text-xs t-text-muted">
+              <div className="flex items-center gap-2">
+                <span>
+                  第 {safePage} / {totalPages} 页 · 共 {filteredUsers.length} 条
+                </span>
+                <select
+                  className={inputCls + ' w-auto py-1'}
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value))}
+                >
+                  <option value={10}>10 条/页</option>
+                  <option value={20}>20 条/页</option>
+                  <option value={50}>50 条/页</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage(1)}
+                  disabled={safePage === 1}
+                  className={btnGhost + ' px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed'}
+                >
+                  首页
+                </button>
+                <button
+                  onClick={() => setPage(safePage - 1)}
+                  disabled={safePage === 1}
+                  className={btnGhost + ' px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed'}
+                >
+                  上一页
+                </button>
+                <span className="px-2">
+                  {safePage}
+                </span>
+                <button
+                  onClick={() => setPage(safePage + 1)}
+                  disabled={safePage === totalPages}
+                  className={btnGhost + ' px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed'}
+                >
+                  下一页
+                </button>
+                <button
+                  onClick={() => setPage(totalPages)}
+                  disabled={safePage === totalPages}
+                  className={btnGhost + ' px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed'}
+                >
+                  末页
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </main>
+
+      {/* 用户大模型使用排行 Modal */}
+      {showRanking && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70"
+          onClick={closeRankingModal}
+        >
+          <div
+            className={`t-bg-panel border t-border-strong rounded-2xl shadow-2xl flex flex-col transition-all duration-200 ${
+              rankingMaximized ? 'w-full max-w-none h-full max-h-none' : 'w-full max-w-4xl max-h-[85vh]'
+            }`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3.5 border-b t-border shrink-0">
+              <h3 className="text-sm font-semibold t-text flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 t-text-accent" />
+                用户大模型使用排行（按调用次数降序）
+              </h3>
+              <div className="flex items-center gap-2">
+                <button onClick={loadRanking} className="t-text-faint t-hover-text transition-colors" title="刷新">
+                  <RefreshCw className={`w-4 h-4 ${rankingLoading ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                  onClick={() => setRankingMaximized(!rankingMaximized)}
+                  title={rankingMaximized ? '还原' : '最大化'}
+                  className="t-text-faint t-hover-text transition-colors"
+                >
+                  {rankingMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                </button>
+                <button onClick={closeRankingModal} className="t-text-faint t-hover-text transition-colors">
+                  <XCircle className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              {rankingError && <p className="text-xs t-text-danger mb-3">{rankingError}</p>}
+              {rankingLoading ? (
+                <p className="text-xs t-text-faint text-center py-8 loading-pulse">加载中...</p>
+              ) : ranking.length === 0 ? (
+                <p className="text-xs t-text-fainter text-center py-8">暂无模型调用记录</p>
+              ) : (
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 t-bg-panel">
+                    <tr className="text-left t-text-faint border-b t-border">
+                      <th className="px-2 py-2">#</th>
+                      <th className="px-2 py-2">用户</th>
+                      <th className="px-2 py-2 text-right">调用次数</th>
+                      <th className="px-2 py-2 text-right">输入 tokens</th>
+                      <th className="px-2 py-2 text-right">输出 tokens</th>
+                      <th className="px-2 py-2 text-right">总 tokens</th>
+                      <th className="px-2 py-2">各模型调用明细（次数 / 总 tokens）</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ranking.map((u, i) => (
+                      <tr key={u.user_id} className="border-b t-border t-hover-bg align-top">
+                        <td className="px-2 py-2 t-text-faint">{i + 1}</td>
+                        <td className="px-2 py-2 whitespace-nowrap font-medium">
+                          {u.display_name || u.username}
+                          <span className="ml-1 t-text-faint font-normal">（{u.username}）</span>
+                        </td>
+                        <td className="px-2 py-2 text-right font-semibold t-text-accent">{u.total_calls}</td>
+                        <td className="px-2 py-2 text-right t-text-2">{fmtTok(u.prompt_tokens)}</td>
+                        <td className="px-2 py-2 text-right t-text-2">{fmtTok(u.completion_tokens)}</td>
+                        <td className="px-2 py-2 text-right t-text-2">{fmtTok(u.total_tokens)}</td>
+                        <td className="px-2 py-2">
+                          <div className="flex flex-wrap gap-1.5">
+                            {(u.models || []).map((m) => (
+                              <span
+                                key={m.model_name}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border t-border-strong t-bg-input t-text-2 whitespace-nowrap"
+                                title={`${m.model_name}：调用 ${m.calls} 次，输入 ${fmtTok(m.prompt_tokens)} / 输出 ${fmtTok(m.completion_tokens)} / 总 ${fmtTok(m.total_tokens)} tokens`}
+                              >
+                                <span className="t-text-muted">{m.model_name}</span>
+                                <span className="t-text-accent font-medium">{m.calls}</span>
+                                <span className="t-text-faint">{fmtTok(m.total_tokens)}</span>
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 查看用户聊天 Modal */}
       {chatUser && (

@@ -49,6 +49,13 @@ _installation_state: Dict[int, Dict[str, Any]] = {}
 # 全局锁：多用户并发 pip --target 会写坏 packages/，必须串行化
 _install_lock = threading.Lock()
 
+# 沙箱镜像已预装的核心科学计算包（老 CPU 兼容版，见 sandbox/Dockerfile）。
+# 这些包用户无需也不应自行安装——自行 pip 装最新版会拿到要求 X86_V2 的 wheel，
+# 在老 CPU 服务器上 import 必崩。命中则直接拒绝并提示使用镜像内置版本。
+PREINSTALLED_CORE_PACKAGES = {
+    'numpy', 'scipy', 'pandas', 'matplotlib',
+}
+
 
 def _default_install_state() -> Dict[str, Any]:
     return {'in_progress': False, 'package': '', 'progress': 0, 'output': '', 'success': False}
@@ -380,9 +387,9 @@ def get_pip_package_name(import_name: str) -> str:
 
 def detect_missing_dependencies(code: str) -> List[str]:
     """检测脚本中缺失的第三方依赖"""
-    # 添加packages目录到sys.path，确保能检测到安装的包
+    # packages 追加到 sys.path 末尾（补充而非覆盖系统包，避免用户不兼容包顶掉系统包）
     if PACKAGES_DIR not in sys.path:
-        sys.path.insert(0, PACKAGES_DIR)
+        sys.path.append(PACKAGES_DIR)
 
     # 提取import语句中的包名
     import_patterns = [
@@ -429,6 +436,9 @@ def detect_missing_dependencies(code: str) -> List[str]:
     for package in found_packages:
         if package in builtin_modules or IMPORT_TO_PIP.get(package) is None:
             continue
+        # 核心科学计算包已由沙箱镜像预装，直接视为已满足，不提示用户安装
+        if package.lower() in PREINSTALLED_CORE_PACKAGES:
+            continue
         try:
             __import__(package)
         except ImportError:
@@ -441,6 +451,16 @@ def _install_to_packages_dir(user_id: int, package_name: str) -> Dict[str, Any]:
     """实际执行多镜像安装并更新该用户的安装状态（调用方需持有 _install_lock）"""
     state = _installation_state.setdefault(user_id, _default_install_state())
 
+    # 拦截核心科学计算包：沙箱镜像已预装老 CPU 兼容版，用户无需自行安装。
+    # （自行装最新版会拿到要求 X86_V2 的 wheel，老 CPU 上必崩）
+    base = re.split(r'[<>=!~\s]', package_name.strip(), 1)[0].lower()
+    if base in PREINSTALLED_CORE_PACKAGES:
+        msg = (f'包 {base} 已由系统预装（兼容当前服务器 CPU 的版本），'
+               f'无需安装，脚本中可直接 import 使用。')
+        state.update({'in_progress': False, 'package': package_name, 'progress': 100,
+                      'output': msg, 'success': False})
+        return {'success': False, 'message': msg, 'output': msg}
+
     state.update({
         'in_progress': True,
         'package': package_name,
@@ -451,6 +471,39 @@ def _install_to_packages_dir(user_id: int, package_name: str) -> Dict[str, Any]:
 
     try:
         os.makedirs(PACKAGES_DIR, exist_ok=True)
+
+        # 优先在沙箱镜像内安装：保证带 C 扩展的包（numpy/pandas 等）的 .so
+        # 与执行环境（沙箱 python3.12）ABI 一致。沙箱不可用时回退主容器 pip。
+        try:
+            from lobster_mu import sandbox
+            ok, out = sandbox.install_dependency_in_sandbox(package_name)
+            state['output'] = out or ''
+            if ok:
+                state['success'] = True
+                state['progress'] = 100
+                try:
+                    import importlib
+                    if PACKAGES_DIR not in sys.path:
+                        sys.path.append(PACKAGES_DIR)
+                    importlib.invalidate_caches()
+                except Exception:
+                    pass
+                return {
+                    'success': True,
+                    'message': f'包 {package_name} 安装成功',
+                    'output': out or ''
+                }
+            # 沙箱装失败但属“环境不可用”类原因 → 回退本地；否则视为安装失败
+            if out and ('docker' in out.lower() or '沙箱' in out or 'mode' in out):
+                state['output'] = (out or '') + '\n[回退] 沙箱安装不可用，改用主容器安装...'
+            else:
+                return {
+                    'success': False,
+                    'message': f'包 {package_name} 安装失败',
+                    'output': out or '未知错误'
+                }
+        except Exception as _e:
+            state['output'] = f'[沙箱安装异常，回退本地] {_e}'
 
         # 使用多个国内镜像源加速安装，依次尝试
         mirror_sources = [
@@ -508,6 +561,15 @@ def _install_to_packages_dir(user_id: int, package_name: str) -> Dict[str, Any]:
         if result.returncode == 0:
             state['success'] = True
             state['progress'] = 100
+            # 安装成功后刷新导入缓存 + 确保 packages 在 sys.path，
+            # 否则同进程后续 detect_missing_dependencies 可能仍用旧目录快照误报“未安装”。
+            try:
+                import importlib
+                if PACKAGES_DIR not in sys.path:
+                    sys.path.append(PACKAGES_DIR)
+                importlib.invalidate_caches()
+            except Exception:
+                pass
             return {
                 'success': True,
                 'message': f'包 {package_name} 安装成功',
@@ -586,9 +648,9 @@ def execute_python_script(user_id: int, code: str, timeout: int = 60) -> Dict[st
         # 记录执行前目录中的文件
         before_files = set(os.listdir(work_dir))
 
-        # packages/ 注入当前进程 sys.path，保证已安装包可被导入（主进程侧）
+        # packages/ 追加到当前进程 sys.path（补充系统包，不覆盖）
         if PACKAGES_DIR not in sys.path:
-            sys.path.insert(0, PACKAGES_DIR)
+            sys.path.append(PACKAGES_DIR)
 
         # 沙箱执行（spec T6）：替换原 subprocess.run(['python','-B',script_path])
         from lobster_mu import sandbox

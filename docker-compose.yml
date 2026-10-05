@@ -16,6 +16,9 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - LOBSTER_SANDBOX_IMAGE=${LOBSTER_SANDBOX_IMAGE:-lobster-claw-sandbox:local}
+      # Docker-out-of-Docker：容器内 /app 对应的宿主机项目根绝对路径，
+      # 使沙箱 --mount source= 指向宿主机真实路径。请按实际部署目录填写（或在 .env 设 HOST_APP_DIR）。
+      - LOBSTER_SANDBOX_HOST_APP_DIR=${HOST_APP_DIR:-}
       - API_KEYS=${API_KEYS:-}
       - SESSION_SECRET_KEY=${SESSION_SECRET_KEY:-mul_agent_secret_key_2026}
       - MU_ADMIN_USERNAME=${MU_ADMIN_USERNAME:-shineyue}
@@ -29,7 +32,10 @@ services:
       - ./data:/app/data
       - ./uploads:/app/uploads
       - ./logs:/app/logs
-      - packages_data:/app/packages
+      # 必须用绑定挂载（而非命名卷）：主容器 pip 装到 /app/packages，
+      # 沙箱经 Docker-out-of-Docker 以宿主机路径挂载同一目录，二者必须是同一份数据。
+      # 用命名卷会导致沙箱读到的 /packages 为空 → 用户脚本 import 不到已装的依赖。
+      - ./packages:/app/packages
       # RAG embedding 模型缓存（持久化，避免每次重启重下；镜像已预载默认模型）
       - hf_cache:/root/.cache/huggingface
       # 用户文件目录
@@ -41,6 +47,8 @@ services:
       - ./agents.json:/app/agents.json
       - ./skills.json:/app/skills.json
       - ./search_engines.json:/app/search_engines.json
+      # Docker-out-of-Docker：挂载宿主机 docker.sock，使容器内 docker CLI 可操作宿主机 Docker
+      - /var/run/docker.sock:/var/run/docker.sock
 
   # 用户命令沙箱镜像（仅构建不常驻，供 mul-agent 直跑时 docker run 调用）
   lobster-sandbox:
@@ -59,5 +67,4 @@ services:
     entrypoint: ["true"]
 
 volumes:
-  packages_data:
   hf_cache:

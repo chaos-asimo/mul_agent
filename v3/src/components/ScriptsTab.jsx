@@ -4,23 +4,28 @@ import {
   Download, Package, Loader2, X,
 } from 'lucide-react'
 import { apiGet, apiPost, apiPut, apiDelete, formatSize } from '../api/client'
+import CodeEditor from './CodeEditor'
 
-function Modal({ title, onClose, children, wide = false }) {
+function Modal({ title, onClose, children, wide = false, max = false }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={onClose}>
       <div
-        className={`t-bg-panel border t-border-strong rounded-2xl shadow-2xl w-full ${
-          wide ? 'max-w-3xl' : 'max-w-xl'
-        } max-h-[85vh] flex flex-col`}
+        className={`t-bg-panel border t-border-strong rounded-2xl shadow-2xl flex flex-col ${
+          max
+            ? 'w-[96vw] h-[94vh]'
+            : wide
+              ? 'w-full max-w-3xl max-h-[85vh]'
+              : 'w-full max-w-xl max-h-[85vh]'
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-3.5 border-b t-border">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b t-border shrink-0">
           <h3 className="text-sm font-semibold t-text">{title}</h3>
           <button onClick={onClose} className="t-text-faint t-hover-text">
             <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="p-5 overflow-y-auto">{children}</div>
+        <div className={`p-5 ${max ? 'flex-1 overflow-hidden flex flex-col' : 'overflow-y-auto'}`}>{children}</div>
       </div>
     </div>
   )
@@ -401,9 +406,9 @@ function ScriptsTab() {
 
       {/* 编辑器弹窗 */}
       {editor && (
-        <Modal title={editor.id ? '编辑脚本' : '新建脚本'} onClose={() => setEditor(null)} wide>
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
+        <Modal title={editor.id ? '编辑脚本' : '新建脚本'} onClose={() => setEditor(null)} max>
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="grid grid-cols-2 gap-3 mb-3 shrink-0">
               <input
                 className={inputCls}
                 value={editor.name}
@@ -417,13 +422,15 @@ function ScriptsTab() {
                 placeholder="脚本描述"
               />
             </div>
-            <textarea
-              className={inputCls + ' font-mono resize-y h-72 leading-relaxed'}
-              value={editor.code}
-              onChange={(e) => setEditor({ ...editor, code: e.target.value })}
-              placeholder="在此粘贴或编写 Python 脚本代码..."
-            />
-            <div className="flex items-center justify-between">
+            <div className="flex-1 min-h-0">
+              <CodeEditor
+                value={editor.code}
+                onChange={(code) => setEditor({ ...editor, code })}
+                placeholder="在此粘贴或编写 Python 脚本代码..."
+                style={{ height: '100%' }}
+              />
+            </div>
+            <div className="flex items-center justify-between mt-3 shrink-0">
               <button
                 onClick={handleCheckDeps}
                 disabled={checkingDeps || !editor.code}

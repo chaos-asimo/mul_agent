@@ -37,6 +37,21 @@ deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main 
     libglib2.0-0 \
     fonts-dejavu \
     fonts-noto-cjk \
+    ca-certificates \
+    curl \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 docker CLI（仅客户端，不装 daemon）：供用户命令沙箱以 Docker-out-of-Docker
+# 方式调用宿主机 Docker（需 compose 挂载 /var/run/docker.sock）。
+# 用清华 Docker CE 镜像源，避免直连 download.docker.com 失败。
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/debian/gpg \
+       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/debian bookworm stable" \
+       > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

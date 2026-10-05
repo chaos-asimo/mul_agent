@@ -341,7 +341,7 @@ def _tool_generate_pdf(content: str, user_id: int) -> str:
             )
 
             if packages_dir not in sys.path:
-                sys.path.insert(0, packages_dir)
+                sys.path.append(packages_dir)
 
         from fpdf import FPDF
 
@@ -511,6 +511,11 @@ def execute_tool_call(tool_call: dict, user_id: int) -> str:
         result = _tool_script_execute(tool_call.get("script_id"), tool_call.get("code", ""), user_id)
     elif tool == "script_list":
         result = _tool_script_list(user_id)
+    elif tool == "use_skill":
+        from lobster_mu import skill_store
+        res = skill_store.execute(user_id, tool_call.get("skill_id", ""),
+                                  tool_call.get("params") or {})
+        result = res.get("result") if res.get("success") else (f"❌ {res.get('error', '技能执行失败')}")
     else:
         result = f"❌ 未知工具: {tool}"
 

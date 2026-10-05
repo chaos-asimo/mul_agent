@@ -3,12 +3,15 @@
 import hashlib
 import hmac
 import secrets
+import time as _time_sec
+import logging as _logging_sec
 
 from fastapi import Request, HTTPException, Depends
 
 from lobster_mu import user_store
 
 PBKDF2_ITERATIONS = 200000
+_sec_log = _logging_sec.getLogger("lobster_mu")
 
 
 def hash_password(password: str, salt: str) -> str:
@@ -30,7 +33,12 @@ def get_mu_user(request: Request) -> dict:
     u = request.session.get("mu_user")
     if not u:
         raise HTTPException(status_code=401, detail="未登录")
-    if user_store.is_disabled(u["id"]):
+    _t0 = _time_sec.perf_counter()
+    disabled = user_store.is_disabled(u["id"])
+    _dt = (_time_sec.perf_counter() - _t0) * 1000
+    if _dt > 500:
+        _sec_log.warning("[perf] get_mu_user is_disabled(user_id=%s) took %.1fms", u.get("id"), _dt)
+    if disabled:
         request.session.pop("mu_user", None)
         raise HTTPException(status_code=401, detail="账号已禁用")
     return u

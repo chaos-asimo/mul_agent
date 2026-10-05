@@ -2378,7 +2378,7 @@ def execute_tool_call(tool_call: dict) -> str:
                 )
                 
                 if packages_dir not in sys.path:
-                    sys.path.insert(0, packages_dir)
+                    sys.path.append(packages_dir)
             
             from fpdf import FPDF
             
@@ -2896,7 +2896,7 @@ def detect_missing_dependencies(code: str) -> List[str]:
     # 添加packages目录到sys.path，确保能检测到安装的包
     packages_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'packages')
     if packages_dir not in sys.path:
-        sys.path.insert(0, packages_dir)
+        sys.path.append(packages_dir)
     
     # 提取import语句中的包名
     import_patterns = [
@@ -3078,7 +3078,7 @@ def execute_python_script(code: str) -> Dict[str, Any]:
         # 添加packages目录到PYTHONPATH，使安装的包能被脚本找到
         packages_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'packages')
         if packages_dir not in sys.path:
-            sys.path.insert(0, packages_dir)
+            sys.path.append(packages_dir)
         
         # 设置PYTHONPATH环境变量，供子进程使用
         current_pythonpath = env.get('PYTHONPATH', '')
@@ -3341,7 +3341,7 @@ def _generate_pdf_sync(content: str, title: str) -> Dict[str, Any]:
 
             # 添加到sys.path
             if packages_dir not in sys.path:
-                sys.path.insert(0, packages_dir)
+                sys.path.append(packages_dir)
 
         from fpdf import FPDF
 

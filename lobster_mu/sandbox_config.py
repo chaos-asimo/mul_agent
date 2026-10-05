@@ -40,6 +40,10 @@ class SandboxConfig:
     idle_timeout: int = 600
     # /work 的宿主侧映射
     host_cwd: str = ""
+    # Docker-out-of-Docker：容器内 BASE_DIR 对应的宿主机绝对路径。
+    # 留空表示不做翻译（直跑在宿主机时）。容器化部署时需设为宿主项目根，
+    # 使 --mount source= 指向宿主机真实路径。
+    host_app_dir: str = ""
 
     # 运行时自检产物（非配置项）
     warnings: list = field(default_factory=list)
@@ -117,6 +121,7 @@ def load() -> SandboxConfig:
     cfg.network = _get_enum("LOBSTER_SANDBOX_NETWORK", "none", _VALID_NETWORK, cfg)
     cfg.per_user_concurrency = _get_int("LOBSTER_SANDBOX_PER_USER_CONCURRENCY", 4)
     cfg.idle_timeout = _get_int("LOBSTER_SANDBOX_IDLE_TIMEOUT", 600)
+    cfg.host_app_dir = _get_str("LOBSTER_SANDBOX_HOST_APP_DIR", "")
 
     # host_cwd 默认取 BASE_DIR（延迟 import 避免循环）
     try:

@@ -53,6 +53,10 @@ debug_*.py
 count_code.py
 code_stats_*.txt
 
+# Deploy artifacts / temp commit message
+mul_agent-linux-deploy.tar.gz
+_commit_msg.txt
+
 # OS
 .DS_Store
 Thumbs.db

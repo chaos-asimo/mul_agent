@@ -26,6 +26,10 @@ class LocalEmbeddingAdapter(LLMAdapter):
 
     _model_cache: Dict[str, object] = {}
     _lock = threading.Lock()
+    # encode 推理串行锁：sentence-transformers / PyTorch 的 encode 非线程安全，
+    # 多用户并发（FastAPI 线程池）同时对同一全局模型推理会抛异常或返回错误结果，
+    # 导致知识库检索静默失败。推理很快，串行执行不影响体验但杜绝并发崩溃。
+    _encode_lock = threading.Lock()
 
     def __init__(self, model_name: str = "BAAI/bge-base-zh-v1.5", **kwargs):
         super().__init__(
@@ -97,19 +101,22 @@ class LocalEmbeddingAdapter(LLMAdapter):
 
         model = self._load_model()
         try:
-            # sentence-transformers encode returns numpy array
             import numpy as np
-            # 分批编码：避免一次性对上千块文本推理长时间独占 CPU，
-            # 批间短暂让出，降低上传知识库时对其它请求的 CPU 挤压。
-            BATCH_SIZE = 64
-            all_vecs = []
-            for i in range(0, len(texts), BATCH_SIZE):
-                batch = texts[i:i + BATCH_SIZE]
-                vecs = model.encode(batch, convert_to_numpy=True,
-                                    show_progress_bar=False, batch_size=32)
-                all_vecs.append(vecs)
-                if i + BATCH_SIZE < len(texts):
-                    time.sleep(0.02)
+            # sentence-transformers encode 非线程安全：多用户并发推理会抛异常。
+            # 用全局串行锁保护所有 encode 调用（推理很快，串行不影响体验）。
+            with LocalEmbeddingAdapter._encode_lock:
+                # 分批编码：避免一次性对上千块文本推理长时间独占 CPU，
+                # 批间短暂让出，降低上传知识库时对其它请求的 CPU 挤压。
+                BATCH_SIZE = 64
+                all_vecs = []
+                for i in range(0, len(texts), BATCH_SIZE):
+                    batch = texts[i:i + BATCH_SIZE]
+                    vecs = model.encode(batch, convert_to_numpy=True,
+                                        show_progress_bar=False, batch_size=32)
+                    all_vecs.append(vecs)
+                    if i + BATCH_SIZE < len(texts):
+                        time.sleep(0.02)
+            # 拼接在锁外做（纯 numpy，线程安全），缩短持锁时间
             embeddings = np.concatenate(all_vecs, axis=0) if len(all_vecs) > 1 else all_vecs[0]
             embed_ms = (time.time() - embed_start) * 1000
 

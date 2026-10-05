@@ -16,12 +16,26 @@ import io
 import base64
 import json as _json
 import time as _time2
+import logging as _logging
 import hashlib
 import hmac
 
 router = APIRouter(prefix="/api/lobster-mu")
 
 _db_ready = False
+
+
+def get_client_ip(request) -> str:
+    """获取真实客户端 IP：经 nginx 反代时，优先读转发头。
+    X-Real-IP 最可信（nginx 用 $remote_addr 覆盖，客户端无法伪造）；
+    其次 X-Forwarded-For 取最左（原始客户端）；最后回退直连 IP。"""
+    xri = request.headers.get("x-real-ip")
+    if xri:
+        return xri.strip()
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else ""
 
 
 def ensure_db():
@@ -164,7 +178,7 @@ def _verify_totp_code(secret: str, code: str) -> bool:
 @router.post("/login")
 async def mu_login(request: Request, body: MuLoginRequest):
     ensure_db()
-    ip = request.client.host if request.client else ""
+    ip = get_client_ip(request)
     # 速率限制检查（IP+账户组合）
     login_limiter.check(ip, body.username)
     row = user_store.get_by_username(body.username)
@@ -196,7 +210,7 @@ async def mu_login(request: Request, body: MuLoginRequest):
 @router.post("/login/2fa")
 async def mu_login_2fa(request: Request, body: MuTwoFactorRequest):
     ensure_db()
-    ip = request.client.host if request.client else ""
+    ip = get_client_ip(request)
     login_limiter.check(ip, body.username)
     _cleanup_totp_pending()
     pending = _totp_pending.get(body.username)
@@ -267,7 +281,7 @@ async def mu_totp_setup(user: dict = Depends(get_mu_user)):
 @router.post("/totp/confirm")
 async def mu_totp_confirm(request: Request, body: TOTPConfirmRequest, user: dict = Depends(get_mu_user)):
     ensure_db()
-    ip = request.client.host if request.client else ""
+    ip = get_client_ip(request)
     _cleanup_totp_pending()
     pending = _totp_bind_pending.get(user["id"])
     if not pending or pending["expires_at"] < _time.time():
@@ -288,7 +302,7 @@ async def mu_totp_confirm(request: Request, body: TOTPConfirmRequest, user: dict
 @router.post("/totp/disable")
 async def mu_totp_disable(request: Request, body: TOTPDisableRequest, user: dict = Depends(get_mu_user)):
     ensure_db()
-    ip = request.client.host if request.client else ""
+    ip = get_client_ip(request)
     row = user_store.get_by_id(user["id"])
     if not row or not row["totp_enabled"]:
         raise HTTPException(status_code=400, detail="TOTP 未启用")
@@ -307,7 +321,7 @@ async def mu_logout(request: Request):
     u = request.session.get("mu_user")
     uid = u["id"] if u else 0
     username = u["username"] if u else ""
-    ip = request.client.host if request.client else ""
+    ip = get_client_ip(request)
     if u:
         tools.log_operation(uid, "logout", f"{username} 退出登录", ip=ip)
     request.session.pop("mu_user", None)
@@ -346,7 +360,7 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
 
     # Origin 为 null（file:// 打开 HTML）→ 放行，记录日志
     if origin == "null":
-        tools.log_operation(0, "login_direct_file", f"file:// 请求（Origin=null）", ip=request.client.host if request.client else "")
+        tools.log_operation(0, "login_direct_file", f"file:// 请求（Origin=null）", ip=get_client_ip(request))
     elif origin:
         # 有 Origin 且非 null → 跨域请求
         if allowed_origins:
@@ -354,16 +368,16 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
                 pass  # 允许
             else:
                 tools.log_operation(0, "login_direct_blocked", f"来源被拒绝: {origin}", success=False,
-                                    ip=request.client.host if request.client else "")
+                                    ip=get_client_ip(request))
                 raise HTTPException(status_code=403, detail="来源不被允许")
         else:
             # 未配置允许列表 → 拒绝所有跨域请求
             tools.log_operation(0, "login_direct_blocked", f"跨域请求被拒绝(未配置允许列表): {origin}", success=False,
-                                ip=request.client.host if request.client else "")
+                                ip=get_client_ip(request))
             raise HTTPException(status_code=403, detail="来源不被允许")
     # origin 为空（同源请求）→ 放行
     if not origin and referer:
-        tools.log_operation(0, "login_direct_referer", f"Referer: {referer}", ip=request.client.host if request.client else "")
+        tools.log_operation(0, "login_direct_referer", f"Referer: {referer}", ip=get_client_ip(request))
 
     ensure_db()
     username = (body.username or "").strip()
@@ -390,10 +404,10 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
 
     if row["disabled"]:
         tools.log_operation(0, "login_failed", f"已禁用用户 {username} 尝试登录", success=False,
-                            ip=request.client.host if request.client else "")
+                            ip=get_client_ip(request))
         raise HTTPException(status_code=403, detail="账号已禁用")
 
-    ip = request.client.host if request.client else ""
+    ip = get_client_ip(request)
 
     # 已启用微软 Authenticator：建立“待二次验证”受限会话，返回 success 让外部页面跳转，
     # 跳转后由前端接管弹出验证窗口；受限会话不授予业务访问权（get_mu_user 会拦截）
@@ -472,8 +486,18 @@ class SuggestionReply(BaseModel):
 
 @router.get("/admin/users")
 async def admin_list_users(admin: dict = Depends(require_admin)):
+    _t0 = _time2.perf_counter()
     ensure_db()
-    return {"users": user_store.list_users()}
+    _t1 = _time2.perf_counter()
+    users = user_store.list_users()
+    _t2 = _time2.perf_counter()
+    # 分段计时：与 ApiAccessLogMiddleware 记录的请求总耗时对比，
+    # 差值即为请求在到达 handler 前的排队/事件循环阻塞时间。
+    _logging.getLogger("lobster_mu").info(
+        "[perf] /admin/users ensure_db=%.3fms list_users=%.3fms handler_total=%.3fms",
+        (_t1 - _t0) * 1000, (_t2 - _t1) * 1000, (_t2 - _t0) * 1000,
+    )
+    return {"users": users}
 
 
 @router.post("/admin/users")
@@ -532,7 +556,7 @@ async def admin_disable_user_totp(user_id: int, request: Request, admin: dict = 
         raise HTTPException(status_code=404, detail="用户不存在")
     if not row["totp_enabled"]:
         raise HTTPException(status_code=400, detail="该用户未启用两步认证")
-    ip = request.client.host if request.client else ""
+    ip = get_client_ip(request)
     user_store.disable_totp(user_id)
     tools.log_operation(admin["id"], "admin:totp_disabled",
                         f"管理员解绑用户 {row['username']} 的两步认证", ip=ip)
@@ -654,6 +678,7 @@ async def admin_api_access_logs(
     admin: dict = Depends(require_admin),
 ):
     """管理员查询接口访问日志（可按用户/路径/状态码/时间范围筛选，分页）"""
+    _t0 = _time2.perf_counter()
     ensure_db()
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
@@ -675,18 +700,25 @@ async def admin_api_access_logs(
         where += " AND l.created_at <= ?"
         params.append(end_time)
     conn = db.get_conn()
+    _t1 = _time2.perf_counter()
     try:
         total = conn.execute(
             f"SELECT COUNT(*) c FROM mu_api_access_logs l WHERE {where}", params
         ).fetchone()["c"]
+        _t2 = _time2.perf_counter()
         rows = conn.execute(
             f"SELECT l.id, l.method, l.path, l.status, l.duration_ms, l.ip, l.username, l.user_id, l.auth_type, l.created_at, u.display_name "
             f"FROM mu_api_access_logs l LEFT JOIN users u ON u.id = l.user_id "
             f"WHERE {where} ORDER BY l.id DESC LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
+        _t3 = _time2.perf_counter()
     finally:
         conn.close()
+    _logging.getLogger("lobster_mu").info(
+        "[perf] /admin/api-access-logs get_conn=%.1fms count=%.1fms select=%.1fms total=%.1fms",
+        (_t1 - _t0) * 1000, (_t2 - _t1) * 1000, (_t3 - _t2) * 1000, (_t3 - _t0) * 1000,
+    )
     logs = [dict(r) for r in rows]
     for log in logs:
         log["display_name"] = log.get("display_name") or log.get("username") or "-"
@@ -898,14 +930,14 @@ async def mu_chat_models(user: dict = Depends(get_mu_user)):
 
 @router.post("/chat/message")
 async def mu_chat_message(body: ChatMessageRequest, request: Request, user: dict = Depends(check_user_rate)):
-    ip = request.client.host if request.client else ""
+    ip = get_client_ip(request)
     tools.log_operation(user["id"], "chat", f"发送消息: {body.message[:100]}", ip=ip)
     return chat_service.chat_message_once(user["id"], body)
 
 
 @router.post("/chat/stream")
 async def mu_chat_stream(body: ChatStreamRequest, request: Request, user: dict = Depends(check_user_rate)):
-    ip = request.client.host if request.client else ""
+    ip = get_client_ip(request)
     tools.log_operation(user["id"], "chat", f"发送消息: {body.message[:100]}", ip=ip)
     return chat_service.chat_stream_response(user["id"], body)
 
@@ -1057,6 +1089,11 @@ async def mu_script_list(user: dict = Depends(get_mu_user)):
     return {"success": True, "scripts": script_service.list_scripts(user["id"])}
 
 
+@router.get("/script/installation-status")
+async def mu_script_install_status(user: dict = Depends(get_mu_user)):
+    return script_service.get_installation_status(user["id"])
+
+
 @router.get("/script/{script_id}")
 async def mu_script_detail(script_id: int, user: dict = Depends(get_mu_user)):
     s = script_service.get_script(user["id"], script_id)
@@ -1106,11 +1143,6 @@ async def mu_script_install_dep_async(body: DependencyInstallRequest, user: dict
     return script_service.install_dependency_async(user["id"], body.package)
 
 
-@router.get("/script/installation-status")
-async def mu_script_install_status(user: dict = Depends(get_mu_user)):
-    return script_service.get_installation_status(user["id"])
-
-
 @router.get("/script/files/download/{file_name}")
 async def mu_script_file_download(file_name: str, user: dict = Depends(get_mu_user)):
     from fastapi.responses import FileResponse
@@ -1152,6 +1184,85 @@ async def mu_script_generate_pdf(body: dict, user: dict = Depends(check_user_rat
     from lobster_mu import tools
     result_str = tools._tool_generate_pdf(content, user["id"])
     return {"success": "❌" not in result_str, "message": result_str}
+
+
+# ============ 技能（Skill）多用户 ============
+
+@router.get("/skill/list")
+async def mu_skill_list(user: dict = Depends(get_mu_user)):
+    from lobster_mu import skill_store
+    return {"success": True, "skills": skill_store.list_skills(user["id"])}
+
+
+@router.post("/skill")
+async def mu_skill_create(body: dict, user: dict = Depends(get_mu_user)):
+    from lobster_mu import skill_store
+    return skill_store.add(user["id"], body or {})
+
+
+@router.get("/skill/{skill_id}")
+async def mu_skill_detail(skill_id: str, user: dict = Depends(get_mu_user)):
+    from lobster_mu import skill_store
+    s = skill_store.get(user["id"], skill_id)
+    if not s:
+        return {"success": False, "error": "技能不存在或无权访问"}
+    return {"success": True, "skill": s}
+
+
+@router.put("/skill/{skill_id}")
+async def mu_skill_update(skill_id: str, body: dict, user: dict = Depends(get_mu_user)):
+    from lobster_mu import skill_store
+    return skill_store.update(user["id"], skill_id, body or {})
+
+
+@router.delete("/skill/{skill_id}")
+async def mu_skill_delete(skill_id: str, user: dict = Depends(get_mu_user)):
+    from lobster_mu import skill_store
+    return skill_store.delete(user["id"], skill_id)
+
+
+@router.post("/skill/{skill_id}/enable")
+async def mu_skill_enable(skill_id: str, user: dict = Depends(get_mu_user)):
+    from lobster_mu import skill_store
+    return skill_store.set_enabled(user["id"], skill_id, True)
+
+
+@router.post("/skill/{skill_id}/disable")
+async def mu_skill_disable(skill_id: str, user: dict = Depends(get_mu_user)):
+    from lobster_mu import skill_store
+    return skill_store.set_enabled(user["id"], skill_id, False)
+
+
+@router.post("/skill/{skill_id}/execute")
+async def mu_skill_execute(skill_id: str, body: dict, user: dict = Depends(check_user_rate)):
+    from lobster_mu import skill_store
+    return skill_store.execute(user["id"], skill_id, (body or {}).get("params") or {})
+
+
+# ---- 管理员：公共技能管理 ----
+
+@router.get("/admin/skill/list")
+async def admin_skill_list(admin: dict = Depends(require_admin)):
+    from lobster_mu import skill_store
+    return {"success": True, "skills": skill_store.list_public()}
+
+
+@router.post("/admin/skill")
+async def admin_skill_create(body: dict, admin: dict = Depends(require_admin)):
+    from lobster_mu import skill_store
+    return skill_store.add(0, body or {}, is_public=True, is_admin=True)
+
+
+@router.put("/admin/skill/{skill_id}")
+async def admin_skill_update(skill_id: str, body: dict, admin: dict = Depends(require_admin)):
+    from lobster_mu import skill_store
+    return skill_store.update(0, skill_id, body or {}, is_admin=True)
+
+
+@router.delete("/admin/skill/{skill_id}")
+async def admin_skill_delete(skill_id: str, admin: dict = Depends(require_admin)):
+    from lobster_mu import skill_store
+    return skill_store.delete(0, skill_id, is_admin=True)
 
 
 # ============ 工具端点（per-user 路径白名单） ============
@@ -1814,6 +1925,84 @@ async def admin_model_speed(apply: int = 0, admin: dict = Depends(require_admin)
         "current_default": current_default,
         "switched_to": switched_to,
     }}
+
+
+@router.get("/admin/usage-ranking")
+async def admin_usage_ranking(admin: dict = Depends(require_admin)):
+    """管理员查看用户大模型使用排行：按调用次数降序，含各模型调用次数与 token 用量。
+
+    数据源：mu_chat_messages 中 role='assistant' 的行即一次模型调用，
+    每行带 model_name 与 token_stats（JSON: prompt/completion/total tokens）。
+    """
+    ensure_db()
+    conn = db.get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT user_id, model_name, token_stats FROM mu_chat_messages WHERE role = 'assistant'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    # 按用户聚合：总调用数、各模型调用数、token 汇总
+    users_stat = {}  # user_id -> dict
+    for r in rows:
+        uid = r["user_id"]
+        st = users_stat.setdefault(uid, {
+            "user_id": uid, "total_calls": 0,
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+            "models": {},  # model_name -> {calls, prompt_tokens, completion_tokens, total_tokens}
+        })
+        st["total_calls"] += 1
+        model = r["model_name"] or "未知模型"
+        m = st["models"].setdefault(model, {
+            "model_name": model, "calls": 0,
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+        })
+        m["calls"] += 1
+        # 解析 token_stats
+        pt = ct = tt = 0
+        raw = r["token_stats"]
+        if raw:
+            try:
+                obj = _json.loads(raw) if isinstance(raw, str) else raw
+                pt = int(obj.get("prompt_tokens") or 0)
+                ct = int(obj.get("completion_tokens") or 0)
+                tt = int(obj.get("total_tokens") or (pt + ct))
+            except Exception:
+                pass
+        st["prompt_tokens"] += pt
+        st["completion_tokens"] += ct
+        st["total_tokens"] += tt
+        m["prompt_tokens"] += pt
+        m["completion_tokens"] += ct
+        m["total_tokens"] += tt
+
+    # 关联用户信息，按总调用次数降序
+    ranking = []
+    for uid, st in users_stat.items():
+        u = user_store.get_by_id(uid)
+        st["username"] = u["username"] if u else f"#{uid}"
+        st["display_name"] = (u["display_name"] if u else "") or st["username"]
+        st["role"] = u["role"] if u else "user"
+        # models 转为列表并按调用次数降序
+        st["models"] = sorted(st["models"].values(), key=lambda x: x["calls"], reverse=True)
+        ranking.append(st)
+    ranking.sort(key=lambda x: x["total_calls"], reverse=True)
+
+    return {"success": True, "ranking": ranking}
+
+
+@router.post("/admin/db-maintenance")
+async def admin_db_maintenance(admin: dict = Depends(require_admin)):
+    """管理员触发数据库维护：checkpoint + VACUUM + ANALYZE。
+
+    用于修复「随时间查询变慢」：回收删除大字段（向量等）留下的空闲页、
+    收缩 WAL、更新查询统计。VACUUM 在大库上可能耗时数十秒，故放到线程池
+    执行，避免同步阻塞整个 async 事件循环（否则期间所有请求的 TTFB 都会飙高）。
+    """
+    ensure_db()
+    info = await asyncio.to_thread(db.db_maintenance)
+    return {"success": True, "info": info}
 
 
 # ============ Skills（全局只读 + 以用户身份执行） ============

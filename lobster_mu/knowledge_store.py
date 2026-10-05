@@ -58,7 +58,10 @@ def _get_embedding_adapter():
                 continue
             if getattr(model_config, "model_type", "") != "embedding":
                 continue
-            if not getattr(model_config, "api_key", ""):
+            # 本地模型（api_type=="local"，如 BGE）不需要 api_key；只有远程模型才校验 key。
+            # 之前这里一律要求非空 api_key，会把本地 embedding 模型过滤掉，导致适配器为 None、
+            # 知识库入库报错且检索恒为空——多用户环境下知识库完全失效的根因。
+            if getattr(model_config, "api_type", "") != "local" and not getattr(model_config, "api_key", ""):
                 continue
             signature = (
                 getattr(model_config, "api_type", ""),
@@ -270,21 +273,26 @@ def search(user_id: int, query: str, top_k: int = 5, threshold: float = 0.3) -> 
             return []
 
         # 2. 批量查共享向量池
-        doc_map = {d["id"]: d["filename"] or "未知文档" for d in docs}
+        # content_hash -> filename（同一内容可能被多文档引用，取第一个即可）
+        hash_to_name = {}
+        for d in docs:
+            h = d["content_hash"]
+            if h and h not in hash_to_name:
+                hash_to_name[h] = d["filename"] or "未知文档"
         hashes = [d["content_hash"] for d in docs if d["content_hash"]]
         if not hashes:
-            # 兼容存量未迁移数据：回退到旧表 mu_knowledge_vectors
+            # 兼容存量未迁移数据：回退到旧表 mu_knowledge_vectors（含 filename 列）
             rows = conn.execute(
-                "SELECT v.content, v.vector, d.filename FROM mu_knowledge_vectors v"
+                "SELECT v.content, v.vector, d.filename AS filename FROM mu_knowledge_vectors v"
                 " LEFT JOIN mu_knowledge_docs d ON v.doc_id = d.id"
                 " WHERE v.user_id = ?",
                 (user_id,),
             ).fetchall()
         else:
-            # 用 IN 查询（hash 数量 = 用户文档数，通常 < 100）
+            # 用 IN 查询（hash 数量 = 用户文档数，通常 < 100）；含 content_hash 列，无 filename
             placeholders = ",".join("?" * len(hashes))
             rows = conn.execute(
-                f"SELECT v.content, v.vector, v.content_hash"
+                f"SELECT v.content, v.vector, v.content_hash AS content_hash"
                 f" FROM kb_content_vectors v"
                 f" WHERE v.content_hash IN ({placeholders})",
                 hashes,
@@ -292,6 +300,13 @@ def search(user_id: int, query: str, top_k: int = 5, threshold: float = 0.3) -> 
 
     finally:
         conn.close()
+
+    def _row_col(row, key, default=None):
+        """安全取 sqlite3.Row 的列：列不存在时返回 default（不抛 IndexError）"""
+        try:
+            return row[key]
+        except Exception:
+            return default
 
     scored = []
     for row in rows:
@@ -301,15 +316,11 @@ def search(user_id: int, query: str, top_k: int = 5, threshold: float = 0.3) -> 
             continue
         score = _cosine(query_embedding, vec)
         if score >= threshold:
-            # 确定 filename
-            if row["content_hash"] in doc_map:
-                # 新表：通过 content_hash 映射
-                filename = next(
-                    (d["filename"] or "未知文档" for d in docs if d["content_hash"] == row["content_hash"]),
-                    "未知文档",
-                )
-            else:
-                filename = row["filename"] or "未知文档"
+            # 确定 filename：新表走 content_hash 映射，旧表直接取 filename 列
+            rh = _row_col(row, "content_hash")
+            filename = hash_to_name.get(rh) if rh else None
+            if not filename:
+                filename = _row_col(row, "filename") or "未知文档"
             scored.append((score, filename, row["content"] or ""))
 
     scored.sort(key=lambda x: x[0], reverse=True)

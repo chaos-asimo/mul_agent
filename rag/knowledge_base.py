@@ -65,7 +65,8 @@ class KnowledgeBase:
                 continue
             if getattr(model_config, "model_type", "") != "embedding":
                 continue
-            if not getattr(model_config, "api_key", ""):
+            # 本地模型（api_type=="local"，如 BGE）不需要 api_key，不能因 key 为空被过滤
+            if getattr(model_config, "api_type", "") != "local" and not getattr(model_config, "api_key", ""):
                 continue
             try:
                 adapter = create_embedding_adapter(model_config)

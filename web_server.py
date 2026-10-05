@@ -6,13 +6,26 @@ import json
 import logging
 from datetime import datetime
 
-# Add packages directory to sys.path for third-party dependencies
+# 用户依赖目录 packages/ 只能“补充”系统包，绝不能“覆盖”——故用 append 而非 insert(0)。
+# 否则用户安装的不兼容包（如需要 X86_V2 的 numpy）会顶掉系统包，导致主进程 import 失败、服务起不来。
 _packages_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'packages')
 if _packages_dir not in sys.path:
-    sys.path.insert(0, _packages_dir)
+    sys.path.append(_packages_dir)
 
 from utils.logger import setup_logging, logger
 setup_logging()
+
+
+def get_client_ip(request) -> str:
+    """获取真实客户端 IP：经 nginx 反代时优先读转发头（X-Real-IP 最可信），
+    其次 X-Forwarded-For 最左，最后回退直连 IP。"""
+    xri = request.headers.get("x-real-ip")
+    if xri:
+        return xri.strip()
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else ""
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends
@@ -118,6 +131,27 @@ async def lifespan(app: FastAPI):
             login_limiter.cleanup()
     _cleanup_task = _asyncio.create_task(_limiter_cleanup())
 
+    # 事件循环心跳探针：每秒醒一次，若实际间隔显著大于 1s，说明事件循环被
+    # 某个同步任务阻塞（表现为所有请求排队、handler 很快但整页很慢）。
+    async def _loop_heartbeat():
+        import time as _ht
+        import sys as _sys
+        import traceback as _tb
+        while True:
+            _t = _ht.perf_counter()
+            await _asyncio.sleep(1)
+            _gap = _ht.perf_counter() - _t
+            if _gap > 3.0:
+                logger.warning(
+                    "[loop-block] 事件循环被阻塞 %.1fs（预期 1s）；"
+                    "此刻所有并发请求都会排队，复现慢请求请对照此刻前后日志",
+                    _gap)
+                # 打印所有线程调用栈，直接定位阻塞点
+                for _tid, _frame in _sys._current_frames().items():
+                    _stk = "".join(_tb.format_stack(_frame))
+                    logger.warning("[loop-block] 线程 tid=%s 栈:\n%s", _tid, _stk)
+    _heartbeat_task = _asyncio.create_task(_loop_heartbeat())
+
     # 定期清理知识库共享内容的无引用孤儿（每小时一次，后台线程避免阻塞事件循环）
     def _kb_gc_loop():
         import time as _time
@@ -150,6 +184,7 @@ async def lifespan(app: FastAPI):
     yield
 
     _cleanup_task.cancel()
+    _heartbeat_task.cancel()
 
     logger.info("Stopping cron scheduler...")
     await lobster_claw_router.cron_scheduler.stop()
@@ -213,12 +248,18 @@ class ApiAccessLogMiddleware(BaseHTTPMiddleware):
         except Exception:
             self._safe_log(request, path, 500, int((_time_mod.perf_counter() - start) * 1000))
             raise
-        self._safe_log(request, path, response.status_code, int((_time_mod.perf_counter() - start) * 1000))
+        dur_ms = int((_time_mod.perf_counter() - start) * 1000)
+        self._safe_log(request, path, response.status_code, dur_ms)
+        # 慢请求同时打到主日志，便于与 handler 内 [perf] 分段计时对照：
+        # 若此处很大但 handler_total 很小 => 耗时在 handler 之前（事件循环阻塞/锁等待）。
+        if dur_ms > 3000:
+            logger.warning("[perf] MW %s %s total=%dms (handler 内分段请见 [perf] 日志)",
+                           request.method, path, dur_ms)
         return response
 
     def _safe_log(self, request, path: str, status: int, duration_ms: int):
         try:
-            ip = request.client.host if request.client else ""
+            ip = get_client_ip(request)
             session = getattr(request, "session", None) or {}
             mu_user = session.get("mu_user") or {}
             username = mu_user.get("username", "")
@@ -431,7 +472,7 @@ async def login(request: Request, login_data: LoginRequest):
     from lobster_mu import user_store
     from lobster_mu.security import verify_password
 
-    ip = request.client.host if request.client else ""
+    ip = get_client_ip(request)
     login_limiter.check(ip, login_data.username)
 
     ensure_db()

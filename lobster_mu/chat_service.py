@@ -27,6 +27,7 @@ MCP_CALL_PATTERN = re.compile(r"\[MCP_CALL\](.*?)\[/MCP_CALL\]", re.DOTALL)
 WEB_SEARCH_PATTERN = re.compile(r"\[WEB_SEARCH\](.*?)\[/WEB_SEARCH\]", re.DOTALL)
 AGENT_CALL_PATTERN = re.compile(r"\[AGENT_CALL\](.*?)\[/AGENT_CALL\]", re.DOTALL)
 PPT_GEN_PATTERN = re.compile(r"\[PPT_GEN\](.*?)\[/PPT_GEN\]", re.DOTALL)
+SKILL_CALL_PATTERN = re.compile(r"\[SKILL_CALL\](.*?)\[/SKILL_CALL\]", re.DOTALL)
 
 
 def _build_ppt_prompt_block(ppt_intent: bool) -> str:
@@ -209,6 +210,58 @@ def _parse_mcp_calls(text: str) -> List[Dict[str, Any]]:
             })
         except Exception:
             calls.append({"server": "", "tool": "", "arguments": {}, "raw_ok": False, "raw": payload[:200]})
+    return calls
+
+
+def _build_skill_prompt_block(skills: List[Dict[str, Any]]) -> str:
+    """把用户已启用的技能（私有+公共）构造为系统提示词段落"""
+    if not skills:
+        return ""
+    lines = [
+        "\n\n你可以调用以下用户技能（Skill）来完成任务。需要使用时，在回复中输出标记块：",
+        '[SKILL_CALL]{"skill_id":"<技能ID>","params":{<参数JSON>}}[/SKILL_CALL]',
+        "规则：",
+        "- skill_id 必须是下面列出的技能 ID，不要编造",
+        "- params 必须是合法 JSON，键名要与技能参数一致",
+        "- 技能执行结果由系统自动回传，你再基于结果给出最终回答；最终回复中不要保留 [SKILL_CALL] 标记",
+        "",
+        "可用技能：",
+    ]
+    for s in skills:
+        sid = s.get("skill_id") or s.get("id")
+        name = (s.get("name") or "").strip()
+        desc = (s.get("description") or "").strip().replace("\n", " ")
+        if len(desc) > 100:
+            desc = desc[:100] + "..."
+        cfg = s.get("config") or {}
+        params = cfg.get("parameters") or []
+        param_hint = ""
+        if isinstance(params, list) and params:
+            parts = []
+            for p in params[:6]:
+                if isinstance(p, dict):
+                    pn = p.get("name", "")
+                    parts.append(f"{pn}({'必填' if p.get('required') else '可选'})")
+            param_hint = " 参数: " + ", ".join(parts)
+        tag = "【公共】" if s.get("is_public") else ""
+        lines.append(f"- {tag}技能: {name} (id={sid}) — {desc}{param_hint}")
+    return "\n".join(lines)
+
+
+def _parse_skill_calls(text: str) -> List[Dict[str, Any]]:
+    """从模型回复中解析 [SKILL_CALL] 标记块"""
+    calls = []
+    for m in SKILL_CALL_PATTERN.finditer(text or ""):
+        payload = m.group(1).strip()
+        try:
+            obj = json.loads(payload)
+            calls.append({
+                "skill_id": str(obj.get("skill_id", "")),
+                "params": obj.get("params") or {},
+                "raw_ok": True,
+            })
+        except Exception:
+            calls.append({"skill_id": "", "params": {}, "raw_ok": False, "raw": payload[:200]})
     return calls
 
 
@@ -629,10 +682,24 @@ def get_chat_models() -> dict:
         return {"success": False, "error": str(e)}
 
 
-def get_environment_block() -> str:
+def get_environment_block(user_id: int = None) -> str:
     try:
         from web.routes.lobster_claw import get_environment_snapshot, format_environment_for_prompt
-        env_aware_text = format_environment_for_prompt(get_environment_snapshot())
+        snapshot = get_environment_snapshot()
+        # 环境快照的知识库统计读的是全局 rag.KnowledgeBase（多用户场景下为空），
+        # 这里用当前用户的 knowledge_store 统计覆盖，让 LLM 看到“我的知识库”真实数量。
+        if user_id is not None:
+            try:
+                from lobster_mu import knowledge_store
+                st = knowledge_store.stats(user_id)
+                snapshot = dict(snapshot)
+                snapshot["knowledge_base"] = {
+                    "documents": int(st.get("documents", 0)),
+                    "chunks": int(st.get("chunks", 0)),
+                }
+            except Exception:
+                pass
+        env_aware_text = format_environment_for_prompt(snapshot)
     except Exception:
         env_aware_text = ""
     return "\n\n" + env_aware_text + "\n" if env_aware_text else ""
@@ -816,7 +883,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
             yield f"data: {json.dumps({'success': False, 'error': '未找到可用的LLM适配器'})}\n\n"
         return StreamingResponse(error_generator(), media_type="text/event-stream")
 
-    env_block = get_environment_block()
+    env_block = get_environment_block(user_id)
     if request.files:
         system_prompt = """你是龙虾Claw，一个强大的AI智能体助手。你可以帮助用户回答问题、分析信息、提供建议。当提供了工具执行结果时，请基于结果给出详细的解答和说明。
 
@@ -847,6 +914,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
         # MCP 工具清单 + Agent 编排清单（仅纯文本对话注入；发现失败静默降级）
         mcp_block = ""
         agent_block = ""
+        skill_block = ""
         web_search_enabled = False
         web_search_block = ""
         if not request.files and not has_images:
@@ -862,6 +930,12 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
             except Exception as _e:
                 print(f"[DEBUG] Agent 清单发现失败，跳过注入: {_e}")
                 agent_block = ""
+            try:
+                from lobster_mu import skill_store
+                skill_block = _build_skill_prompt_block(skill_store.list_enabled(user_id))
+            except Exception as _e:
+                print(f"[DEBUG] 技能清单发现失败，跳过注入: {_e}")
+                skill_block = ""
             # 检查是否有启用的搜索引擎
             try:
                 from search.search_manager import SearchManager
@@ -872,7 +946,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                 web_search_enabled = False
             web_search_block = _build_web_search_prompt_block(web_search_enabled)
         ppt_block = _build_ppt_prompt_block(ppt_intent)
-        effective_system_prompt = system_prompt + web_search_block + agent_block + mcp_block + ppt_block
+        effective_system_prompt = system_prompt + web_search_block + agent_block + mcp_block + skill_block + ppt_block
         try:
             if tool_call:
                 tool_name = tool_call.get("tool")
@@ -1313,13 +1387,43 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                     if mcp_final.strip():
                         full_response = mcp_final.strip()
 
+            # ============ 技能(Skill)调用分支 ============
+            if not request.files and not has_images and "[SKILL_CALL]" in full_response:
+                from lobster_mu import skill_store
+                skill_calls = _parse_skill_calls(full_response)
+                full_response = SKILL_CALL_PATTERN.sub("", full_response).strip()
+                skill_result_blocks = []
+                for idx, call in enumerate(skill_calls, 1):
+                    if not call.get("raw_ok"):
+                        err_msg = f"第 {idx} 个技能调用标记格式错误（不是合法 JSON），已跳过。"
+                        yield "data: " + json.dumps({'success': True, 'content': f"⚠️ {err_msg}\n\n", 'session_id': session_id}) + "\n\n"
+                        skill_result_blocks.append(f"[技能 {idx}] 失败: {err_msg}")
+                        continue
+                    sid = call["skill_id"]
+                    yield "data: " + json.dumps({'success': True, 'content': f"\n🔧 正在执行技能: {sid}...\n", 'session_id': session_id}) + "\n\n"
+                    res = skill_store.execute(user_id, sid, call.get("params") or {})
+                    if res.get("success"):
+                        yield "data: " + json.dumps({'success': True, 'content': f"📋 技能 {sid} 执行完成。\n\n", 'session_id': session_id}) + "\n\n"
+                        skill_result_blocks.append(
+                            f"[技能 {idx}] id={sid}\n参数: {json.dumps(call.get('params') or {}, ensure_ascii=False)[:500]}\n"
+                            f"结果:\n{str(res.get('result', ''))[:4000]}"
+                        )
+                    else:
+                        err = res.get("error") or "未知错误"
+                        yield "data: " + json.dumps({'success': True, 'content': f"❌ 技能 {sid} 执行失败: {err}\n\n", 'session_id': session_id}) + "\n\n"
+                        skill_result_blocks.append(f"[技能 {idx}] id={sid}\n执行失败: {err}")
+                if skill_result_blocks:
+                    full_response = (full_response + "\n\n" + "\n\n".join(skill_result_blocks)).strip()
+
             # 安全网：剥除任何残留标记（闭合块/未闭合片段），不进入最终答复与历史
             full_response = AGENT_CALL_PATTERN.sub("", full_response)
             full_response = MCP_CALL_PATTERN.sub("", full_response)
+            full_response = SKILL_CALL_PATTERN.sub("", full_response)
             full_response = WEB_SEARCH_PATTERN.sub("", full_response)
             full_response = PPT_GEN_PATTERN.sub("", full_response)
             full_response = re.sub(r"\[AGENT_CALL\].*$", "", full_response, flags=re.DOTALL)
             full_response = re.sub(r"\[MCP_CALL\].*$", "", full_response, flags=re.DOTALL)
+            full_response = re.sub(r"\[SKILL_CALL\].*$", "", full_response, flags=re.DOTALL)
             full_response = re.sub(r"\[WEB_SEARCH\].*$", "", full_response, flags=re.DOTALL)
             full_response = re.sub(r"\[PPT_GEN\].*$", "", full_response, flags=re.DOTALL).strip()
             final_response = full_response
@@ -1366,7 +1470,7 @@ def chat_message_once(user_id: int, request: ChatMessageRequest) -> dict:
         return {"success": False, "error": "未找到可用的LLM适配器"}
     session_id = session_store.get_or_create_session(user_id, request.session_id)
     try:
-        env_block = get_environment_block()
+        env_block = get_environment_block(user_id)
         system_prompt = "你是龙虾Claw，一个强大的AI智能体助手。" + env_block
         context = session_store.get_messages(user_id, session_id)[-10:] or []
         messages = adapter.create_prompt(system_prompt, request.message, context)

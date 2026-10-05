@@ -394,6 +394,68 @@ body {
   white-space: pre;
 }
 
+/* ===== Python 语法高亮（关键字突显，与 v1 能力保持一致） ===== */
+.python-highlight {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  line-height: 1.6;
+  color: var(--md-code-text, #d4d4d4);
+  margin: 0;
+  white-space: pre;
+  word-wrap: normal;
+}
+.python-keyword-control { color: #c586c0; font-weight: bold; }
+.python-keyword-def { color: #569cd6; font-weight: bold; }
+.python-keyword-logic { color: #c586c0; }
+.python-keyword-import { color: #569cd6; }
+.python-builtin-type { color: #4ec9b0; font-weight: bold; }
+.python-builtin-func { color: #4ec9b0; }
+.python-builtin-const { color: #569cd6; font-weight: bold; }
+.python-string { color: #ce9178; }
+.python-comment { color: #6a9955; font-style: italic; }
+.python-function { color: #dcdcaa; }
+.python-class { color: #4ec9b0; font-weight: bold; }
+.python-decorator { color: #c586c0; }
+.python-magic { color: #c586c0; font-weight: bold; }
+.python-number { color: #b5cea8; }
+.python-exception { color: #f14c4c; font-weight: bold; }
+
+/* 编辑器：透明 textarea 叠加高亮层（textarea 在上接收输入，pre 在下显示高亮） */
+.code-editor-wrap {
+  position: relative;
+  border: 1px solid var(--border, #334155);
+  border-radius: 0.5rem;
+  background: var(--md-pre-bg, #1e1e1e);
+  overflow: hidden;
+}
+.code-editor-wrap textarea {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  min-height: 18rem;
+  resize: vertical;
+  padding: 0.75rem 1rem;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--md-code-text, #e2e8f0);
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  border: none;
+  outline: none;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow: auto;
+}
+.code-editor-wrap .code-highlight-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  padding: 0.75rem 1rem;
+  margin: 0;
+  overflow: auto;
+}
+
 .markdown-body table {
   border-collapse: collapse;
   margin: 0.6em 0;

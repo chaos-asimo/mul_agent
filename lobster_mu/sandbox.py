@@ -28,6 +28,145 @@ _CFG = sandbox_config.config
 _GLOBAL_DOCKER_SEMAPHORE = threading.Semaphore(16)
 
 
+def _packages_bootstrap(target: str = "/packages") -> str:
+    """生成引导代码：把用户依赖目录追加到 sys.path 末尾（仅补充，不覆盖系统包）。
+
+    必须 append 而非前置——否则用户安装的损坏/不兼容包（如坏 numpy）会遮蔽
+    系统 site-packages 里的正常包，导致 import 失败。
+    """
+    return (
+        "import sys as _sys\n"
+        f"if {target!r} not in _sys.path:\n"
+        f"    _sys.path.append({target!r})\n"
+    )
+
+
+def _matplotlib_fmt_shim() -> str:
+    """生成 matplotlib 格式字符串容错垫片代码（注入到用户脚本前执行）。
+
+    AI 生成的绘图代码常把完整颜色名写进 fmt，如 plt.plot(x, y, 'gray-')，
+    matplotlib 只认单字母颜色简写，会抛 ValueError: 'gray-' is not a valid
+    format string。这里在 import matplotlib 后给 Axes.plot 打补丁：把
+    'gray-' 这类 <完整颜色名><线型/标记> 自动拆成 color='gray' + fmt='-'，
+    仅修正明显的错误写法，不影响正常单字母 fmt（如 'b-'、'go-'）。
+    """
+    return r'''
+# === matplotlib fmt 容错垫片（直接导入并打补丁，确保可靠生效）===
+try:
+    import re as _re
+    import matplotlib.axes as _maxes
+    if not getattr(_maxes.Axes, "_lobster_fmt_shim", False):
+        import matplotlib.colors as _mcolors
+        _cnames = set(_mcolors.CSS4_COLORS) | set(_mcolors.BASE_COLORS) | set(_mcolors.TABLEAU_COLORS)
+        _cnames |= {"C%d" % i for i in range(10)}
+        # 只处理“完整颜色词”（长度>1），单字母简写（b-/go-）保持原行为
+        _cnames = sorted([n for n in _cnames if len(n) > 1], key=len, reverse=True)
+        _fmtre = _re.compile(r"^[-\s.*o^v<>1234spPhH+Xx|_,]+$")
+        _orig_plot = _maxes.Axes.plot
+
+        def _split_fmt(s):
+            for n in _cnames:
+                if s.startswith(n):
+                    rest = s[len(n):]
+                    if rest == "" or _fmtre.match(rest):
+                        return n, rest
+            return None
+
+        def _lobster_plot(self, *args, **kwargs):
+            if "fmt" not in kwargs:
+                na = []
+                col = None
+                for a in args:
+                    if col is None and isinstance(a, str):
+                        r = _split_fmt(a)
+                        if r is not None:
+                            n, rest = r
+                            col = n
+                            if rest:
+                                na.append(rest)
+                            continue
+                    na.append(a)
+                args = na
+                if col is not None:
+                    kwargs.setdefault("color", col)
+            return _orig_plot(self, *args, **kwargs)
+
+        _maxes.Axes.plot = _lobster_plot
+        _maxes.Axes._lobster_fmt_shim = True
+
+    # --- 中文字体别名：把脚本常引用的 Windows 中文字体名映射到已装的文泉驿 ---
+    # 脚本（尤其 AI 生成的）常写 rcParams['font.sans-serif']=['SimHei','Microsoft YaHei',...]，
+    # Linux 无这些字体会导致中文变方块。这里把它们别名到预装的 wqy-zenhei，脚本无需改动。
+    try:
+        import glob as _glob, os as _os
+        import matplotlib.font_manager as _fm
+        if not getattr(_fm.fontManager, "_lobster_cjk_alias", False):
+            _cjk = None
+            for _pat in ("/usr/share/fonts/**/wqy*.ttc",
+                         "/usr/share/fonts/**/wqy*.ttf",
+                         "/usr/share/fonts/**/NotoSansCJK*.otf",
+                         "/usr/share/fonts/**/SourceHanSans*.otf"):
+                _hits = _glob.glob(_pat, recursive=True)
+                if _hits:
+                    _cjk = _hits[0]
+                    break
+            if _cjk and _os.path.exists(_cjk):
+                try:
+                    _fm.fontManager.addfont(_cjk)
+                except Exception:
+                    pass
+                from matplotlib.font_manager import FontEntry as _FE
+                for _alias in ("SimHei", "Microsoft YaHei", "Arial Unicode MS",
+                               "SimSun", "KaiTi", "FangSong", "STHeiti", "STSong",
+                               "PingFang SC", "Hiragino Sans GB",
+                               "Source Han Sans CN", "Source Han Sans SC",
+                               "Noto Sans CJK SC", "Noto Sans SC",
+                               "WenQuanYi Zen Hei", "WenQuanYi Micro Hei"):
+                    _fm.fontManager.ttflist.append(
+                        _FE(fname=_cjk, name=_alias))
+                # 把文泉驿塞进默认 sans-serif 回退，保证“通用 sans-serif”也能出中文
+                try:
+                    import matplotlib as _mpl
+                    _cur = list(_mpl.rcParams.get("font.sans-serif", []))
+                    if "WenQuanYi Zen Hei" not in _cur:
+                        _mpl.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei"] + _cur
+                except Exception:
+                    pass
+                _fm.fontManager._lobster_cjk_alias = True
+    except Exception:
+        pass
+except Exception:
+    pass
+# === 垫片结束 ===
+'''
+
+
+def _sandbox_lib_path() -> str:
+    """扫描 packages 下所有含 .so 的目录，转成沙箱内路径，拼为 LD_LIBRARY_PATH。
+
+    解决 numpy/scipy 等把依赖原生库（如 libscipy_openblas64_*.so）放在
+    <pkg>.libs/ 下、但其 RPATH 在 --target 布局里找不到的问题。ld.so 只在
+    进程启动时读 LD_LIBRARY_PATH，故必须在 docker run 时注入，不能运行时改。
+    返回空串表示无 .so。
+    """
+    try:
+        from lobster_mu.script_service import PACKAGES_DIR
+    except Exception:
+        return ""
+    if not os.path.isdir(PACKAGES_DIR):
+        return ""
+    base = os.path.abspath(PACKAGES_DIR)
+    dirs = []
+    for root, _sub, files in os.walk(base):
+        if any(f.endswith(".so") for f in files):
+            rel = os.path.relpath(root, base)
+            sp = "/packages" if rel == "." else "/packages/" + rel.replace(os.sep, "/")
+            dirs.append(sp)
+    # 附带标准库路径，避免覆盖镜像原有的 LD_LIBRARY_PATH 时丢失系统库
+    std = "/usr/local/lib:/usr/local/lib64:/usr/lib:/usr/lib64:/lib:/lib64"
+    return ":".join(dirs + [std]) if dirs else std
+
+
 class SandboxUnavailableError(RuntimeError):
     """沙箱后端不可用（Docker 未启动/镜像缺失/WSL2 未就绪）"""
 
@@ -91,17 +230,18 @@ class LocalExecutor(SandboxExecutor):
             os.makedirs(work_dir or str(BASE_DIR), exist_ok=True)
             fd, script_path = tempfile.mkstemp(suffix=".py", dir=work_dir or str(BASE_DIR))
             try:
+                # 引导：用户依赖目录追加到 sys.path 末尾（系统包优先，不遮蔽）
+                try:
+                    from lobster_mu.script_service import PACKAGES_DIR
+                    boot = _packages_bootstrap(PACKAGES_DIR)
+                except Exception:
+                    boot = ""
+                boot += _matplotlib_fmt_shim()
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(code)
+                    f.write(boot + code)
                 env = os.environ.copy()
                 env["PYTHONIOENCODING"] = "utf-8"
                 env["PYTHONUTF8"] = "1"
-                try:
-                    from lobster_mu.script_service import PACKAGES_DIR
-                    if PACKAGES_DIR not in env.get("PYTHONPATH", ""):
-                        env["PYTHONPATH"] = PACKAGES_DIR + os.pathsep + env.get("PYTHONPATH", "")
-                except Exception:
-                    pass
                 proc = subprocess.run(
                     ["python", "-B", script_path],
                     capture_output=True, timeout=timeout,
@@ -201,31 +341,43 @@ class DockerExecutor(SandboxExecutor):
         )
 
     # ---- 挂载参数构建（§4.1） ----
+    def _host_path(self, path: str) -> str:
+        """Docker-out-of-Docker 路径翻译：容器内 BASE_DIR 下的路径映射到宿主机。
+        未配置 host_app_dir 时原样返回（直跑宿主机场景）。"""
+        host_app = (_CFG.host_app_dir or "").rstrip("/")
+        if not host_app:
+            return path
+        base = str(BASE_DIR).rstrip("/")
+        ap = os.path.abspath(path)
+        if ap == base or ap.startswith(base + os.sep):
+            return host_app + ap[len(base):]
+        return path
+
     def _build_mounts(self, user_id: int, work_dir: Optional[str]) -> list:
         from lobster_mu.paths import files_dir
         mounts = []
         # /files (rw)：用户产物目录
         try:
-            fdir = files_dir(user_id)
+            fdir = self._host_path(files_dir(user_id))
             mounts.append(f"--mount=type=bind,source={fdir},target=/files")
         except Exception:
             pass
         # /data (ro)：数据目录只读
         data_dir = os.path.join(BASE_DIR, "data")
         if os.path.isdir(data_dir):
-            mounts.append(f"--mount=type=bind,source={data_dir},target=/data,ro")
+            mounts.append(f"--mount=type=bind,source={self._host_path(data_dir)},target=/data,ro")
         # /packages (ro)：第三方包只读（P7 决议）
         try:
             from lobster_mu.script_service import PACKAGES_DIR
             if os.path.isdir(PACKAGES_DIR):
-                mounts.append(f"--mount=type=bind,source={PACKAGES_DIR},target=/packages,ro")
+                mounts.append(f"--mount=type=bind,source={self._host_path(PACKAGES_DIR)},target=/packages,ro")
         except Exception:
             pass
         # work_dir 额外挂载（脚本执行时若 work_dir != files_dir）
         if work_dir and os.path.isdir(work_dir):
             wd = os.path.abspath(work_dir)
             if wd != os.path.abspath(files_dir(user_id)):
-                mounts.append(f"--mount=type=bind,source={wd},target=/work")
+                mounts.append(f"--mount=type=bind,source={self._host_path(wd)},target=/work")
         return mounts
 
     def _run_docker(self, args: list, timeout: int, user_id: int,
@@ -300,6 +452,18 @@ class DockerExecutor(SandboxExecutor):
         args.extend(["--cap-drop", "ALL", "--security-opt", "no-new-privileges"])
         # 非 root 用户
         args.extend(["--user", "lobster"])
+        # 注意：不设置 PYTHONPATH=/packages！PYTHONPATH 会前置到 sys.path，
+        # 导致用户安装的（可能损坏/不兼容的）包遮蔽系统 site-packages 里的正常包
+        # （典型：用户装了坏 numpy，import numpy 拿到坏的 → C 扩展加载失败）。
+        # 用户依赖改为在执行代码前以 sys.path.append 注入（末尾，仅补充系统包），
+        # 见 exec_script / exec_shell 的 _packages_bootstrap。
+        args.extend(["--env", "PYTHONIOENCODING=utf-8", "--env", "PYTHONUTF8=1"])
+        # 注入 LD_LIBRARY_PATH：让 numpy/scipy 等放在 <pkg>.libs/ 下的原生 .so
+        # （如 libscipy_openblas64_*.so）能被动态链接器找到。ld.so 仅在进程启动
+        # 时读取，必须在此注入，不能运行时改环境变量。
+        lib_path = _sandbox_lib_path()
+        if lib_path:
+            args.extend(["--env", f"LD_LIBRARY_PATH={lib_path}"])
         # 停止超时
         args.extend(["--stop-timeout", "3"])
         # 镜像
@@ -347,8 +511,9 @@ class DockerExecutor(SandboxExecutor):
         args = self._base_args(user_id, mounts)
 
         # 脚本通过 python3 -B -c 传入（与 exec_shell 的 sh -c 模式一致）
+        # 前置引导：把 /packages 追加到 sys.path 末尾（系统包优先，用户包仅补充）。
         import shlex
-        script_cmd = "python3 -B -c " + shlex.quote(code)
+        script_cmd = "python3 -B -c " + shlex.quote(_packages_bootstrap("/packages") + _matplotlib_fmt_shim() + code)
         args.extend(["sh", "-c", script_cmd])
         # 超时 kill 需要容器名（_base_args 已设置 self._last_container）
         timeout = min(timeout, max(timeout, _CFG.timeout)) if timeout else _CFG.timeout
@@ -416,3 +581,59 @@ def reset_cache():
     _CFG = sandbox_config.config
     DockerExecutor._docker_ok_cache = None
     DockerExecutor._consecutive_failures = 0
+
+
+def install_dependency_in_sandbox(package_name: str, timeout: int = 600):
+    """在沙箱镜像内（其自带 python3 与执行环境 ABI 一致）安装依赖到共享 /packages。
+
+    为何必须在沙箱内装：主容器是 python3.11，沙箱镜像是 python3.12。
+    若用主容器 pip 装带 C 扩展的包（numpy/pandas/torch…），得到的 .so 是
+    cpython-311，在沙箱 3.12 里 import 必崩（ABI 不匹配）。
+    故安装也走沙箱镜像的 python3，装出的二进制与执行环境一致。
+
+    返回 (ok: bool, output: str)。docker 不可用时返回 (False, 原因)。
+    """
+    if not _CFG.enabled or _CFG.mode != "docker":
+        return False, "沙箱未启用（mode!=docker），无法在沙箱内安装"
+    exe = DockerExecutor()
+    if not exe._docker_available():
+        return False, "docker 不可用，无法在沙箱内安装"
+
+    from lobster_mu.script_service import PACKAGES_DIR
+    host_pkg = exe._host_path(PACKAGES_DIR)
+
+    mirror_sources = [
+        ('https://pypi.tuna.tsinghua.edu.cn/simple', 'pypi.tuna.tsinghua.edu.cn'),
+        ('https://mirrors.aliyun.com/pypi/simple/', 'mirrors.aliyun.com'),
+        ('https://pypi.mirrors.ustc.edu.cn/simple/', 'pypi.mirrors.ustc.edu.cn'),
+        ('https://pypi.douban.com/simple/', 'pypi.douban.com'),
+    ]
+    last_out = ""
+    for index_url, trusted_host in mirror_sources:
+        pip_cmd = (
+            f"python3 -m pip install --target /packages --no-warn-script-location "
+            f"--index-url {index_url} --trusted-host {trusted_host} {shlex.quote(package_name)}"
+        )
+        ts8 = f"{int(time.time()) % 100000000:08x}"
+        cname = f"lobster-pip-{ts8}"
+        args = [
+            "run", "--rm", "--name", cname,
+            "--network", "host",                 # 装包需联网
+            "--user", "root",                     # 写 /packages 需权限
+            f"--mount=type=bind,source={host_pkg},target=/packages",
+            _CFG.image, "sh", "-c", pip_cmd,
+        ]
+        try:
+            proc = subprocess.run(
+                ["docker"] + args, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=timeout,
+            )
+            last_out = (proc.stdout or "") + (proc.stderr or "")
+            if proc.returncode == 0:
+                return True, last_out
+        except subprocess.TimeoutExpired:
+            last_out = f"镜像源 {index_url} 安装超时"
+            continue
+        except FileNotFoundError:
+            return False, "docker CLI 不存在"
+    return False, last_out or "所有镜像源安装失败"
