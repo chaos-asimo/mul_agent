@@ -1413,7 +1413,35 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                         yield "data: " + json.dumps({'success': True, 'content': f"❌ 技能 {sid} 执行失败: {err}\n\n", 'session_id': session_id}) + "\n\n"
                         skill_result_blocks.append(f"[技能 {idx}] id={sid}\n执行失败: {err}")
                 if skill_result_blocks:
-                    full_response = (full_response + "\n\n" + "\n\n".join(skill_result_blocks)).strip()
+                    skill_summary = "\n\n".join(skill_result_blocks)
+                    # 把技能执行结果实时流式输出（此前仅入库，导致需刷新才可见），
+                    # 并做一次二次生成，让最终回答自然呈现且与入库内容一致。
+                    interpret_prompt = (
+                        f"用户问题: {request.message}\n\n"
+                        f"系统已按你的要求调用了技能，结果如下：\n\n{skill_summary}\n\n"
+                        "请基于上述技能执行结果，为用户提供完整、准确的最终解答。"
+                        "若结果已足够，可直接整理呈现；不要输出任何 [SKILL_CALL] 标记，也不要向用户解释标记机制。"
+                    )
+                    interpret_messages = adapter.create_prompt(
+                        "你是龙虾Claw，一个强大的AI智能体助手。请基于技能调用结果为用户提供详细解答。",
+                        interpret_prompt, []
+                    )
+                    skill_final = ""
+                    for chunk in adapter.chat_stream(interpret_messages):
+                        if isinstance(chunk, dict):
+                            content = chunk.get("content", "")
+                        else:
+                            content = str(chunk)
+                        if content and not content.startswith("{\"__stats__\""):
+                            skill_final += content
+                            yield "data: " + json.dumps({'success': True, 'content': content, 'session_id': session_id}) + "\n\n"
+                    if skill_final.strip():
+                        full_response = skill_final.strip()
+                    else:
+                        # 二次生成无输出时，退化为直接展示原始结果（仍需推给前端）
+                        fallback = "\n\n" + skill_summary
+                        full_response = (full_response + fallback).strip()
+                        yield "data: " + json.dumps({'success': True, 'content': fallback, 'session_id': session_id}) + "\n\n"
 
             # 安全网：剥除任何残留标记（闭合块/未闭合片段），不进入最终答复与历史
             full_response = AGENT_CALL_PATTERN.sub("", full_response)

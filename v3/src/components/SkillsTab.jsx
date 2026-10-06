@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Wand2, Plus, Trash2, Pencil, Play, Power, X, RefreshCw, Globe } from 'lucide-react'
-import { apiGet, apiPost, apiPut, apiDelete } from '../api/client'
+import { Wand2, Plus, Trash2, Pencil, Play, Power, X, RefreshCw, Globe, Upload, Package, Link2 } from 'lucide-react'
+import { apiGet, apiPost, apiPut, apiDelete, apiUpload } from '../api/client'
 import { useAuthStore } from '../stores/authStore'
+import MarkdownContent from './MarkdownContent'
 
 const EXECUTORS = [
   { value: 'llm', label: 'LLM 提示模板' },
@@ -54,6 +55,18 @@ function SkillsTab() {
 
   // 管理员：公共技能管理
   const [adminMode, setAdminMode] = useState(false)
+
+  // 导入标准 SKILL.md 技能包
+  const [showImport, setShowImport] = useState(false)
+  const [importMode, setImportMode] = useState('paste') // paste | upload | url
+  const [importContent, setImportContent] = useState('')
+  const [importUrl, setImportUrl] = useState('')
+  const [importFile, setImportFile] = useState(null)
+  const [importPreview, setImportPreview] = useState(null)
+  const [importParsed, setImportParsed] = useState(null)
+  const [importPublic, setImportPublic] = useState(false)
+  const [importBusy, setImportBusy] = useState(false)
+  const [importMsg, setImportMsg] = useState('')
 
   // 路由基址：公共技能必须走 admin 路由（用户路由不认 admin 身份，会被 _can_write 拒绝）
   const apiBase = (s) => (adminMode || (s && s.is_public && isAdmin) ? '/admin/skill' : '/skill')
@@ -169,6 +182,17 @@ function SkillsTab() {
     }
   }
 
+  // 管理员：切换技能是否公共
+  const togglePublic = async (s) => {
+    try {
+      const res = await apiPost(`/admin/skill/${s.skill_id}/public`, { is_public: !s.is_public })
+      if (res.success) loadSkills()
+      else alert(res.error || '操作失败')
+    } catch (e) {
+      alert(e.message)
+    }
+  }
+
   const runExecute = async () => {
     if (!execId) return
     let params = {}
@@ -196,12 +220,54 @@ function SkillsTab() {
 
   const inputCls = 'w-full px-3 py-2 t-bg-input border t-border-strong rounded-lg text-xs t-text t-placeholder t-focus'
 
+  // ===== 导入标准技能包 =====
+  const openImport = () => {
+    setShowImport(true); setImportMode('paste'); setImportContent(''); setImportUrl('')
+    setImportFile(null); setImportPreview(null); setImportParsed(null)
+    setImportPublic(false); setImportMsg('')
+  }
+  const closeImport = () => { setShowImport(false); setImportBusy(false); setImportMsg('') }
+
+  const callImport = async (confirm) => {
+    setImportBusy(true); setImportMsg('')
+    try {
+      let res
+      if (importMode === 'paste') {
+        if (!importContent.trim()) { setImportMsg('请粘贴 SKILL.md 内容'); setImportBusy(false); return }
+        res = await apiPost('/skill/import', { content: importContent, is_public: importPublic, confirm })
+      } else if (importMode === 'url') {
+        if (!importUrl.trim()) { setImportMsg('请填写 URL'); setImportBusy(false); return }
+        res = await apiPost('/skill/import/url', { url: importUrl, is_public: importPublic, confirm })
+      } else {
+        if (!importFile) { setImportMsg('请选择 .md 或 .zip 文件'); setImportBusy(false); return }
+        const fd = new FormData()
+        fd.append('file', importFile)
+        fd.append('is_public', String(importPublic))
+        fd.append('confirm', String(confirm))
+        res = await apiUpload('/skill/import/upload', fd)
+      }
+      if (!res.success) { setImportMsg(res.error || '操作失败'); return }
+      if (!confirm) {
+        setImportPreview(res.preview); setImportParsed(res.parsed || null)
+      } else {
+        setImportMsg('导入成功：' + (res.preview?.name || res.skill?.name || ''))
+        setImportPreview(null); setImportParsed(null)
+        setImportContent(''); setImportUrl(''); setImportFile(null)
+        loadSkills()
+      }
+    } catch (e) {
+      setImportMsg('操作失败: ' + e.message)
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold t-text-2 flex items-center gap-1.5">
           <Wand2 className="w-4 h-4 t-text-accent" />
-          {adminMode ? '公共技能管理' : '我的技能'}
+          {adminMode ? '全部技能管理' : '我的技能'}
         </h3>
         <div className="flex items-center gap-1.5">
           {isAdmin && (
@@ -219,6 +285,9 @@ function SkillsTab() {
           <button onClick={openNew} className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-lg t-bg-accent text-white t-hover-accent">
             <Plus className="w-3 h-3" /> 新建
           </button>
+          <button onClick={openImport} className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-lg border t-border-strong t-text-2 t-hover-card" title="导入标准 SKILL.md 技能包">
+            <Upload className="w-3 h-3" /> 导入
+          </button>
           <button onClick={loadSkills} className="p-1 rounded-lg border t-border-strong t-text-muted t-hover-card" title="刷新">
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           </button>
@@ -226,6 +295,76 @@ function SkillsTab() {
       </div>
 
       {msg && <p className="text-xs t-text-info break-all">{msg}</p>}
+
+      {/* 导入标准技能包弹窗 */}
+      {showImport && (
+        <div className="space-y-2 p-3 t-bg-panel border t-border-accent/40 rounded-lg">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium t-text-accent flex items-center gap-1">
+              <Package className="w-3.5 h-3.5" /> 导入标准 SKILL.md 技能包
+            </span>
+            <button onClick={closeImport} className="t-text-fainter t-hover-text"><X className="w-3.5 h-3.5" /></button>
+          </div>
+          <div className="flex items-center gap-1">
+            {[
+              { k: 'paste', label: '粘贴内容', icon: Package },
+              { k: 'upload', label: '上传文件', icon: Upload },
+              { k: 'url', label: 'URL 拉取', icon: Link2 },
+            ].map((t) => (
+              <button key={t.k} onClick={() => { setImportMode(t.k); setImportPreview(null); setImportMsg('') }}
+                className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-lg border transition-colors ${
+                  importMode === t.k ? 't-bg-accent text-white border-transparent' : 't-border-strong t-text-2 t-hover-card'
+                }`}>
+                <t.icon className="w-3 h-3" /> {t.label}
+              </button>
+            ))}
+          </div>
+
+          {importMode === 'paste' && (
+            <textarea className={inputCls + ' min-h-[140px] font-mono'} placeholder={'粘贴 SKILL.md 全文，例如：\n---\nname: 我的技能\ndescription: 技能说明\n---\n# 正文指令\n...'}
+              value={importContent} onChange={(e) => setImportContent(e.target.value)} />
+          )}
+          {importMode === 'upload' && (
+            <input type="file" accept=".md,.markdown,.zip" onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+              className="text-[11px] t-text-2 file:mr-2 file:px-2 file:py-1 file:rounded file:border-0 file:text-[11px] file:t-bg-accent file:text-white" />
+          )}
+          {importMode === 'url' && (
+            <input className={inputCls} placeholder="https://.../SKILL.md 或 .zip（仅 http/https）"
+              value={importUrl} onChange={(e) => setImportUrl(e.target.value)} />
+          )}
+
+          {isAdmin && (
+            <label className="flex items-center gap-1.5 text-[11px] t-text-2">
+              <input type="checkbox" checked={importPublic} onChange={(e) => setImportPublic(e.target.checked)} />
+              导入为公共技能（所有用户可用）
+            </label>
+          )}
+
+          <div className="flex items-center gap-2">
+            <button onClick={() => callImport(false)} disabled={importBusy}
+              className="px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card disabled:opacity-50">
+              解析预览
+            </button>
+            <button onClick={() => callImport(true)} disabled={importBusy}
+              className="px-3 py-1.5 text-xs rounded-lg t-bg-accent text-white t-hover-accent disabled:opacity-50">
+              {importBusy ? '处理中...' : '确认导入'}
+            </button>
+          </div>
+
+          {importMsg && <p className="text-xs t-text-info break-all">{importMsg}</p>}
+
+          {importPreview && (
+            <div className="space-y-1 p-2 t-bg-app border t-border rounded-lg text-[11px] t-text-2">
+              <p><b>名称：</b>{importPreview.name}</p>
+              <p><b>描述：</b>{importPreview.description || '（无）'}</p>
+              <p><b>脚本：</b>{importPreview.scripts?.length ? importPreview.scripts.join(', ') : '（无）'}</p>
+              <p><b>引用：</b>{importPreview.references?.length ? importPreview.references.join(', ') : '（无）'}</p>
+              <p className="t-text-faint">正文摘要：{(importPreview.body_preview || '').slice(0, 160)}{(importPreview.body_preview || '').length > 160 ? '…' : ''}</p>
+              <p className="t-text-accent">确认无误后点「确认导入」</p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 表单 */}
       {showForm && (
@@ -267,7 +406,11 @@ function SkillsTab() {
           <button onClick={runExecute} disabled={executing} className="inline-flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg t-bg-accent text-white t-hover-accent disabled:opacity-50">
             <Play className="w-3 h-3" /> {executing ? '执行中...' : '执行'}
           </button>
-          {execResult && <pre className="text-[11px] t-text-2 whitespace-pre-wrap break-words max-h-48 overflow-auto p-2 t-bg-app border t-border rounded-lg">{execResult}</pre>}
+          {execResult && (
+            <div className="text-[11px] max-h-60 overflow-auto p-2 t-bg-app border t-border rounded-lg">
+              <MarkdownContent content={execResult} />
+            </div>
+          )}
         </div>
       )}
 
@@ -282,9 +425,22 @@ function SkillsTab() {
           skills.map((s) => (
             <div key={s.skill_id} className="px-3 py-2.5 t-bg-panel border t-border rounded-lg group">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs t-text-2 truncate flex-1" title={s.description}>
-                  {s.is_public && <span className="text-[9px] px-1 py-0.5 rounded t-badge-accent mr-1">公共</span>}
-                  {s.name}
+                <p className="text-xs t-text-2 truncate flex-1 flex items-center" title={s.description}>
+                  {adminMode && (
+                    <button
+                      onClick={() => togglePublic(s)}
+                      className={`shrink-0 mr-1.5 inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded border transition-colors ${
+                        s.is_public ? 't-badge-accent' : 't-border-strong t-text-faint hover:t-text-2'
+                      }`}
+                      title={s.is_public ? '点击设为私有' : '点击设为公共'}
+                    >
+                      <Globe className="w-2.5 h-2.5" />
+                      {s.is_public ? '公共' : '私有'}
+                    </button>
+                  )}
+                  {s.is_public && !adminMode && <span className="text-[9px] px-1 py-0.5 rounded t-badge-accent mr-1">公共</span>}
+                  {s.config?.source === 'skillmd' && <span className="text-[9px] px-1 py-0.5 rounded border t-border-strong t-text-faint mr-1" title="导入的标准 SKILL.md 技能包">标准包</span>}
+                  <span className="truncate">{s.name}</span>
                   {!s.enabled && <span className="text-[9px] t-text-faint ml-1">（已禁用）</span>}
                 </p>
                 <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-all">

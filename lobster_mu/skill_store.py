@@ -82,6 +82,18 @@ def list_public() -> List[Dict[str, Any]]:
         conn.close()
 
 
+def list_all() -> List[Dict[str, Any]]:
+    """管理员视角：全部技能（含公共与各用户私有），公共在前"""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM mu_skills ORDER BY is_public DESC, created_at DESC"
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def list_skills(user_id: int) -> List[Dict[str, Any]]:
     """我的私有技能 + 公共技能（去重，公共在前）"""
     conn = get_conn()
@@ -226,6 +238,33 @@ def set_enabled(user_id: int, skill_id: str, enabled: bool,
     return {"success": True}
 
 
+def set_public(skill_id: str, is_public: bool, is_admin: bool = False) -> Dict[str, Any]:
+    """设置技能是否为公共（仅管理员）。设为公共时归属转到管理员(user_id=0)。"""
+    if not is_admin:
+        return {"success": False, "error": "仅管理员可设置公共技能"}
+    skill = _get_raw(skill_id)
+    if not skill:
+        return {"success": False, "error": "技能不存在"}
+    conn = get_conn()
+    try:
+        if is_public:
+            conn.execute(
+                "UPDATE mu_skills SET is_public=1, user_id=0, updated_at=? WHERE skill_id=?",
+                (_now(), skill_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE mu_skills SET is_public=0, updated_at=? WHERE skill_id=?",
+                (_now(), skill_id),
+            )
+        conn.commit()
+    except Exception as e:
+        return {"success": False, "error": f"操作失败: {e}"}
+    finally:
+        conn.close()
+    return {"success": True}
+
+
 # ============ 执行 ============
 
 def _fill_template(template: str, params: Dict[str, Any]) -> str:
@@ -238,12 +277,13 @@ def _fill_template(template: str, params: Dict[str, Any]) -> str:
     return out
 
 
-def _call_llm(prompt: str) -> str:
+def _call_llm(prompt: str, system: str = None) -> str:
     from web.routes.lobster_claw import get_default_llm_adapter
     adapter = get_default_llm_adapter()
     if not adapter:
         raise RuntimeError("未配置可用的 LLM 适配器")
-    messages = adapter.create_prompt("你是一个技能执行助手，请按要求完成任务。", prompt, [])
+    sys = system if system else "你是一个技能执行助手，请按要求完成任务。"
+    messages = adapter.create_prompt(sys, prompt, [])
     resp = adapter.chat(messages)
     if isinstance(resp, dict):
         return resp.get("content") or resp.get("result") or str(resp)
@@ -261,13 +301,33 @@ def execute(user_id: int, skill_id: str, params: Dict[str, Any] = None) -> Dict[
             return {"success": False, "error": "技能已禁用"}
         cfg = skill.get("config") or {}
         executor = (cfg.get("executor") or skill.get("executor") or "llm").lower()
+        is_skillmd = cfg.get("source") == "skillmd" or "skillmd_body" in cfg
+
+        # 标准技能包：可指定运行其内置脚本
+        if is_skillmd and params.get("run_script"):
+            scripts = cfg.get("scripts") or {}
+            code = scripts.get(params["run_script"])
+            if not code:
+                return {"success": False, "error": f"脚本不存在: {params['run_script']}"}
+            from lobster_mu import script_service
+            exec_result = script_service.execute_python_script(user_id, code)
+            if isinstance(exec_result, dict) and not exec_result.get("success", True):
+                return {"success": False, "error": exec_result.get("error") or exec_result.get("result") or "执行失败"}
+            return {"success": True, "result": (exec_result.get("result", "") if isinstance(exec_result, dict) else str(exec_result))}
 
         if executor == "llm":
-            prompt = _fill_template(cfg.get("prompt_template", ""), params)
+            body = cfg.get("skillmd_body") or cfg.get("prompt_template", "")
+            if is_skillmd:
+                # 正文作为系统指令，用户参数作为输入
+                user_input = "\n".join(f"{k}: {v}" for k, v in params.items()) if params else ""
+                prompt = body
+                if user_input:
+                    prompt = (body or "") + "\n\n【用户输入】\n" + user_input
+            else:
+                prompt = _fill_template(cfg.get("prompt_template", ""), params)
             if not prompt.strip():
-                # 无模板时退化为把参数拼进去
                 prompt = "\n".join(f"{k}: {v}" for k, v in params.items())
-            result = _call_llm(prompt)
+            result = _call_llm(prompt, system=body if is_skillmd else None)
             return {"success": True, "result": result}
 
         if executor == "script":

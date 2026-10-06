@@ -1200,6 +1200,114 @@ async def mu_skill_create(body: dict, user: dict = Depends(get_mu_user)):
     return skill_store.add(user["id"], body or {})
 
 
+def _skill_import_preview(parsed: dict) -> dict:
+    return {
+        "name": parsed.get("name", ""),
+        "description": parsed.get("description", ""),
+        "body_preview": (parsed.get("body", "") or "")[:300],
+        "scripts": list((parsed.get("scripts") or {}).keys()),
+        "references": list((parsed.get("references") or {}).keys()),
+        "source": "skillmd",
+    }
+
+
+def _is_safe_url(url: str) -> tuple[bool, str]:
+    """URL 安全校验：仅 http/https，且主机不是本地/私网地址（防 SSRF）。"""
+    from urllib.parse import urlparse
+    import ipaddress
+    try:
+        pu = urlparse(url)
+    except Exception:
+        return False, "URL 解析失败"
+    if pu.scheme not in ("http", "https"):
+        return False, "仅允许 http/https 链接"
+    host = (pu.hostname or "").lower()
+    if not host:
+        return False, "URL 缺少主机"
+    if host in ("localhost",) or host.endswith(".local"):
+        return False, "禁止访问本地地址"
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return False, "禁止访问内网地址"
+    except ValueError:
+        pass  # 域名，放行（由 DNS/出站策略兜底）
+    return True, ""
+
+
+@router.post("/skill/import")
+async def mu_skill_import(body: dict, user: dict = Depends(get_mu_user)):
+    """粘贴 SKILL.md 内容导入。confirm=False 仅返回预览（不写入）。"""
+    from lobster_mu import skill_importer
+    content = (body or {}).get("content") or ""
+    is_public = bool((body or {}).get("is_public"))
+    confirm = bool((body or {}).get("confirm", True))
+    is_admin = user.get("role") == "admin"
+    if not content.strip():
+        return {"success": False, "error": "内容为空"}
+    parsed = skill_importer.parse_skill_md(content)
+    if parsed.get("error"):
+        return {"success": False, "error": parsed["error"]}
+    if not confirm:
+        return {"success": True, "preview": _skill_import_preview(parsed), "parsed": parsed}
+    return skill_importer.import_skill_package(user["id"], parsed, is_public=is_public, is_admin=is_admin)
+
+
+@router.post("/skill/import/upload")
+async def mu_skill_import_upload(
+    file: UploadFile = File(...),
+    is_public: bool = Form(False),
+    confirm: bool = Form(True),
+    user: dict = Depends(get_mu_user),
+):
+    """上传 .md 或 .zip 技能包导入。confirm=False 仅预览。"""
+    from lobster_mu import skill_importer
+    is_admin = user.get("role") == "admin"
+    try:
+        data = await file.read()
+    except Exception as e:
+        return {"success": False, "error": f"读取文件失败: {e}"}
+    parsed = skill_importer.parse_bytes(data, filename=file.filename or "")
+    if parsed.get("error"):
+        return {"success": False, "error": parsed["error"]}
+    if not confirm:
+        return {"success": True, "preview": _skill_import_preview(parsed), "parsed": parsed}
+    return skill_importer.import_skill_package(user["id"], parsed, is_public=is_public, is_admin=is_admin)
+
+
+@router.post("/skill/import/url")
+async def mu_skill_import_url(body: dict, user: dict = Depends(get_mu_user)):
+    """从 URL 拉取 SKILL.md / zip 导入。confirm=False 仅预览。"""
+    from lobster_mu import skill_importer
+    url = (body or {}).get("url") or ""
+    is_public = bool((body or {}).get("is_public"))
+    confirm = bool((body or {}).get("confirm", True))
+    is_admin = user.get("role") == "admin"
+    ok, msg = _is_safe_url(url)
+    if not ok:
+        return {"success": False, "error": msg}
+    try:
+        import httpx
+        with httpx.Client(timeout=15, follow_redirects=True) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            data = resp.content
+    except Exception as e:
+        return {"success": False, "error": f"拉取失败: {e}"}
+    # 按扩展名或内容判定
+    from urllib.parse import urlparse
+    path = urlparse(url).path.lower()
+    if not path.endswith(".zip") and skill_importer._is_zip_bytes(data) is False and path.endswith((".md", ".markdown")):
+        parsed = skill_importer.parse_skill_md(data.decode("utf-8", errors="replace"))
+    else:
+        parsed = skill_importer.parse_bytes(data, filename=path)
+    if parsed.get("error"):
+        return {"success": False, "error": parsed["error"]}
+    if not confirm:
+        return {"success": True, "preview": _skill_import_preview(parsed), "parsed": parsed}
+    return skill_importer.import_skill_package(user["id"], parsed, is_public=is_public, is_admin=is_admin)
+
+
 @router.get("/skill/{skill_id}")
 async def mu_skill_detail(skill_id: str, user: dict = Depends(get_mu_user)):
     from lobster_mu import skill_store
@@ -1244,7 +1352,7 @@ async def mu_skill_execute(skill_id: str, body: dict, user: dict = Depends(check
 @router.get("/admin/skill/list")
 async def admin_skill_list(admin: dict = Depends(require_admin)):
     from lobster_mu import skill_store
-    return {"success": True, "skills": skill_store.list_public()}
+    return {"success": True, "skills": skill_store.list_all()}
 
 
 @router.post("/admin/skill")
@@ -1263,6 +1371,12 @@ async def admin_skill_update(skill_id: str, body: dict, admin: dict = Depends(re
 async def admin_skill_delete(skill_id: str, admin: dict = Depends(require_admin)):
     from lobster_mu import skill_store
     return skill_store.delete(0, skill_id, is_admin=True)
+
+
+@router.post("/admin/skill/{skill_id}/public")
+async def admin_skill_set_public(skill_id: str, body: dict, admin: dict = Depends(require_admin)):
+    from lobster_mu import skill_store
+    return skill_store.set_public(skill_id, bool((body or {}).get("is_public")), is_admin=True)
 
 
 # ============ 工具端点（per-user 路径白名单） ============
