@@ -1,10 +1,21 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Plus, Trash2, Pencil, Play, CheckCircle, XCircle, RefreshCw, FileCode,
-  Download, Package, Loader2, X,
+  Download, Package, Loader2, X, FileText,
 } from 'lucide-react'
 import { apiGet, apiPost, apiPut, apiDelete, formatSize } from '../api/client'
 import CodeEditor from './CodeEditor'
+import FileViewer from './FileViewer'
+
+// 产物文件：鼠标悬停提示信息
+function fileTip(f) {
+  const ext = (f.name.split('.').pop() || '').toUpperCase()
+  const lines = [`文件名：${f.name}`, `大小：${formatSize(f.size)}`, `类型：${ext || '未知'}`]
+  if (f.created_at) lines.push(`生成时间：${f.created_at}`)
+  return lines.join('\n')
+}
+// 下载用 ?download=1（默认 inline 供查看器读取）
+const dlUrl = (f) => `${f.download_url}${f.download_url.includes('?') ? '&' : '?'}download=1`
 
 function Modal({ title, onClose, children, wide = false, max = false }) {
   return (
@@ -46,6 +57,10 @@ function ScriptsTab() {
   // 执行结果
   const [execResult, setExecResult] = useState(null)
   const [executing, setExecuting] = useState(null) // script_id
+  const [viewing, setViewing] = useState(null) // 正在查看的产物文件 {filename, rawUrl, downloadUrl}
+
+  // 打开产物文件查看器（复用 Office 等渲染能力）
+  const openFile = (f) => setViewing({ filename: f.name, rawUrl: f.download_url, downloadUrl: dlUrl(f) })
 
   // 依赖安装（异步 + 轮询）
   const [packageInput, setPackageInput] = useState('')
@@ -388,17 +403,27 @@ function ScriptsTab() {
         ) : (
           <div className="space-y-1.5">
             {files.map((f) => (
-              <a
+              <div
                 key={f.name}
-                href={f.download_url}
                 className="flex items-center gap-2 px-3 py-2 t-bg-panel border t-border rounded-lg t-hover-border-accent transition-colors"
               >
-                <Download className="w-3.5 h-3.5 t-text-accent shrink-0" />
-                <span className="text-xs t-text-2 truncate flex-1" title={f.name}>
+                <FileText className="w-3.5 h-3.5 t-text-accent shrink-0" />
+                <button
+                  onClick={() => openFile(f)}
+                  title={fileTip(f)}
+                  className="text-xs t-text-2 truncate flex-1 text-left hover:underline cursor-pointer"
+                >
                   {f.name}
-                </span>
+                </button>
                 <span className="text-[10px] t-text-faint shrink-0">{formatSize(f.size)}</span>
-              </a>
+                <a
+                  href={dlUrl(f)}
+                  title="下载文件"
+                  className="t-text-faint hover:t-text-accent shrink-0"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                </a>
+              </div>
             ))}
           </div>
         )}
@@ -506,21 +531,42 @@ function ScriptsTab() {
                 <p className="text-xs t-text-muted mb-1.5">生成的文件</p>
                 <div className="space-y-1.5">
                   {execResult.generated_files.map((f) => (
-                    <a
+                    <div
                       key={f.name}
-                      href={f.download_url}
                       className="flex items-center gap-2 px-3 py-2 t-bg-input border t-border rounded-lg t-hover-border-accent"
                     >
-                      <Download className="w-3.5 h-3.5 t-text-accent shrink-0" />
-                      <span className="text-xs t-text-2 truncate flex-1">{f.name}</span>
-                      <span className="text-[10px] t-text-faint">{formatSize(f.size)}</span>
-                    </a>
+                      <FileText className="w-3.5 h-3.5 t-text-accent shrink-0" />
+                      <button
+                        onClick={() => openFile(f)}
+                        title={fileTip(f)}
+                        className="text-xs t-text-2 truncate flex-1 text-left hover:underline cursor-pointer"
+                      >
+                        {f.name}
+                      </button>
+                      <span className="text-[10px] t-text-faint shrink-0">{formatSize(f.size)}</span>
+                      <a
+                        href={dlUrl(f)}
+                        title="下载文件"
+                        className="t-text-faint hover:t-text-accent shrink-0"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
                   ))}
                 </div>
               </div>
             )}
           </div>
         </Modal>
+      )}
+
+      {viewing && (
+        <FileViewer
+          filename={viewing.filename}
+          rawUrl={viewing.rawUrl}
+          downloadUrl={viewing.downloadUrl}
+          onClose={() => setViewing(null)}
+        />
       )}
     </div>
   )

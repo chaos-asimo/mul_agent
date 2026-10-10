@@ -150,6 +150,7 @@ DDL = [
         id          TEXT PRIMARY KEY,
         user_id     INTEGER NOT NULL,
         filename    TEXT NOT NULL,
+        stored_name TEXT DEFAULT '',
         file_size   INTEGER,
         chunk_count INTEGER DEFAULT 0,
         created_at  TEXT NOT NULL
@@ -265,6 +266,17 @@ DDL = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_mu_skills_user ON mu_skills(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_mu_skills_public ON mu_skills(is_public)",
+    # 用户文件库（上传文件的元数据 + 解析文本，user_id 隔离，可在会话中复用）
+    """CREATE TABLE IF NOT EXISTS mu_files (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL,
+        filename    TEXT NOT NULL,
+        stored_path TEXT NOT NULL,
+        file_size   INTEGER DEFAULT 0,
+        content     TEXT,
+        created_at  TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_mu_files_user ON mu_files(user_id, id DESC)",
 ]
 
 # 已有库的列迁移：mu_agents 新增人格化字段（avatar/tone），mu_agent_memories 新增来源
@@ -285,6 +297,7 @@ _USER_MIGRATION_COLUMNS = [
 
 _KB_DOCS_MIGRATION_COLUMNS = [
     ("content_hash", "TEXT DEFAULT ''"),
+    ("stored_name", "TEXT DEFAULT ''"),
 ]
 
 

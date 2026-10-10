@@ -287,6 +287,10 @@ def _call_llm(prompt: str, system: str = None) -> str:
     resp = adapter.chat(messages)
     if isinstance(resp, dict):
         return resp.get("content") or resp.get("result") or str(resp)
+    # LLMResponse 等 dataclass 对象：取其 content 属性，避免把整个对象的 repr 当文本返回
+    content = getattr(resp, "content", None)
+    if content is not None:
+        return content
     return str(resp)
 
 

@@ -92,6 +92,20 @@ def _parse_web_search(text: str) -> str:
     return m.group(1).strip()[:100]
 
 
+_TRAIL_PUNCT_RE = re.compile(r"[。．.，,、；;！!？?）)】」』\s]+$")
+_MD_LINK_URL_RE = re.compile(r"\]\((<[^>]*>|[^)\s]+)\)")
+
+def _clean_md_link_urls(text: str) -> str:
+    """兜底清洗：去掉 Markdown 链接 URL 末尾误并入的标点（前端也会再清洗一层）。"""
+    def _sub(m):
+        url = m.group(1)
+        if url.startswith("<") and url.endswith(">"):
+            inner = _TRAIL_PUNCT_RE.sub("", url[1:-1])
+            return f"](<{inner}>)"
+        return f"]({_TRAIL_PUNCT_RE.sub('', url)})"
+    return _MD_LINK_URL_RE.sub(_sub, text or "")
+
+
 class _MarkerFilter:
     """流式输出时实时剔除指定标记块（通用版，供 MCP/联网搜索/Agent 编排复用）。
     跨 chunk 安全：末尾疑似标记前缀的片段会保留到下一个 chunk 拼接判断。"""
@@ -1288,9 +1302,13 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                             interpret_prompt = (
                                 f"用户问题: {request.message}\n\n"
                                 f"系统已联网搜索，结果如下：\n\n{search_summary}\n\n"
-                                "请基于上述搜索结果，为用户提供完整、准确的解答。"
-                                "每条信息必须标注来源，格式为：（来源：标题 - URL）。"
-                                "必须把 URL 完整写出来，不要用 [1][2] 之类的编号代替。"
+                                "请基于上述搜索结果，为用户提供完整、准确的解答。\n"
+                                "【来源标注要求】每条信息必须标注来源，使用 Markdown 链接格式：[标题](URL)。\n"
+                                "【URL 规范，必须严格遵守】\n"
+                                "1. 链接括号 () 内只能是纯净的 URL，URL 前后不要有任何空格；\n"
+                                "2. 绝对不要把句号、逗号、括号（。，、（）等）写进 URL 或链接括号内；\n"
+                                "3. URL 之后若需要标点，请放在链接外面，并用空格与 URL 隔开，例如：[标题](https://x.com/a) 。\n"
+                                "4. 不要用 [1][2] 之类的编号代替 URL，必须写出完整 URL。\n"
                                 "直接给出回答内容，不要输出 [WEB_SEARCH] 标记。"
                             )
                             interpret_messages = adapter.create_prompt(
@@ -1306,13 +1324,13 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                                 else:
                                     content = str(chunk)
                                 if content and not content.startswith("{\"__stats__\""):
-                                    safe = ws_secondary.feed(mcp_secondary.feed(content))
+                                    safe = _clean_md_link_urls(ws_secondary.feed(mcp_secondary.feed(content)))
                                     ws_final += safe
                                     if safe:
                                         yield "data: " + json.dumps({'success': True, 'content': safe, 'session_id': session_id}) + "\n\n"
                             ws_final += ws_secondary.feed(mcp_secondary.flush()) + ws_secondary.flush()
                             if ws_final.strip():
-                                full_response = ws_final.strip()
+                                full_response = _clean_md_link_urls(ws_final.strip())
                         else:
                             yield "data: " + json.dumps({'success': True, 'content': "⚠️ 未搜索到有效结果，将基于已有知识回答\n\n", 'session_id': session_id}) + "\n\n"
                     else:

@@ -971,6 +971,7 @@ async def mu_chat_sessions_clear(user: dict = Depends(get_mu_user)):
 
 @router.post("/upload")
 async def mu_upload(files: List[UploadFile] = File(...), user: dict = Depends(check_user_rate)):
+    from lobster_mu import file_store
     results = []
     for file in files:
         try:
@@ -979,8 +980,10 @@ async def mu_upload(files: List[UploadFile] = File(...), user: dict = Depends(ch
                 results.append({"success": False, "filename": file.filename, "error": "文件超过10MB限制"})
                 continue
             info = upload_service.save_upload(user["id"], file.filename, content)
+            file_id = file_store.add(user["id"], file.filename, info["path"], info["size"], info["content"])
             results.append({
                 "success": True,
+                "file_id": file_id,
                 "id": info["path"],
                 "filename": file.filename,
                 "size": info["size"],
@@ -989,6 +992,49 @@ async def mu_upload(files: List[UploadFile] = File(...), user: dict = Depends(ch
         except Exception as e:
             results.append({"success": False, "filename": file.filename, "error": str(e)})
     return {"results": results}
+
+
+@router.get("/files")
+async def mu_files_list(user: dict = Depends(check_user_rate)):
+    from lobster_mu import file_store
+    return {"success": True, "files": file_store.list_files(user["id"])}
+
+
+@router.get("/files/{file_id}")
+async def mu_files_get(file_id: int, user: dict = Depends(check_user_rate)):
+    from lobster_mu import file_store
+    f = file_store.get(user["id"], file_id)
+    if not f:
+        return {"success": False, "error": "文件不存在"}
+    return {"success": True, "file": {
+        "id": f["id"], "filename": f["filename"], "size": f["file_size"],
+        "content": f["content"], "created_at": f["created_at"],
+    }}
+
+
+@router.delete("/files/{file_id}")
+async def mu_files_delete(file_id: int, user: dict = Depends(check_user_rate)):
+    from lobster_mu import file_store
+    ok = file_store.delete(user["id"], file_id)
+    return {"success": ok, "error": None if ok else "文件不存在"}
+
+
+@router.get("/files/{file_id}/raw")
+async def mu_files_raw(file_id: int, download: int = 0, user: dict = Depends(check_user_rate)):
+    """流式返回原始文件：inline 用于预览（如 PDF 内嵌），download=1 触发下载。"""
+    import mimetypes
+    from fastapi.responses import FileResponse
+    from lobster_mu import file_store
+    f = file_store.get(user["id"], file_id)
+    if not f or not f.get("stored_path") or not os.path.exists(f["stored_path"]):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    media_type, _ = mimetypes.guess_type(f["filename"])
+    return FileResponse(
+        f["stored_path"],
+        media_type=media_type or "application/octet-stream",
+        filename=f["filename"],
+        content_disposition_type="attachment" if download else "inline",
+    )
 
 
 @router.post("/upload/text")
@@ -1144,7 +1190,7 @@ async def mu_script_install_dep_async(body: DependencyInstallRequest, user: dict
 
 
 @router.get("/script/files/download/{file_name}")
-async def mu_script_file_download(file_name: str, user: dict = Depends(get_mu_user)):
+async def mu_script_file_download(file_name: str, download: int = 0, user: dict = Depends(get_mu_user)):
     from fastapi.responses import FileResponse
     try:
         path = script_service.get_generated_file_path(user["id"], file_name)
@@ -1152,7 +1198,10 @@ async def mu_script_file_download(file_name: str, user: dict = Depends(get_mu_us
         raise HTTPException(status_code=403, detail="无权访问该文件")
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="文件不存在")
-    return FileResponse(path, filename=os.path.basename(path))
+    # 默认 inline（浏览器可直接预览/打开）；?download=1 时强制下载
+    if download:
+        return FileResponse(path, filename=os.path.basename(path))
+    return FileResponse(path)
 
 
 @router.get("/script/files/list")
@@ -1342,7 +1391,8 @@ async def mu_skill_disable(skill_id: str, user: dict = Depends(get_mu_user)):
 
 
 @router.post("/skill/{skill_id}/execute")
-async def mu_skill_execute(skill_id: str, body: dict, user: dict = Depends(check_user_rate)):
+def mu_skill_execute(skill_id: str, body: dict, user: dict = Depends(check_user_rate)):
+    # 同步阻塞的 LLM 调用必须用 def（FastAPI 放入线程池），用 async def 会阻塞整个事件循环
     from lobster_mu import skill_store
     return skill_store.execute(user["id"], skill_id, (body or {}).get("params") or {})
 
@@ -1377,6 +1427,18 @@ async def admin_skill_delete(skill_id: str, admin: dict = Depends(require_admin)
 async def admin_skill_set_public(skill_id: str, body: dict, admin: dict = Depends(require_admin)):
     from lobster_mu import skill_store
     return skill_store.set_public(skill_id, bool((body or {}).get("is_public")), is_admin=True)
+
+
+@router.post("/admin/skill/{skill_id}/enable")
+async def admin_skill_enable(skill_id: str, admin: dict = Depends(require_admin)):
+    from lobster_mu import skill_store
+    return skill_store.set_enabled(0, skill_id, True, is_admin=True)
+
+
+@router.post("/admin/skill/{skill_id}/disable")
+async def admin_skill_disable(skill_id: str, admin: dict = Depends(require_admin)):
+    from lobster_mu import skill_store
+    return skill_store.set_enabled(0, skill_id, False, is_admin=True)
 
 
 # ============ 工具端点（per-user 路径白名单） ============
@@ -1971,6 +2033,7 @@ async def mu_knowledge_upload(files: List[UploadFile] = File(...),
             result = await asyncio.to_thread(
                 knowledge_store.add_document,
                 user["id"], file.filename, len(content), text_content,
+                os.path.basename(file_path),
             )
             results.append({
                 "success": True,
@@ -2022,6 +2085,33 @@ async def admin_knowledge_overview(admin: dict = Depends(require_admin)):
     """管理员查看所有用户的知识库情况（含共享文档统计）"""
     ensure_db()
     return {"success": True, "data": knowledge_store.admin_all_users_knowledge()}
+
+
+@router.get("/admin/knowledge/doc/{doc_id}")
+async def admin_knowledge_doc(doc_id: str, admin: dict = Depends(require_admin)):
+    """管理员查看某知识库文档的提取文本内容"""
+    ensure_db()
+    doc = knowledge_store.admin_get_doc_content(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {"success": True, "file": doc}
+
+
+@router.get("/admin/knowledge/doc/{doc_id}/raw")
+async def admin_knowledge_doc_raw(doc_id: str, download: int = 0, admin: dict = Depends(require_admin)):
+    """管理员取某知识库文档的原始文件（默认 inline 供 Office/PDF 预览；?download=1 强制下载）"""
+    from fastapi.responses import FileResponse
+    from lobster_mu.paths import uploads_dir
+    ensure_db()
+    info = knowledge_store.admin_get_doc_file(doc_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="原始文件不存在")
+    path = os.path.join(uploads_dir(info["user_id"]), info["stored_name"])
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="原始文件不存在")
+    if download:
+        return FileResponse(path, filename=info["filename"] or os.path.basename(path))
+    return FileResponse(path)
 
 
 @router.get("/admin/model-speed")

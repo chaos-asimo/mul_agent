@@ -15,10 +15,27 @@ renderer.code = ({ text, lang }) => {
 }
 marked.use({ renderer })
 
+// 去掉 URL 末尾误并入的标点（中英文括号/句号/逗号/分号/感叹问号等，含其百分号编码）
+const TRAIL_PUNCT = /(?:[。．.，,；;！!？?）)】」』]|%E3%80%82|%EF%BC%8E|%EF%BC%8C|%EF%BC%9B|%EF%BC%81|%EF%BC%9F|%EF%BC%89|%29|%2C|%3B|%21|%3F|%5D)+$/i
+function cleanUrl(u) {
+  let cur = String(u || '')
+  let prev
+  do { prev = cur; cur = cur.replace(TRAIL_PUNCT, '') } while (cur !== prev)
+  return cur
+}
+
+// 给所有 <a> 注入新标签页属性，并清洗 href 尾部标点（不改文本，保证显示与跳转一致）
+function sanitizeAnchors(html) {
+  return String(html).replace(/<a\b([^>]*?)\shref="([^"]*)"/gi, (m, attrs, url) => {
+    const clean = cleanUrl(url)
+    return `<a target="_blank" rel="noopener noreferrer"${attrs} href="${clean}"`
+  })
+}
+
 function MarkdownContent({ content }) {
   const html = useMemo(() => {
     try {
-      return marked.parse(content || '')
+      return sanitizeAnchors(marked.parse(content || ''))
     } catch {
       return content || ''
     }

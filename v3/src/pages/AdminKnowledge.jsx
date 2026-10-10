@@ -7,6 +7,7 @@ import {
 import { useAuthStore } from '../stores/authStore'
 import { apiGet } from '../api/client'
 import ThemeSwitcher from '../components/ThemeSwitcher'
+import FileViewer from '../components/FileViewer'
 
 function fmtBytes(n) {
   if (!n) return '0 B'
@@ -36,6 +37,7 @@ function AdminKnowledge() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState({})
+  const [viewing, setViewing] = useState(null) // {id, filename}
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -66,9 +68,9 @@ function AdminKnowledge() {
       <header className="border-b t-border t-bg-panel">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Link to="/" className="inline-flex items-center gap-1 text-sm t-text-muted t-hover-text">
+            <Link to="/admin/users" className="inline-flex items-center gap-1 text-sm t-text-muted t-hover-text">
               <ArrowLeft className="w-4 h-4" />
-              返回工作台
+              返回用户管理
             </Link>
             <span className="t-text-fainter">|</span>
             <h1 className="text-base font-semibold flex items-center gap-2">
@@ -148,6 +150,7 @@ function AdminKnowledge() {
                         u={u}
                         expanded={!!expanded[u.user_id]}
                         onToggle={() => toggle(u.user_id)}
+                        onViewDoc={(d) => setViewing({ id: d.id, filename: d.filename })}
                       />
                     ))
                   )}
@@ -196,11 +199,20 @@ function AdminKnowledge() {
           </>
         )}
       </main>
+
+      {viewing && (
+        <FileViewer
+          filename={viewing.filename}
+          rawUrl={`/api/lobster-mu/admin/knowledge/doc/${viewing.id}/raw`}
+          contentUrl={`/admin/knowledge/doc/${viewing.id}`}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </div>
   )
 }
 
-function UserRow({ u, expanded, onToggle }) {
+function UserRow({ u, expanded, onToggle, onViewDoc }) {
   return (
     <>
       <tr className="border-b t-border t-hover-bg cursor-pointer" onClick={onToggle}>
@@ -239,7 +251,13 @@ function UserRow({ u, expanded, onToggle }) {
                   <div key={d.id} className="flex items-center justify-between text-xs">
                     <div className="flex items-center gap-2 min-w-0">
                       <FileText className="w-3.5 h-3.5 t-text-2 shrink-0" />
-                      <span className="truncate font-medium">{d.filename}</span>
+                      <button
+                        onClick={() => onViewDoc && onViewDoc(d)}
+                        title="点击查看文档内容"
+                        className="truncate font-medium text-left hover:underline cursor-pointer t-text-2"
+                      >
+                        {d.filename}
+                      </button>
                       <span className="t-text-faint shrink-0">{fmtBytes(d.file_size)}</span>
                       {d.shared && (
                         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full t-badge-accent shrink-0">

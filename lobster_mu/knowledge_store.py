@@ -85,7 +85,7 @@ def _get_embedding_adapter():
     return None
 
 
-def add_document(user_id: int, filename: str, file_size: int, content: str) -> Dict:
+def add_document(user_id: int, filename: str, file_size: int, content: str, stored_name: str = "") -> Dict:
     """上传知识库文档（内容寻址去重 + 共享向量池）
 
     流程：
@@ -115,9 +115,9 @@ def add_document(user_id: int, filename: str, file_size: int, content: str) -> D
             chunk_count = existing["chunk_count"]
             doc_id = f"mu{user_id}_{uuid4().hex[:12]}"
             conn.execute(
-                "INSERT INTO mu_knowledge_docs (id, user_id, filename, file_size, chunk_count,"
-                " content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (doc_id, user_id, filename, file_size, chunk_count, c_hash, created_at),
+                "INSERT INTO mu_knowledge_docs (id, user_id, filename, stored_name, file_size, chunk_count,"
+                " content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (doc_id, user_id, filename, stored_name, file_size, chunk_count, c_hash, created_at),
             )
             conn.commit()
             logger.info(f"[mu-kb] user={user_id} 文件 {filename} 命中共享内容 (hash={c_hash[:16]}...)，跳过 embedding")
@@ -137,9 +137,9 @@ def add_document(user_id: int, filename: str, file_size: int, content: str) -> D
             )
             doc_id = f"mu{user_id}_{uuid4().hex[:12]}"
             conn.execute(
-                "INSERT INTO mu_knowledge_docs (id, user_id, filename, file_size, chunk_count,"
-                " content_hash, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
-                (doc_id, user_id, filename, file_size, c_hash, created_at),
+                "INSERT INTO mu_knowledge_docs (id, user_id, filename, stored_name, file_size, chunk_count,"
+                " content_hash, created_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+                (doc_id, user_id, filename, stored_name, file_size, c_hash, created_at),
             )
             conn.commit()
             return {"doc_id": doc_id, "filename": filename, "chunk_count": 0,
@@ -168,9 +168,9 @@ def add_document(user_id: int, filename: str, file_size: int, content: str) -> D
         # 插入用户引用
         doc_id = f"mu{user_id}_{uuid4().hex[:12]}"
         conn.execute(
-            "INSERT INTO mu_knowledge_docs (id, user_id, filename, file_size, chunk_count,"
-            " content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (doc_id, user_id, filename, file_size, len(chunks), c_hash, created_at),
+            "INSERT INTO mu_knowledge_docs (id, user_id, filename, stored_name, file_size, chunk_count,"
+            " content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (doc_id, user_id, filename, stored_name, file_size, len(chunks), c_hash, created_at),
         )
         conn.commit()
         logger.info(f"[mu-kb] user={user_id} 文件 {filename} 已入库 (hash={c_hash[:16]}..., {len(chunks)} chunks)")
@@ -525,6 +525,50 @@ def admin_all_users_knowledge() -> Dict:
                 "total_shared_vectors": total_vectors,
                 "shared_content_list": shared_content_list,
             },
+        }
+    finally:
+        conn.close()
+
+
+def admin_get_doc_file(doc_id) -> Optional[Dict]:
+    """管理员取某知识库文档的原始文件信息，返回 {user_id, filename, stored_name}；
+    文档不存在或未留存原文件（stored_name 为空）返回 None。"""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT user_id, filename, stored_name FROM mu_knowledge_docs WHERE id = ?",
+            (doc_id,),
+        ).fetchone()
+        if not row or not row["stored_name"]:
+            return None
+        return {"user_id": row["user_id"], "filename": row["filename"] or "", "stored_name": row["stored_name"]}
+    finally:
+        conn.close()
+
+
+def admin_get_doc_content(doc_id) -> Optional[Dict]:
+    """管理员读取某知识库文档的提取文本（拼接各分块）。
+    返回 {filename, file_size, content}；文档不存在返回 None。"""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT filename, file_size, content_hash FROM mu_knowledge_docs WHERE id = ?",
+            (doc_id,),
+        ).fetchone()
+        if not row:
+            return None
+        c_hash = row["content_hash"] or ""
+        content = ""
+        if c_hash:
+            chunks = conn.execute(
+                "SELECT content FROM kb_content_vectors WHERE content_hash = ? ORDER BY chunk_index",
+                (c_hash,),
+            ).fetchall()
+            content = "\n".join((c["content"] or "") for c in chunks)
+        return {
+            "filename": row["filename"] or "",
+            "file_size": row["file_size"] or 0,
+            "content": content,
         }
     finally:
         conn.close()

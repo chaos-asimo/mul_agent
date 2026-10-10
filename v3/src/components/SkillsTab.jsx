@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Wand2, Plus, Trash2, Pencil, Play, Power, X, RefreshCw, Globe, Upload, Package, Link2 } from 'lucide-react'
+import { Wand2, Plus, Trash2, Pencil, Play, Power, X, RefreshCw, Globe, Upload, Package, Link2, Maximize2 } from 'lucide-react'
 import { apiGet, apiPost, apiPut, apiDelete, apiUpload } from '../api/client'
 import { useAuthStore } from '../stores/authStore'
 import MarkdownContent from './MarkdownContent'
+import Modal from './Modal'
 
 const EXECUTORS = [
   { value: 'llm', label: 'LLM 提示模板' },
@@ -51,6 +52,7 @@ function SkillsTab() {
   const [execId, setExecId] = useState(null)
   const [execParams, setExecParams] = useState('{}')
   const [execResult, setExecResult] = useState('')
+  const [resultMax, setResultMax] = useState(false)
   const [executing, setExecuting] = useState(false)
 
   // 管理员：公共技能管理
@@ -207,12 +209,14 @@ function SkillsTab() {
     try {
       const res = await apiPost(`/skill/${execId}/execute`, { params })
       if (res.success) {
-        setExecResult(typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2))
+        // 字符串直接作为 markdown 渲染；对象/数组包装为 json 代码块，走与聊天一致的渲染管线
+        const raw = res.result
+        setExecResult(typeof raw === 'string' ? raw : '```json\n' + JSON.stringify(raw, null, 2) + '\n```')
       } else {
-        setExecResult('执行失败: ' + (res.error || '未知错误'))
+        setExecResult('> **执行失败**\n\n' + (res.error || '未知错误'))
       }
     } catch (e) {
-      setExecResult('执行失败: ' + e.message)
+      setExecResult('> **执行失败**\n\n' + e.message)
     } finally {
       setExecuting(false)
     }
@@ -407,11 +411,28 @@ function SkillsTab() {
             <Play className="w-3 h-3" /> {executing ? '执行中...' : '执行'}
           </button>
           {execResult && (
-            <div className="text-[11px] max-h-60 overflow-auto p-2 t-bg-app border t-border rounded-lg">
-              <MarkdownContent content={execResult} />
+            <div className="text-sm t-bg-card border t-border rounded-lg overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-1.5 border-b t-border t-bg-app/60">
+                <span className="text-[11px] t-text-faint">执行结果</span>
+                <button onClick={() => setResultMax(true)} title="放大查看" className="t-text-fainter t-hover-text-accent inline-flex items-center gap-1 text-[11px]">
+                  <Maximize2 className="w-3 h-3" /> 放大
+                </button>
+              </div>
+              <div className="max-h-72 overflow-auto p-3">
+                <MarkdownContent content={execResult} />
+              </div>
             </div>
           )}
         </div>
+      )}
+
+      {/* 执行结果放大窗口 */}
+      {resultMax && execResult && (
+        <Modal title="执行结果" max onClose={() => setResultMax(false)}>
+          <div className="flex-1 overflow-auto">
+            <MarkdownContent content={execResult} />
+          </div>
+        </Modal>
       )}
 
       {/* 列表 */}

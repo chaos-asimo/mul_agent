@@ -419,6 +419,60 @@ body {
 .python-number { color: #b5cea8; }
 .python-exception { color: #f14c4c; font-weight: bold; }
 
+/* ===== 通用代码高亮（文件查看器） ===== */
+.code-view {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--md-code-text, #d4d4d4);
+  margin: 0;
+  white-space: pre;
+  word-wrap: normal;
+}
+.code-comment { color: #6a9955; font-style: italic; }
+.code-string { color: #ce9178; }
+.code-number { color: #b5cea8; }
+.code-tag { color: #569cd6; }
+
+/* ===== 文件查看器 ===== */
+.file-viewer-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.75;
+  font-size: 13px;
+}
+.file-viewer-frame {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 10px;
+  background: #fff;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ===== Office 原生渲染（docx-preview / pptx-preview / SheetJS） ===== */
+.office-preview-host {
+  background: #fff;
+  color: #222;
+  padding: 12px;
+  border-radius: 10px;
+}
+.office-preview-host .docx-wrapper > section.docx {
+  box-shadow: none !important;
+  margin: 0 auto !important;
+}
+.office-xlsx table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: auto;
+}
+.office-xlsx td, .office-xlsx th {
+  border: 1px solid #d0d7de;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+.office-xlsx tr:nth-child(even) td { background: #f6f8fa; }
+
 /* 编辑器：透明 textarea 叠加高亮层（textarea 在上接收输入，pre 在下显示高亮） */
 .code-editor-wrap {
   position: relative;

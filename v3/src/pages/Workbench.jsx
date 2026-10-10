@@ -52,6 +52,23 @@ function Workbench() {
   // 待发送文件（文件 Tab 与聊天输入框共用）
   const [pendingFiles, setPendingFiles] = useState([])
 
+  // 文件库（持久化，可跨会话复用）
+  const [files, setFiles] = useState([])
+  const [uploading, setUploading] = useState(false)
+
+  const loadFiles = useCallback(async () => {
+    try {
+      const result = await apiGet('/files')
+      setFiles(result.files || [])
+    } catch (e) {
+      console.error('加载文件列表失败:', e)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadFiles()
+  }, [loadFiles])
+
   // 功能 Tab
   const [activeTab, setActiveTab] = useState('files')
   // 登录后右侧功能栏默认收起（用户可手动展开）
@@ -119,9 +136,15 @@ function Workbench() {
     loadSessions()
   }
 
-  // 文件：文本类直接读取，二进制走 /upload/text，单文件 10MB 上限
+  // 文件：文本类直接读取，二进制走 /upload/text，单文件 10MB 上限。
+  // 兼容两类入参：浏览器 File 对象（本地选择）、{filename,content,size} 对象（从文件库复用）。
   const addPendingFiles = async (fileList) => {
     for (const file of fileList) {
+      // 已是带内容的对象（文件库复用），直接入队
+      if (file && typeof file === 'object' && typeof file.content === 'string' && !(file instanceof File)) {
+        setPendingFiles((prev) => [...prev, { filename: file.filename, content: file.content, size: file.size || 0 }])
+        continue
+      }
       if (file.size > 10 * 1024 * 1024) {
         alert(`${file.name} 文件过大，请上传小于10MB的文件`)
         continue
@@ -182,15 +205,15 @@ function Workbench() {
             <Shell className="w-5 h-5 text-white" />
           </button>
           <div>
-            <h1 className="text-sm font-semibold leading-tight">个人助理多用户版</h1>
+            <h1 className="text-sm font-semibold leading-tight hidden sm:block">个人助理多用户版</h1>
             <p className="text-[10px] t-text-faint leading-tight hidden sm:block">v3 · Multi-User Workbench</p>
           </div>
         </div>
-        <div className="flex items-center gap-2.5 text-sm overflow-x-auto flex-nowrap max-w-[60%]">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 text-sm overflow-x-auto flex-nowrap max-w-[60%]">
           <ThemeSwitcher />
-          <span className="t-text-muted">{user?.display_name || user?.username}</span>
+          <span className="t-text-muted hidden sm:inline">{user?.display_name || user?.username}</span>
           <span
-            className={`text-xs px-2 py-0.5 rounded-full border ${
+            className={`text-xs px-2 py-0.5 rounded-full border whitespace-nowrap ${
               user?.role === 'admin' ? 't-badge-accent' : 't-badge-neutral'
             }`}
           >
@@ -199,27 +222,27 @@ function Workbench() {
           {user?.role === 'admin' && (
             <Link
               to="/admin/users"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors"
+              className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors whitespace-nowrap"
             >
-              <Shield className="w-3.5 h-3.5" />
-              用户管理
+              <Shield className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">用户管理</span>
             </Link>
           )}
           <button
             onClick={() => setShowSecurity(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors"
+            className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors whitespace-nowrap"
             title="安全设置（两步认证）"
           >
-            <ShieldCheck className="w-3.5 h-3.5" />
-            安全
+            <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden sm:inline">安全</span>
           </button>
           <button
             onClick={user?.role === 'admin' ? () => navigate('/admin/users') : openSuggestion}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors"
+            className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors whitespace-nowrap"
             title={user?.role === 'admin' ? '查看并回复用户建议' : '给管理员提建议'}
           >
-            <Lightbulb className="w-3.5 h-3.5" />
-            建议
+            <Lightbulb className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden sm:inline">建议</span>
           </button>
         </div>
       </header>
@@ -355,6 +378,10 @@ function Workbench() {
                 pendingFiles={pendingFiles}
                 onAddFiles={addPendingFiles}
                 onRemoveFile={removePendingFile}
+                files={files}
+                onFilesChange={loadFiles}
+                uploading={uploading}
+                setUploading={setUploading}
               />
             )}
             {activeTab === 'scripts' && <ScriptsTab />}
