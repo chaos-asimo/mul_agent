@@ -665,6 +665,75 @@ def get_default_llm_adapter(model_name: Optional[str] = None):
         return None
 
 
+def _get_model_context_window(model_name: Optional[str] = None) -> int:
+    """取模型配置的上下文窗口（token）；未配置/默认占位时返回保守默认值"""
+    try:
+        from models.model_manager import ModelManager
+        mm = ModelManager()
+        models = [m for m in mm.get_all() if getattr(m, "api_key", "") and getattr(m, "model_type", "") == "text"]
+        if not models:
+            return 200000
+        model = next((m for m in models if m.model_name == model_name), None) if model_name else None
+        model = model or models[0]
+        cw = int(getattr(model, "context_window", 0) or 0)
+        return cw if cw > 4000 else 200000
+    except Exception:
+        return 200000
+
+
+def _trim_messages_to_budget(messages, budget_chars: int):
+    """将 messages 文本总量控制在 budget_chars 以内：超长时优先截断最大的非 system 文本
+    （通常是上传的大文件内容），避免触发模型 400 InvalidParameter（输入超长）。"""
+    if not messages or budget_chars <= 0:
+        return messages
+
+    def _tlen(m):
+        c = m.get("content")
+        if isinstance(c, str):
+            return len(c)
+        if isinstance(c, list):
+            return sum(len(p.get("text", "")) for p in c if isinstance(p, dict) and p.get("type") == "text")
+        return 0
+
+    def _set_text(m, text):
+        c = m.get("content")
+        if isinstance(c, str):
+            m["content"] = text
+        elif isinstance(c, list):
+            for p in c:
+                if isinstance(p, dict) and p.get("type") == "text":
+                    p["text"] = text
+                    return
+
+    suffix = "…\n[内容过长，已自动截断]"
+    total = sum(_tlen(m) for m in messages)
+    guard = 0
+    while total > budget_chars and guard < 60:
+        guard += 1
+        idx, best = -1, 0
+        for i, m in enumerate(messages):
+            if m.get("role") == "system":
+                continue
+            l = _tlen(m)
+            if l > best:
+                best, idx = l, i
+        if idx < 0 or best <= 0:
+            break
+        m = messages[idx]
+        overflow = total - budget_chars
+        cur = _tlen(m)
+        keep = cur - overflow - len(suffix)
+        if keep <= 0:
+            keep = max(0, budget_chars - (total - cur))
+        c = m.get("content")
+        text = c if isinstance(c, str) else next(
+            (p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"), "")
+        new_text = text[:keep] + suffix
+        _set_text(m, new_text)
+        total = total - cur + len(new_text)
+    return messages
+
+
 def get_image_models():
     try:
         from models.model_manager import ModelManager
@@ -752,17 +821,16 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
     """多用户流式聊天入口"""
     session_id = session_store.get_or_create_session(user_id, request.session_id)
 
-    # 构建包含文件信息的消息内容
-    full_message = request.message
     has_images = bool(request.images)
     if has_images:
         print(f"[DEBUG] mu收到 {len(request.images)} 张图片 (user {user_id})")
         for i, img in enumerate(request.images):
             url = img.get('data_url', '') if isinstance(img, dict) else ''
             print(f"[DEBUG] mu图片 {i + 1}: {img.get('name', '未知')}, data_url长度: {len(url)}")
+    # 文件内容块（仅喂给模型）；存历史只保留文件名，避免重开历史会话时显示全文
+    file_info = []
     if request.files:
         print(f"[DEBUG] mu收到 {len(request.files)} 个文件 (user {user_id})")
-        file_info = []
         for i, file_item in enumerate(request.files):
             filename = file_item.get('filename', '')
             content = file_item.get('content', '')
@@ -772,14 +840,20 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                     file_info.append(f"\n📄 文件: {filename}\n```\n{content}\n```")
                 else:
                     file_info.append(f"\n📄 文件: {filename} (已上传但无法提取内容)")
-        if file_info:
-            full_message = request.message + "\n\n" + "".join(file_info)
 
+    # 展示文本（与前端乐观消息一致）：仅文件名 / 图片数，存入历史
+    parts = []
+    if request.message:
+        parts.append(request.message)
+    if request.files:
+        names = ", ".join(f.get('filename', '') for f in request.files if f.get('filename'))
+        if names:
+            parts.append(f"📎 已上传文件: {names}")
     if has_images:
-        img_count = len(request.images)
-        full_message = full_message + f"\n\n🖼️ 附带 {img_count} 张图片"
+        parts.append(f"🖼️ 附带 {len(request.images)} 张图片")
+    display_message = "\n\n".join(parts)
 
-    session_store.append_message(user_id, session_id, "user", full_message)
+    session_store.append_message(user_id, session_id, "user", display_message)
     generation_type = detect_generation_type(request.message)
     # PPT 意图：纯文本对话才生效（文件/图片消息不触发），走文本分支 + [PPT_GEN] 标记机制
     ppt_intent = generation_type == "ppt" and not request.files and not has_images
@@ -1019,6 +1093,15 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
 
 请基于上述工具执行结果、记忆信息和知识库参考，为用户提供详细的分析和解答。
 如果你无法直接通过文字完成用户的任务，请在回复开头添加 [NEED_SCRIPT] 标记。"""
+            elif request.files:
+                user_content = f"""用户问题: {request.message}
+
+用户已上传文件，以下是文件内容，请直接分析文件内容并给出回答，不需要创建脚本：
+{"".join(file_info)}
+
+{summary_context}{memory_context}{knowledge_context}
+
+请基于上述文件内容、记忆信息和知识库参考，为用户提供详细的分析和解答。不要添加 [NEED_SCRIPT] 标记。"""
             elif has_images:
                 img_count = len(request.images)
                 user_content = f"""用户问题: {request.message}
@@ -1044,6 +1127,14 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
 如果你无法直接通过文字完成用户的任务（例如需要计算、数据处理、文件操作、系统检查等），请在回复开头添加 [NEED_SCRIPT] 标记，系统会自动生成并执行Python脚本来完成任务。"""
 
             messages = adapter.create_prompt_with_images(system_prompt, user_content, context, request.images) if has_images else adapter.create_prompt(effective_system_prompt, user_content, context)
+
+            # 超长输入保护：按模型上下文窗口截断，避免 400 InvalidParameter（输入超长）
+            try:
+                cw = _get_model_context_window(request.model_name)
+                budget = max(4000, int(cw * 0.9))  # 预留输出与模板开销
+                messages = _trim_messages_to_budget(messages, budget)
+            except Exception:
+                pass
 
             mcp_filter = _McpMarkerFilter()
             agent_filter = _AgentMarkerFilter()

@@ -2,9 +2,13 @@
 # Multi-Agent Document Enhancer - Dockerfile
 # 多阶段构建：Stage 1 前端，Stage 2 后端
 # ============================================================
+# 镜像源可通过构建参数 REGISTRY 覆盖（中国网络直连 Docker Hub 失败时切换国内镜像）。
+# 例如：docker compose build --build-arg REGISTRY=docker.1ms.run mul-agent
+# 可用源（2026 实测）：docker.1ms.run / docker.xuanyuan.me / docker.aityp.com / docker.m.daocloud.io
+ARG REGISTRY=docker.m.daocloud.io
 
 # ---------- Stage 1: 前端构建 ----------
-FROM docker.m.daocloud.io/node:20-alpine AS frontend
+FROM ${REGISTRY}/node:20-alpine AS frontend
 
 WORKDIR /build
 
@@ -23,7 +27,7 @@ COPY vite.config.js postcss.config.js tailwind.config.js index.html ./
 RUN npm run build:v3
 
 # ---------- Stage 2: 后端运行 ----------
-FROM docker.m.daocloud.io/python:3.11-slim-bookworm AS runtime
+FROM ${REGISTRY}/python:3.11-slim-bookworm AS runtime
 
 # 系统依赖：libgl1（matplotlib）、中文字体（fpdf PDF 生成）
 # 直写清华 Debian 源（避免镜像代理导致签名错误）

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  Shell, Shield, ShieldCheck, Plus, Trash2, MessageSquare,
+  Shell, Shield, ShieldCheck, Plus, Trash2, MessageSquare, Star,
   FolderOpen, FileCode, Brain, Clock, BookOpen, Wrench, Bot, Wand2,
   PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen, Lightbulb, Send, X,
 } from 'lucide-react'
@@ -128,6 +128,15 @@ function Workbench() {
       loadSessions()
     } catch (e) {
       console.error('删除会话失败:', e)
+    }
+  }
+
+  const toggleStar = async (sessionId) => {
+    try {
+      await apiPost(`/chat/session/${sessionId}/star`)
+      loadSessions()
+    } catch (e) {
+      console.error('星标切换失败:', e)
     }
   }
 
@@ -281,14 +290,28 @@ function Workbench() {
                 <div
                   key={s.id}
                   onClick={() => selectSession(s.id)}
+                  onContextMenu={(e) => { e.preventDefault(); toggleStar(s.id) }}
+                  title={s.starred ? '右键取消星标' : '右键星标置顶'}
                   className={`group px-3 py-2.5 rounded-lg cursor-pointer transition-colors border ${
                     s.id === currentSessionId
                       ? 't-bg-accent-soft t-border-accent'
-                      : 't-border t-hover-bg'
+                      : s.starred ? 'border-amber-400/50 t-hover-bg' : 't-border t-hover-bg'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium truncate flex-1">{s.title || '新会话'}</span>
+                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleStar(s.id) }}
+                        className={`shrink-0 transition-colors ${s.starred ? 'text-amber-400' : 't-text-fainter t-hover-text'}`}
+                        title={s.starred ? '取消星标' : '星标置顶'}
+                      >
+                        <Star className={`w-3.5 h-3.5 ${s.starred ? 'fill-amber-400' : ''}`} />
+                      </button>
+                      <span className="text-sm font-medium truncate">
+                        {s.title || '新会话'}
+                        <span className="t-text-fainter font-normal ml-1">（{s.message_count || 0}）</span>
+                      </span>
+                    </div>
                     <button
                       onClick={(e) => {
                         e.stopPropagation()
@@ -300,9 +323,7 @@ function Workbench() {
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
-                  <p className="text-xs t-text-faint truncate mt-1">
-                    {s.preview || `${s.message_count || 0} 条消息`}
-                  </p>
+                  <p className="text-xs t-text-faint truncate mt-1">{s.preview}</p>
                   <p className="text-[10px] t-text-fainter mt-0.5">{formatSessionTime(s.last_used)}</p>
                 </div>
               ))

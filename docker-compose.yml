@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 基础镜像源：daocloud 挂掉时，在 .env 设 REGISTRY=docker.1ms.run 等切换
+      args:
+        REGISTRY: ${REGISTRY:-docker.m.daocloud.io}
     container_name: mul-agent
     restart: unless-stopped
     # 端口暴露模式：容器内应用监听 0.0.0.0:8888，映射到宿主机 8888

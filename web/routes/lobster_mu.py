@@ -1069,6 +1069,15 @@ async def mu_chat_session_delete(session_id: str, user: dict = Depends(get_mu_us
     return {"success": ok, "message": "会话已删除" if ok else "会话不存在"}
 
 
+@router.post("/chat/session/{session_id}/star")
+async def mu_chat_session_toggle_star(session_id: str, user: dict = Depends(get_mu_user)):
+    """切换会话星标（置顶/取消）"""
+    starred = session_store.toggle_star(user["id"], session_id)
+    if starred is None:
+        return {"success": False, "error": "会话不存在"}
+    return {"success": True, "starred": starred}
+
+
 @router.delete("/chat/sessions")
 async def mu_chat_sessions_clear(user: dict = Depends(get_mu_user)):
     session_store.clear_sessions(user["id"])

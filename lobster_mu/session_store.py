@@ -183,9 +183,9 @@ def list_sessions(user_id: int) -> list:
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT s.id, s.title, s.created_at, s.updated_at, COUNT(m.id) AS message_count"
+            "SELECT s.id, s.title, s.starred, s.created_at, s.updated_at, COUNT(m.id) AS message_count"
             " FROM mu_chat_sessions s LEFT JOIN mu_chat_messages m ON m.session_id = s.id"
-            " WHERE s.user_id = ? GROUP BY s.id ORDER BY s.updated_at DESC",
+            " WHERE s.user_id = ? GROUP BY s.id ORDER BY s.starred DESC, s.updated_at DESC",
             (user_id,),
         ).fetchall()
     finally:
@@ -201,9 +201,31 @@ def list_sessions(user_id: int) -> list:
             pass
         result.append({
             "id": r["id"], "title": r["title"], "message_count": r["message_count"],
+            "starred": bool(r["starred"]),
             "created_at": r["created_at"], "last_used": r["updated_at"], "preview": preview,
         })
     return result
+
+
+def toggle_star(user_id: int, session_id: str) -> bool:
+    """切换会话星标（置顶/取消），返回切换后的星标状态；会话不存在返回 None"""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT starred FROM mu_chat_sessions WHERE id = ? AND user_id = ?",
+            (session_id, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        new_val = 0 if row["starred"] else 1
+        conn.execute(
+            "UPDATE mu_chat_sessions SET starred = ?, updated_at = updated_at WHERE id = ? AND user_id = ?",
+            (new_val, session_id, user_id),
+        )
+        conn.commit()
+        return bool(new_val)
+    finally:
+        conn.close()
 
 
 def delete_session(user_id: int, session_id: str) -> bool:

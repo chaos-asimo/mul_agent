@@ -24,11 +24,19 @@ function cleanUrl(u) {
   return cur
 }
 
-// 给所有 <a> 注入新标签页属性，并清洗 href 尾部标点（不改文本，保证显示与跳转一致）
+// 桌面浏览器用新标签页打开链接；移动端/WebView 下在当前窗口导航，
+// 使其进入 WebView 历史栈，系统返回键可回到原页面（target=_blank 会脱离返回栈）。
+const OPEN_IN_NEW_TAB = typeof navigator !== 'undefined'
+  && !/Android|iPhone|iPad|iPod|Mobile|HarmonyOS|WebView|MicroMessenger|wxwork/i.test(navigator.userAgent || '')
+
+// 给所有 <a> 注入链接属性，并清洗 href 尾部标点（不改文本，保证显示与跳转一致）
 function sanitizeAnchors(html) {
+  const targetAttr = OPEN_IN_NEW_TAB
+    ? ' target="_blank" rel="noopener noreferrer"'
+    : ' target="_self"'
   return String(html).replace(/<a\b([^>]*?)\shref="([^"]*)"/gi, (m, attrs, url) => {
     const clean = cleanUrl(url)
-    return `<a target="_blank" rel="noopener noreferrer"${attrs} href="${clean}"`
+    return `<a${targetAttr}${attrs} href="${clean}"`
   })
 }
 

@@ -30,6 +30,7 @@ DDL = [
         id         TEXT PRIMARY KEY,
         user_id    INTEGER NOT NULL,
         title      TEXT DEFAULT '',
+        starred    INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )""",
@@ -305,6 +306,10 @@ _KB_DOCS_MIGRATION_COLUMNS = [
     ("stored_name", "TEXT DEFAULT ''"),
 ]
 
+_SESSION_MIGRATION_COLUMNS = [
+    ("starred", "INTEGER NOT NULL DEFAULT 0"),
+]
+
 
 def get_conn() -> sqlite3.Connection:
     """获取新连接（短连接模式，WAL 下读写不互斥）。
@@ -362,7 +367,8 @@ def init_db():
         for table, cols in (("users", _USER_MIGRATION_COLUMNS),
                             ("mu_agents", _AGENT_MIGRATION_COLUMNS),
                             ("mu_agent_memories", _MEMO_MIGRATION_COLUMNS),
-                            ("mu_knowledge_docs", _KB_DOCS_MIGRATION_COLUMNS)):
+                            ("mu_knowledge_docs", _KB_DOCS_MIGRATION_COLUMNS),
+                            ("mu_chat_sessions", _SESSION_MIGRATION_COLUMNS)):
             existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
             for col, coldef in cols:
                 if col not in existing:
