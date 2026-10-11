@@ -181,6 +181,53 @@ async def lifespan(app: FastAPI):
             _time.sleep(3600)
     _threading.Thread(target=_model_speed_loop, daemon=True).start()
 
+    # DB 保活：容器空闲一段时间后，内核会把 SQLite 数据页从页缓存回收，
+    # 再次访问时冷盘读（bind 挂载 ./data）导致列表/日志查询首查 30s+。
+    # 周期性读取热表近期行，把索引与数据页钉在缓存里，避免「空闲后变慢」。
+    def _db_keepwarm_loop():
+        import time as _time
+        from lobster_mu import db
+        _warm_tables = [
+            "SELECT id FROM users ORDER BY id DESC LIMIT 100",
+            "SELECT id FROM mu_operation_logs ORDER BY id DESC LIMIT 500",
+            "SELECT id FROM mu_api_access_logs ORDER BY id DESC LIMIT 500",
+            "SELECT id FROM mu_files ORDER BY id DESC LIMIT 200",
+        ]
+        while True:
+            _time.sleep(180)  # 每 3 分钟一次
+            try:
+                conn = db.get_conn()
+                try:
+                    for _sql in _warm_tables:
+                        try:
+                            conn.execute(_sql).fetchall()
+                        except Exception:
+                            pass  # 某表不存在不影响其余
+                finally:
+                    conn.close()
+            except Exception as e:
+                logger.debug(f"[db-keepwarm] 保活失败: {e}")
+    _threading.Thread(target=_db_keepwarm_loop, daemon=True).start()
+
+    # 日志自动清理：每日执行一次，仅当管理员在界面开启「日志保留策略」时生效。
+    def _log_retention_loop():
+        import time as _time
+        from web.routes.lobster_mu import get_logret_settings, run_log_retention
+        _time.sleep(120)  # 启动后等 2 分钟，避免与启动期负载叠加
+        while True:
+            try:
+                if get_logret_settings()["enabled"]:
+                    res = run_log_retention()
+                    if res.get("api_deleted") or res.get("op_deleted"):
+                        logger.info(
+                            f"[log-retention] 自动清理: 接口 -{res['api_deleted']} "
+                            f"操作 -{res['op_deleted']}"
+                        )
+            except Exception as e:
+                logger.debug(f"[log-retention] 清理失败: {e}")
+            _time.sleep(86400)  # 每天一次
+    _threading.Thread(target=_log_retention_loop, daemon=True).start()
+
     yield
 
     _cleanup_task.cancel()
@@ -225,6 +272,16 @@ async def fix_session_cookie(request, call_next):
             new_cookie = set_cookie + "; samesite=none; secure"
         response.headers["set-cookie"] = new_cookie
     return response
+
+# 方法覆盖：部分浏览器/代理会对 DELETE 方法直接重置连接（ERR_CONNECTION_RESET）。
+# 允许前端用 POST + 头 X-HTTP-Method-Override: DELETE/PUT 隧道化，这里把方法改写后再路由。
+@app.middleware("http")
+async def method_override(request, call_next):
+    if request.method == "POST":
+        override = request.headers.get("x-http-method-override", "").upper()
+        if override in ("DELETE", "PUT"):
+            request.scope["method"] = override
+    return await call_next(request)
 
 # ---- 接口访问日志中间件（记录 /api/lobster-mu 请求，仅管理员可查） ----
 import asyncio as _asyncio

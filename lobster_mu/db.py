@@ -277,6 +277,11 @@ DDL = [
         created_at  TEXT NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_mu_files_user ON mu_files(user_id, id DESC)",
+    # 系统配置键值表（管理员可在界面调整的全局开关/阈值）
+    """CREATE TABLE IF NOT EXISTS mu_config (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )""",
 ]
 
 # 已有库的列迁移：mu_agents 新增人格化字段（avatar/tone），mu_agent_memories 新增来源
@@ -314,6 +319,30 @@ def get_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA temp_store=MEMORY")
     return conn
+
+
+def get_config(key: str, default=None):
+    """读取 mu_config 配置项（不存在返回 default）"""
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT value FROM mu_config WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+    finally:
+        conn.close()
+
+
+def set_config(key: str, value) -> None:
+    """写入 mu_config 配置项（upsert）"""
+    conn = get_conn()
+    try:
+        conn.execute(
+            "INSERT INTO mu_config(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def init_db():

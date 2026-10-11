@@ -398,6 +398,46 @@ function AdminUsers() {
     }
   }
 
+  // 日志保留策略（管理员开关 + 阈值）
+  const [showLogret, setShowLogret] = useState(false)
+  const [logret, setLogret] = useState({ enabled: false, api_days: 14, api_max_rows: 100000, op_days: 180, op_max_rows: 200000 })
+  const [savingLogret, setSavingLogret] = useState(false)
+  const [runningLogret, setRunningLogret] = useState(false)
+
+  const loadLogret = useCallback(async () => {
+    try {
+      const res = await apiGet('/admin/log-retention')
+      if (res.success) setLogret(res.settings)
+    } catch (e) { /* 忽略 */ }
+  }, [])
+
+  useEffect(() => { if (showLogret) loadLogret() }, [showLogret, loadLogret])
+
+  const saveLogret = async (patch) => {
+    setSavingLogret(true)
+    try {
+      const res = await apiPut('/admin/log-retention', patch)
+      if (res.success) setLogret(res.settings)
+    } catch (e) {
+      alert('保存失败：' + (e.message || ''))
+    } finally {
+      setSavingLogret(false)
+    }
+  }
+
+  const runLogret = async () => {
+    if (!window.confirm('立即按当前策略清理一次日志？')) return
+    setRunningLogret(true)
+    try {
+      const res = await apiPost('/admin/log-retention/run')
+      if (res.success) alert(`清理完成：接口日志 -${res.api_deleted}，操作日志 -${res.op_deleted}`)
+    } catch (e) {
+      alert('清理失败：' + (e.message || ''))
+    } finally {
+      setRunningLogret(false)
+    }
+  }
+
   const handleDeleteApiLog = async (log) => {
     if (!window.confirm(`确定删除接口日志 #${log.id}（${log.display_name || log.username} · ${log.method} ${log.path}）吗？`)) return
     try {
@@ -593,6 +633,10 @@ function AdminUsers() {
             <button onClick={handleDbMaintenance} disabled={maintaining} className={btnGhost} title="VACUUM 回收空间、优化查询（变慢时执行）">
               <Database className={`w-3.5 h-3.5 ${maintaining ? 'animate-spin' : ''}`} />
               {maintaining ? '维护中' : '数据库维护'}
+            </button>
+            <button onClick={() => setShowLogret(true)} className={btnGhost} title="开启后每日自动按策略清理过期日志">
+              <Trash2 className="w-3.5 h-3.5" />
+              日志清理{logret.enabled ? '·已开启' : ''}
             </button>
             <button onClick={() => { setLogPage(1); setLogMaximized(true); setShowLogs(true) }} className={btnGhost}>
               <ClipboardList className="w-3.5 h-3.5" />
@@ -1088,6 +1132,65 @@ function AdminUsers() {
                   )}
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 日志保留策略 Modal */}
+      {showLogret && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70" onClick={() => setShowLogret(false)}>
+          <div className="t-bg-panel border t-border-strong rounded-2xl shadow-2xl w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3.5 border-b t-border">
+              <h3 className="text-sm font-semibold t-text flex items-center gap-2">
+                <Trash2 className="w-4 h-4 t-text-accent" /> 日志保留策略
+              </h3>
+              <button onClick={() => setShowLogret(false)} className="t-text-faint t-hover-text"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-5 space-y-4 text-xs">
+              <label className="flex items-center justify-between t-bg-soft rounded-lg px-3 py-2.5">
+                <span>
+                  <span className="t-text font-medium">每日自动清理日志</span>
+                  <span className="block t-text-fainter mt-0.5">开启后每天按下方规则清理过期/超量日志</span>
+                </span>
+                <input type="checkbox" checked={logret.enabled} disabled={savingLogret}
+                  onChange={(e) => saveLogret({ enabled: e.target.checked })} className="w-4 h-4" />
+              </label>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block t-text-muted mb-1">接口日志·保留天数</label>
+                  <input type="number" min={0} className={inputCls + ' w-full'} value={logret.api_days}
+                    onChange={(e) => setLogret({ ...logret, api_days: Number(e.target.value) })} />
+                </div>
+                <div>
+                  <label className="block t-text-muted mb-1">接口日志·最多行数</label>
+                  <input type="number" min={0} className={inputCls + ' w-full'} value={logret.api_max_rows}
+                    onChange={(e) => setLogret({ ...logret, api_max_rows: Number(e.target.value) })} />
+                </div>
+                <div>
+                  <label className="block t-text-muted mb-1">操作日志·保留天数</label>
+                  <input type="number" min={0} className={inputCls + ' w-full'} value={logret.op_days}
+                    onChange={(e) => setLogret({ ...logret, op_days: Number(e.target.value) })} />
+                </div>
+                <div>
+                  <label className="block t-text-muted mb-1">操作日志·最多行数</label>
+                  <input type="number" min={0} className={inputCls + ' w-full'} value={logret.op_max_rows}
+                    onChange={(e) => setLogret({ ...logret, op_max_rows: Number(e.target.value) })} />
+                </div>
+              </div>
+              <p className="t-text-fainter">两项规则取交集（同时满足才保留）；行数设为 0 表示不限制行数。</p>
+
+              <div className="flex gap-2 pt-1">
+                <button onClick={() => saveLogret({ api_days: logret.api_days, api_max_rows: logret.api_max_rows, op_days: logret.op_days, op_max_rows: logret.op_max_rows })}
+                  disabled={savingLogret}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg t-bg-accent t-hover-accent text-white disabled:opacity-60">
+                  {savingLogret ? '保存中…' : '保存阈值'}
+                </button>
+                <button onClick={runLogret} disabled={runningLogret} className={btnGhost}>
+                  {runningLogret ? '清理中…' : '立即清理一次'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

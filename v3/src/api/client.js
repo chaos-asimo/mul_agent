@@ -18,24 +18,61 @@ function handleUnauthorized() {
 }
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    credentials: 'include',
-    ...options,
-  })
-  if (response.status === 401 || response.status === 403) {
-    let detail = ''
-    try {
-      const body = await response.json()
-      detail = body.detail || body.error || body.message || ''
-    } catch (e) {
-      /* 忽略 */
+  const url = `${API_BASE}${path}`
+  const method = (options.method || 'GET').toUpperCase()
+  // GET/DELETE 幂等：遇到网络层重置（ERR_CONNECTION_RESET 等）自动重试一次，
+  // 用新连接规避部分浏览器/代理对 keep-alive 连接的 RST。
+  const retryable = method === 'GET' || method === 'DELETE'
+  const attempt = async () => {
+    const response = await fetch(url, { credentials: 'include', ...options })
+    if (response.status === 401 || response.status === 403) {
+      let detail = ''
+      try {
+        const body = await response.json()
+        detail = body.detail || body.error || body.message || ''
+      } catch (e) {
+        /* 忽略 */
+      }
+      handleUnauthorized()
+      const error = new Error(detail || '未登录或登录已过期')
+      error.status = response.status
+      throw error
     }
-    handleUnauthorized()
-    const error = new Error(detail || '未登录或登录已过期')
-    error.status = response.status
-    throw error
+    return response
   }
-  return response
+  try {
+    return await attempt()
+  } catch (e) {
+    // 幂等方法遇到网络层重置（ERR_CONNECTION_RESET 等）时重试：
+    // 先用原方法重试一次；若仍为网络错误，则改用 POST + X-HTTP-Method-Override
+    // 隧道化（部分浏览器/代理会直接重置 DELETE 连接）。
+    if (retryable && e instanceof TypeError && !e.status) {
+      try {
+        return await attempt()
+      } catch (e2) {
+        if (e2 instanceof TypeError && !e2.status && (method === 'DELETE' || method === 'PUT')) {
+          const overrideOptions = {
+            ...options,
+            method: 'POST',
+            headers: { ...(options.headers || {}), 'X-HTTP-Method-Override': method },
+          }
+          const overrideAttempt = async () => {
+            const response = await fetch(url, { credentials: 'include', ...overrideOptions })
+            if (response.status === 401 || response.status === 403) {
+              handleUnauthorized()
+              const err = new Error('未登录或登录已过期')
+              err.status = response.status
+              throw err
+            }
+            return response
+          }
+          return await overrideAttempt()
+        }
+        throw e2
+      }
+    }
+    throw e
+  }
 }
 
 export async function apiGet(path) {

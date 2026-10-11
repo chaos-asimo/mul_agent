@@ -763,6 +763,114 @@ async def admin_clear_api_logs(
     return {"success": True, "deleted": deleted}
 
 
+# ============ 日志保留策略（管理员可在界面开关/调阈值，后台每日自动清理） ============
+
+# 默认阈值（与 README/文档一致）：接口日志 14 天且≤10 万行；操作日志 180 天且≤20 万行
+_LOGRET_DEFAULTS = {
+    "enabled": "0",          # 默认关闭，需管理员在界面开启
+    "api_days": "14",
+    "api_max_rows": "100000",
+    "op_days": "180",
+    "op_max_rows": "200000",
+}
+_LOGRET_KEYS = ("enabled", "api_days", "api_max_rows", "op_days", "op_max_rows")
+
+
+def get_logret_settings() -> dict:
+    """读取日志保留配置（缺失项回退默认值），返回带类型的 dict"""
+    ensure_db()
+    raw = {k: db.get_config(f"logret.{k}", _LOGRET_DEFAULTS[k]) for k in _LOGRET_KEYS}
+    def _i(v, default):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
+    return {
+        "enabled": str(raw["enabled"]) in ("1", "true", "True", "on"),
+        "api_days": _i(raw["api_days"], 14),
+        "api_max_rows": _i(raw["api_max_rows"], 100000),
+        "op_days": _i(raw["op_days"], 180),
+        "op_max_rows": _i(raw["op_max_rows"], 200000),
+    }
+
+
+def run_log_retention() -> dict:
+    """执行一次日志清理（按时间 + 按行数上限）。返回各表删除条数。
+    供后台每日循环与管理员手动触发共用；无论开关与否都可手动运行。"""
+    ensure_db()
+    s = get_logret_settings()
+    from datetime import timedelta
+    result = {"api_deleted": 0, "op_deleted": 0}
+    conn = db.get_conn()
+    try:
+        # 接口访问日志
+        cutoff = (datetime.now() - timedelta(days=max(0, s["api_days"]))).isoformat()
+        cur = conn.execute("DELETE FROM mu_api_access_logs WHERE created_at < ?", (cutoff,))
+        result["api_deleted"] += cur.rowcount or 0
+        if s["api_max_rows"] > 0:
+            cur = conn.execute(
+                "DELETE FROM mu_api_access_logs WHERE id NOT IN "
+                "(SELECT id FROM mu_api_access_logs ORDER BY id DESC LIMIT ?)",
+                (s["api_max_rows"],),
+            )
+            result["api_deleted"] += cur.rowcount or 0
+        # 操作日志
+        cutoff = (datetime.now() - timedelta(days=max(0, s["op_days"]))).isoformat()
+        cur = conn.execute("DELETE FROM mu_operation_logs WHERE created_at < ?", (cutoff,))
+        result["op_deleted"] += cur.rowcount or 0
+        if s["op_max_rows"] > 0:
+            cur = conn.execute(
+                "DELETE FROM mu_operation_logs WHERE id NOT IN "
+                "(SELECT id FROM mu_operation_logs ORDER BY id DESC LIMIT ?)",
+                (s["op_max_rows"],),
+            )
+            result["op_deleted"] += cur.rowcount or 0
+        conn.commit()
+    finally:
+        conn.close()
+    return result
+
+
+class LogRetentionConfig(BaseModel):
+    enabled: Optional[bool] = None
+    api_days: Optional[int] = None
+    api_max_rows: Optional[int] = None
+    op_days: Optional[int] = None
+    op_max_rows: Optional[int] = None
+
+
+@router.get("/admin/log-retention")
+async def admin_get_log_retention(admin: dict = Depends(require_admin)):
+    """读取日志保留策略配置"""
+    return {"success": True, "settings": get_logret_settings()}
+
+
+@router.put("/admin/log-retention")
+async def admin_set_log_retention(body: LogRetentionConfig, admin: dict = Depends(require_admin)):
+    """更新日志保留策略配置（仅传入的字段生效）"""
+    ensure_db()
+    data = body.dict(exclude_unset=True)
+    for k in _LOGRET_KEYS:
+        if k in data and data[k] is not None:
+            if k == "enabled":
+                db.set_config("logret.enabled", "1" if data[k] else "0")
+            else:
+                db.set_config(f"logret.{k}", str(int(data[k])))
+    tools.log_operation(admin["id"], "admin:set_log_retention", f"更新日志保留策略: {data}")
+    return {"success": True, "settings": get_logret_settings()}
+
+
+@router.post("/admin/log-retention/run")
+async def admin_run_log_retention(admin: dict = Depends(require_admin)):
+    """立即执行一次日志清理（手动触发，不受开关限制）"""
+    res = run_log_retention()
+    tools.log_operation(
+        admin["id"], "admin:run_log_retention",
+        f"手动清理日志: 接口 -{res['api_deleted']} 操作 -{res['op_deleted']}",
+    )
+    return {"success": True, **res}
+
+
 # ============ 用户建议（非管理员提建议，管理员查看/回复/删除） ============
 
 @router.post("/suggestions")
