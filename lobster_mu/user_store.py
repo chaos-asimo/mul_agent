@@ -17,6 +17,45 @@ def _now() -> str:
     return datetime.now().isoformat(sep=" ", timespec="seconds")
 
 
+def parse_device(ua: str) -> str:
+    """从 User-Agent 解析出友好的设备/浏览器描述（如「Windows · Chrome」「iPhone · 微信」）。"""
+    ua = ua or ""
+    if not ua.strip():
+        return "未知设备"
+    low = ua.lower()
+    # 操作系统
+    if "iphone" in low or "ipad" in low:
+        os_ = "iPhone/iPad" if "iphone" in low else "iPad"
+    elif "android" in low:
+        os_ = "Android"
+    elif "windows" in low:
+        os_ = "Windows"
+    elif "mac os x" in low or "macintosh" in low:
+        os_ = "macOS"
+    elif "linux" in low:
+        os_ = "Linux"
+    else:
+        os_ = ""
+    # 浏览器 / 宿主 App（注意顺序：Edge/企业微信/微信 先于 Chrome/Safari）
+    if "wxwork" in low or "wecom" in low:
+        browser = "企业微信"
+    elif "micromessenger" in low:
+        browser = "微信"
+    elif "edg/" in low:
+        browser = "Edge"
+    elif "firefox" in low:
+        browser = "Firefox"
+    elif "chrome" in low and "chromium" not in low:
+        browser = "Chrome"
+    elif "safari" in low:
+        browser = "Safari"
+    else:
+        browser = ""
+    parts = [p for p in (os_, browser) if p]
+    label = " · ".join(parts) if parts else ua[:40]
+    return label[:60]
+
+
 def _row_to_dict(r) -> dict:
     return {
         "id": r["id"],
@@ -27,6 +66,7 @@ def _row_to_dict(r) -> dict:
         "totp_enabled": bool(r["totp_enabled"]),
         "created_at": r["created_at"],
         "last_login_at": r["last_login_at"],
+        "last_login_device": r["last_login_device"],
     }
 
 
@@ -93,7 +133,7 @@ def list_users() -> list:
         # 按 created_at 降序命中 idx_users_created 索引，避免全表 filesort
         rows = conn.execute(
             "SELECT id, username, role, display_name, disabled, totp_enabled,"
-            " created_at, last_login_at FROM users ORDER BY created_at DESC"
+            " created_at, last_login_at, last_login_device FROM users ORDER BY created_at DESC"
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
     finally:
@@ -149,10 +189,18 @@ def delete_user(user_id: int) -> bool:
     return True
 
 
-def update_last_login(user_id: int):
+def update_last_login(user_id: int, user_agent: str = None):
+    """记录最后登录时间；传入 User-Agent 时同时记录登录设备。"""
+    device = parse_device(user_agent) if user_agent else None
     conn = get_conn()
     try:
-        conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (_now(), user_id))
+        if device is not None:
+            conn.execute(
+                "UPDATE users SET last_login_at = ?, last_login_device = ? WHERE id = ?",
+                (_now(), device, user_id),
+            )
+        else:
+            conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (_now(), user_id))
         conn.commit()
     finally:
         conn.close()

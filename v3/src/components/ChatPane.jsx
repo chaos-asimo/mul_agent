@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { Send, Paperclip, X, Bot, Image as ImageIcon, BookOpen, ChevronDown, ChevronUp } from 'lucide-react'
+import { Send, Paperclip, X, Bot, Image as ImageIcon, BookOpen, ChevronDown, ChevronUp, Download, FileText, FileImage, FileType } from 'lucide-react'
 import { apiGet, apiStream } from '../api/client'
 import MarkdownContent from './MarkdownContent'
+import { exportMarkdown, exportWord, exportImage } from '../utils/export'
 
 // 知识库参考来源（助手消息下方可折叠展示）
 function KnowledgeSources({ sources }) {
@@ -54,10 +55,44 @@ function MessageBubble({ msg }) {
   const isUser = msg.role === 'user'
   const isError = msg.role === 'error'
   const images = msg.images || []
+  const bubbleRef = useRef(null)
+  const [showExportMenu, setShowExportMenu] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const exportMenuRef = useRef(null)
+
+  // 点击外部关闭导出菜单
+  useEffect(() => {
+    if (!showExportMenu) return
+    const handleClickOutside = (e) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target)) {
+        setShowExportMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showExportMenu])
+
+  const handleExport = async (type) => {
+    setShowExportMenu(false)
+    if (exporting) return
+    setExporting(true)
+    try {
+      const single = [msg]
+      if (type === 'markdown') {
+        exportMarkdown(single)
+      } else if (type === 'word') {
+        await exportWord(single)
+      } else if (type === 'image') {
+        await exportImage(bubbleRef.current)
+      }
+    } finally {
+      setExporting(false)
+    }
+  }
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`${isUser ? 'max-w-[78%]' : 'w-full'} ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
+      <div ref={bubbleRef} className={`${isUser ? 'max-w-[78%]' : 'w-full'} ${isUser ? 'items-end' : 'items-start'} flex flex-col group`}>
         {images.length > 0 && (
           <div className={`flex flex-wrap gap-2 mb-2 ${isUser ? 'justify-end' : ''}`}>
             {images.map((img, i) => (
@@ -117,6 +152,42 @@ function MessageBubble({ msg }) {
               {!msg.model_name && <span>{formatTimestamp(msg.timestamp)}</span>}
             </>
           )}
+          {/* 单条消息导出按钮 */}
+          <div className="relative" ref={exportMenuRef}>
+            <button
+              onClick={() => setShowExportMenu((v) => !v)}
+              disabled={exporting}
+              className="p-1 rounded hover:t-bg-accent-soft t-text-faint hover:t-text-accent disabled:opacity-50 transition-colors"
+              title="导出此条消息"
+            >
+              <Download className="w-3 h-3" />
+            </button>
+            {showExportMenu && (
+              <div className={`absolute ${isUser ? 'right-0' : 'left-0'} bottom-full mb-1 w-32 t-bg-panel border t-border rounded-lg shadow-lg py-1 z-50`}>
+                <button
+                  onClick={() => handleExport('image')}
+                  className="w-full px-3 py-1.5 text-left text-xs t-text-2 hover:t-bg-accent-soft flex items-center gap-2"
+                >
+                  <FileImage className="w-3.5 h-3.5" />
+                  导出图片
+                </button>
+                <button
+                  onClick={() => handleExport('markdown')}
+                  className="w-full px-3 py-1.5 text-left text-xs t-text-2 hover:t-bg-accent-soft flex items-center gap-2"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  导出 MD
+                </button>
+                <button
+                  onClick={() => handleExport('word')}
+                  className="w-full px-3 py-1.5 text-left text-xs t-text-2 hover:t-bg-accent-soft flex items-center gap-2"
+                >
+                  <FileType className="w-3.5 h-3.5" />
+                  导出 Word
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

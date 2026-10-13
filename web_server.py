@@ -545,7 +545,7 @@ async def login(request: Request, login_data: LoginRequest):
 
     login_limiter.record_success(ip, login_data.username)
     request.session["user"] = {"username": login_data.username, "id": row["id"], "role": row["role"]}
-    user_store.update_last_login(row["id"])
+    user_store.update_last_login(row["id"], request.headers.get("user-agent") or None)
     return {"status": "success", "message": "登录成功"}
 
 

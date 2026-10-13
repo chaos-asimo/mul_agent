@@ -675,6 +675,7 @@ def execute_python_script(user_id: int, code: str, timeout: int = 60) -> Dict[st
                         "name": new_filename,
                         "original_name": entry,
                         "size": os.path.getsize(new_filepath),
+                        "summary": _file_summary(new_filepath, new_filename),
                         "download_url": f"/api/lobster-mu/script/files/download/{new_filename}"
                     })
 
@@ -734,6 +735,46 @@ def execute_python_script(user_id: int, code: str, timeout: int = 60) -> Dict[st
 
 # ============ 产物文件 ============
 
+def _file_summary(filepath: str, filename: str) -> str:
+    """生成文件内容简介（前端悬停提示用）：文本取开头预览，图片取尺寸，其它给类型。"""
+    ext = os.path.splitext(filename)[1].lower()
+    try:
+        size = os.path.getsize(filepath)
+    except OSError:
+        return ""
+
+    # 图片：尝试读取尺寸
+    if ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'):
+        try:
+            from PIL import Image
+            with Image.open(filepath) as im:
+                w, h = im.size
+            return f"图片（{w}×{h}）"
+        except Exception:
+            return "图片文件"
+
+    # 文本类：取开头预览（只读少量字节，避免大文件开销）
+    if ext in ('.txt', '.csv', '.json', '.md', '.html'):
+        try:
+            with open(filepath, 'rb') as f:
+                head = f.read(512)
+            text = head.decode('utf-8', errors='replace')
+            text = re.sub(r'\s+', ' ', text).strip()
+            if not text:
+                return "（空文本文件）"
+            return text[:120]
+        except Exception:
+            return ""
+
+    return {
+        '.pdf': "PDF 文档",
+        '.docx': "Word 文档", '.doc': "Word 文档",
+        '.xlsx': "Excel 表格", '.xls': "Excel 表格",
+        '.pptx': "PPT 演示文稿",
+        '.zip': "压缩包", '.rar': "压缩包",
+    }.get(ext, "")
+
+
 def list_generated_files(user_id: int) -> List[Dict[str, Any]]:
     """列出该用户产物目录下的全部文件（白名单扩展名，按创建时间倒序）"""
     work_dir = files_dir(user_id)
@@ -748,6 +789,7 @@ def list_generated_files(user_id: int) -> List[Dict[str, Any]]:
                         "name": filename,
                         "size": os.path.getsize(filepath),
                         "created_at": datetime.fromtimestamp(os.path.getctime(filepath)).isoformat(),
+                        "summary": _file_summary(filepath, filename),
                         "download_url": f"/api/lobster-mu/script/files/download/{filename}"
                     })
 

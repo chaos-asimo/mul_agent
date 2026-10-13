@@ -743,19 +743,20 @@ function AdminUsers() {
                 <th className="px-4 py-3">状态</th>
                 <th className="px-4 py-3">两步认证</th>
                 <th className="px-4 py-3">最后登录</th>
+                <th className="px-4 py-3">登录设备</th>
                 <th className="px-4 py-3 text-right">操作</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="px-4 py-10 text-center t-text-faint loading-pulse">
+                  <td colSpan="8" className="px-4 py-10 text-center t-text-faint loading-pulse">
                     加载中...
                   </td>
                 </tr>
               ) : filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="px-4 py-10 text-center t-text-faint">
+                  <td colSpan="8" className="px-4 py-10 text-center t-text-faint">
                     {searchText.trim() ? '未找到匹配的用户' : '暂无用户'}
                   </td>
                 </tr>
@@ -835,6 +836,9 @@ function AdminUsers() {
                       )}
                     </td>
                     <td className="px-4 py-3 t-text-faint text-xs">{u.last_login_at || '从未登录'}</td>
+                    <td className="px-4 py-3 t-text-faint text-xs" title={u.last_login_device || ''}>
+                      {u.last_login_device || '—'}
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2">
                         {editingId !== u.id && (

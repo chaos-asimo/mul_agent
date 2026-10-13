@@ -4666,6 +4666,17 @@ class App {
                 breaks: true,
                 gfm: true
             });
+            // marked GFM 会把单个 ~text~ 也解析为 <del>，标准 GFM 只认 ~~text~~。
+            // 用 walkTokens 把单波浪号的 del 还原为普通文本，避免 "1~10"、"a~b" 被误渲染。
+            marked.use({
+                walkTokens(token) {
+                    if (token.type === 'del' && token.raw && !token.raw.startsWith('~~')) {
+                        token.type = 'text';
+                        token.text = token.raw;
+                        delete token.tokens;
+                    }
+                }
+            });
             return marked.parse(text);
         }
         

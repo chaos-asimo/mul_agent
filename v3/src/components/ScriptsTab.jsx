@@ -1,16 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Plus, Trash2, Pencil, Play, CheckCircle, XCircle, RefreshCw, FileCode,
-  Download, Package, Loader2, X, FileText,
+  Download, Package, Loader2, X, FileText, Image as ImageIcon,
 } from 'lucide-react'
 import { apiGet, apiPost, apiPut, apiDelete, formatSize } from '../api/client'
+import { isImageFile } from '../utils/highlight'
 import CodeEditor from './CodeEditor'
 import FileViewer from './FileViewer'
 
-// 产物文件：鼠标悬停提示信息
+// 产物文件：鼠标悬停提示信息（含内容简介）
 function fileTip(f) {
   const ext = (f.name.split('.').pop() || '').toUpperCase()
-  const lines = [`文件名：${f.name}`, `大小：${formatSize(f.size)}`, `类型：${ext || '未知'}`]
+  const lines = []
+  if (f.summary) lines.push(`内容简介：${f.summary}`)
+  lines.push(`文件名：${f.name}`)
+  lines.push(`大小：${formatSize(f.size)} · 类型：${ext || '未知'}`)
   if (f.created_at) lines.push(`生成时间：${f.created_at}`)
   return lines.join('\n')
 }
@@ -407,7 +411,7 @@ function ScriptsTab() {
                 key={f.name}
                 className="flex items-center gap-2 px-3 py-2 t-bg-panel border t-border rounded-lg t-hover-border-accent transition-colors"
               >
-                <FileText className="w-3.5 h-3.5 t-text-accent shrink-0" />
+                {isImageFile(f.name) ? <ImageIcon className="w-3.5 h-3.5 t-text-accent shrink-0" /> : <FileText className="w-3.5 h-3.5 t-text-accent shrink-0" />}
                 <button
                   onClick={() => openFile(f)}
                   title={fileTip(f)}
@@ -535,7 +539,7 @@ function ScriptsTab() {
                       key={f.name}
                       className="flex items-center gap-2 px-3 py-2 t-bg-input border t-border rounded-lg t-hover-border-accent"
                     >
-                      <FileText className="w-3.5 h-3.5 t-text-accent shrink-0" />
+                      {isImageFile(f.name) ? <ImageIcon className="w-3.5 h-3.5 t-text-accent shrink-0" /> : <FileText className="w-3.5 h-3.5 t-text-accent shrink-0" />}
                       <button
                         onClick={() => openFile(f)}
                         title={fileTip(f)}

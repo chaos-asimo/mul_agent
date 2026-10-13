@@ -2,12 +2,13 @@ import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowLeft, RefreshCw, KeyRound, BookOpen, Users, FileText,
-  Database, Layers, Share2, ChevronDown, ChevronRight
+  Database, Layers, Share2, ChevronDown, ChevronRight, Globe, Loader2
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
-import { apiGet } from '../api/client'
+import { apiGet, apiPost } from '../api/client'
 import ThemeSwitcher from '../components/ThemeSwitcher'
 import FileViewer from '../components/FileViewer'
+import Modal from '../components/Modal'
 
 function fmtBytes(n) {
   if (!n) return '0 B'
@@ -38,6 +39,7 @@ function AdminKnowledge() {
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState({})
   const [viewing, setViewing] = useState(null) // {id, filename}
+  const [chunkViewing, setChunkViewing] = useState(null) // {id, filename}
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -55,6 +57,17 @@ function AdminKnowledge() {
   useEffect(() => { load() }, [load])
 
   const toggle = (uid) => setExpanded((p) => ({ ...p, [uid]: !p[uid] }))
+
+  // 管理员：切换某篇文档是否公共（所有用户检索可命中）
+  const togglePublic = async (d) => {
+    try {
+      const res = await apiPost(`/admin/knowledge/doc/${d.id}/public`, { is_public: !d.is_public })
+      if (res.success) load()
+      else alert(res.error || res.detail || '操作失败')
+    } catch (e) {
+      alert(e.message)
+    }
+  }
 
   const btnGhost =
     'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors'
@@ -151,6 +164,8 @@ function AdminKnowledge() {
                         expanded={!!expanded[u.user_id]}
                         onToggle={() => toggle(u.user_id)}
                         onViewDoc={(d) => setViewing({ id: d.id, filename: d.filename })}
+                        onViewChunks={(d) => setChunkViewing({ id: d.id, filename: d.filename })}
+                        onTogglePublic={togglePublic}
                       />
                     ))
                   )}
@@ -208,11 +223,19 @@ function AdminKnowledge() {
           onClose={() => setViewing(null)}
         />
       )}
+
+      {chunkViewing && (
+        <ChunkViewer
+          docId={chunkViewing.id}
+          filename={chunkViewing.filename}
+          onClose={() => setChunkViewing(null)}
+        />
+      )}
     </div>
   )
 }
 
-function UserRow({ u, expanded, onToggle, onViewDoc }) {
+function UserRow({ u, expanded, onToggle, onViewDoc, onViewChunks, onTogglePublic }) {
   return (
     <>
       <tr className="border-b t-border t-hover-bg cursor-pointer" onClick={onToggle}>
@@ -259,13 +282,40 @@ function UserRow({ u, expanded, onToggle, onViewDoc }) {
                         {d.filename}
                       </button>
                       <span className="t-text-faint shrink-0">{fmtBytes(d.file_size)}</span>
+                      {d.is_public && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full t-badge-accent shrink-0">
+                          <Globe className="w-3 h-3" />公共
+                        </span>
+                      )}
                       {d.shared && (
                         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full t-badge-accent shrink-0">
                           <Users className="w-3 h-3" />{d.shared_by} 人共享
                         </span>
                       )}
                     </div>
-                    <span className="t-text-faint font-mono shrink-0">{d.chunk_count} 块 · {d.content_hash.slice(0, 12)}…</span>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="t-text-faint font-mono">{d.chunk_count} 块 · {d.content_hash.slice(0, 12)}…</span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onViewChunks && onViewChunks(d) }}
+                        title="查看分块内容"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border t-border-strong t-text-2 t-hover-card text-xs transition-colors"
+                      >
+                        <Layers className="w-3 h-3" />
+                        分块
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onTogglePublic && onTogglePublic(d) }}
+                        title={d.is_public ? '取消公共（仅原用户可检索）' : '设为公共（所有用户检索可命中）'}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-xs transition-colors ${
+                          d.is_public
+                            ? 't-bg-accent text-white border-transparent'
+                            : 't-border-strong t-text-2 t-hover-card'
+                        }`}
+                      >
+                        <Globe className="w-3 h-3" />
+                        {d.is_public ? '取消公共' : '设为公共'}
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -274,6 +324,65 @@ function UserRow({ u, expanded, onToggle, onViewDoc }) {
         </tr>
       )}
     </>
+  )
+}
+
+// 分块内容查看器：按块序号展示文档入库时的各分块文本
+function ChunkViewer({ docId, filename, onClose }) {
+  const [doc, setDoc] = useState(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+    setError('')
+    apiGet(`/admin/knowledge/doc/${docId}/chunks`)
+      .then((res) => {
+        if (!alive) return
+        if (res.success && res.doc) setDoc(res.doc)
+        else setError(res.error || res.detail || '读取失败')
+      })
+      .catch((e) => { if (alive) setError(e.message || '读取失败') })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [docId])
+
+  return (
+    <Modal wide title={`分块内容 — ${filename}`} onClose={onClose}>
+      {loading ? (
+        <div className="py-10 text-center t-text-faint">
+          <Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />
+          加载中...
+        </div>
+      ) : error ? (
+        <div className="py-6 text-center t-text-danger text-sm">{error}</div>
+      ) : !doc?.chunks?.length ? (
+        <div className="py-6 text-center t-text-faint text-sm">
+          暂无分块数据（文档未成功入库或向量缺失）
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs t-text-faint">
+            共 {doc.chunks.length} 块（chunk_size=500 / overlap=100，按入库顺序排列）
+          </p>
+          {doc.chunks.map((c) => (
+            <div key={c.chunk_index} className="t-bg-input border t-border rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full t-badge-accent text-xs">
+                  <Layers className="w-3 h-3" />
+                  块 #{c.chunk_index}
+                </span>
+                <span className="text-xs t-text-faint">{c.content.length} 字符</span>
+              </div>
+              <div className="text-xs leading-relaxed whitespace-pre-wrap break-words t-text-2 max-h-60 overflow-y-auto">
+                {c.content}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
   )
 }
 

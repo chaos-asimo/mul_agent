@@ -79,6 +79,10 @@ export function isPdfFile(name) {
   return /\.pdf$/i.test(name || '')
 }
 
+export function isImageFile(name) {
+  return /\.(png|jpe?g|gif|webp|bmp|svg|ico|avif|tiff?)$/i.test(name || '')
+}
+
 export function isOfficeFile(name) {
   return /\.(doc|docx|xls|xlsx|ppt|pptx)$/i.test(name || '')
 }

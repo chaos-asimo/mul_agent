@@ -202,7 +202,7 @@ async def mu_login(request: Request, body: MuLoginRequest):
 
     # 未启用 TOTP：直接登录
     request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}
-    user_store.update_last_login(row["id"])
+    user_store.update_last_login(row["id"], request.headers.get("user-agent") or None)
     tools.log_operation(row["id"], "login", f"{row['username']} 登录成功", ip=ip)
     return {"status": "success", "user": {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}}
 
@@ -229,7 +229,7 @@ async def mu_login_2fa(request: Request, body: MuTwoFactorRequest):
     login_limiter.record_success(ip, body.username)
     request.session.pop("mu_2fa_pending", None)
     request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}
-    user_store.update_last_login(row["id"])
+    user_store.update_last_login(row["id"], request.headers.get("user-agent") or None)
     tools.log_operation(row["id"], "login_2fa_success",
                         f"{row['username']} 二次验证登录成功", ip=ip)
     return {"status": "success", "user": {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}}
@@ -427,14 +427,14 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
         request.session["mu_2fa_pending"] = pending_user
         if body.login_token:
             request.session["mu_login_token"] = body.login_token
-        user_store.update_last_login(row["id"])
+        user_store.update_last_login(row["id"], request.headers.get("user-agent") or None)
         return {"status": "success", "user": pending_user, "needs_2fa": True, "created": created}
 
     request.session.pop("mu_2fa_pending", None)
     request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}
     if body.login_token:
         request.session["mu_login_token"] = body.login_token
-    user_store.update_last_login(row["id"])
+    user_store.update_last_login(row["id"], request.headers.get("user-agent") or None)
     tools.log_operation(row["id"], "login", f"{row['username']} 登录成功" + ("（自动创建账号）" if created else ""), ip=ip)
     return {
         "status": "success",
@@ -2214,6 +2214,16 @@ async def admin_knowledge_doc(doc_id: str, admin: dict = Depends(require_admin))
     return {"success": True, "file": doc}
 
 
+@router.get("/admin/knowledge/doc/{doc_id}/chunks")
+async def admin_knowledge_doc_chunks(doc_id: str, admin: dict = Depends(require_admin)):
+    """管理员按块查看某知识库文档的分块内容"""
+    ensure_db()
+    doc = knowledge_store.admin_get_doc_chunks(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {"success": True, "doc": doc}
+
+
 @router.get("/admin/knowledge/doc/{doc_id}/raw")
 async def admin_knowledge_doc_raw(doc_id: str, download: int = 0, admin: dict = Depends(require_admin)):
     """管理员取某知识库文档的原始文件（默认 inline 供 Office/PDF 预览；?download=1 强制下载）"""
@@ -2229,6 +2239,16 @@ async def admin_knowledge_doc_raw(doc_id: str, download: int = 0, admin: dict = 
     if download:
         return FileResponse(path, filename=info["filename"] or os.path.basename(path))
     return FileResponse(path)
+
+
+@router.post("/admin/knowledge/doc/{doc_id}/public")
+async def admin_knowledge_set_public(doc_id: str, body: dict, admin: dict = Depends(require_admin)):
+    """管理员设置/取消某知识库文档为公共（所有用户检索可命中）"""
+    ensure_db()
+    result = knowledge_store.set_public(doc_id, bool((body or {}).get("is_public")))
+    if result is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {"success": True, "doc": result}
 
 
 @router.get("/admin/model-speed")

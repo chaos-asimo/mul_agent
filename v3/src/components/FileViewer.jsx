@@ -3,7 +3,7 @@ import { Download, Loader2, FileWarning } from 'lucide-react'
 import { apiGet, API_BASE } from '../api/client'
 import {
   highlightCode, langFromFilename,
-  isTextFile, isPdfFile, isOfficeFile,
+  isTextFile, isPdfFile, isOfficeFile, isImageFile,
 } from '../utils/highlight'
 import MarkdownContent from './MarkdownContent'
 import Modal from './Modal'
@@ -35,9 +35,9 @@ export default function FileViewer({ file, filename, rawUrl, downloadUrl, conten
     setLoading(true)
     setError('')
     setContent('')
-    // office-native / pdf 不需要文本内容
+    // office-native / pdf / image 不需要文本内容
     const kind = pickKind(name)
-    if (!textOnly && (kind === 'pdf' || kind === 'office-native' || kind === 'other')) {
+    if (!textOnly && (kind === 'pdf' || kind === 'office-native' || kind === 'image' || kind === 'other')) {
       setLoading(false)
       return
     }
@@ -118,6 +118,17 @@ export default function FileViewer({ file, filename, rawUrl, downloadUrl, conten
     if (kind === 'pdf') {
       return <iframe title={name} src={baseRaw} className="file-viewer-frame" />
     }
+    if (kind === 'image') {
+      return (
+        <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto">
+          <img
+            src={baseRaw}
+            alt={name}
+            className="max-w-full max-h-full object-contain rounded-lg"
+          />
+        </div>
+      )
+    }
     if (kind === 'office-native') {
       if (error && error !== '__no_text__') {
         return (
@@ -167,6 +178,7 @@ export default function FileViewer({ file, filename, rawUrl, downloadUrl, conten
 function pickKind(name) {
   if (/\.md|markdown$/i.test(name)) return 'markdown'
   if (isPdfFile(name)) return 'pdf'
+  if (isImageFile(name)) return 'image'
   if (NATIVE_OFFICE.test(name)) return 'office-native'
   if (isOfficeFile(name)) return 'office-text'
   if (isTextFile(name)) return 'code'

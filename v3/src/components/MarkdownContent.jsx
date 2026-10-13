@@ -13,7 +13,18 @@ renderer.code = ({ text, lang }) => {
   const cls = isPy ? 'python-highlight' : ''
   return `<pre><code${cls ? ` class="${cls}"` : ''}>${inner}</code></pre>`
 }
-marked.use({ renderer })
+// marked GFM 的删除线会把单个 ~text~ 也解析为 <del>，但标准 GFM 只认 ~~text~~。
+// 用 walkTokens 把单波浪号的 del 还原为普通文本，避免 "1~10"、"a~b" 等被误渲染。
+marked.use({
+  renderer,
+  walkTokens(token) {
+    if (token.type === 'del' && token.raw && !token.raw.startsWith('~~')) {
+      token.type = 'text'
+      token.text = token.raw
+      delete token.tokens
+    }
+  },
+})
 
 // 去掉 URL 末尾误并入的标点（中英文括号/句号/逗号/分号/感叹问号等，含其百分号编码）
 const TRAIL_PUNCT = /(?:[。．.，,；;！!？?）)】」』]|%E3%80%82|%EF%BC%8E|%EF%BC%8C|%EF%BC%9B|%EF%BC%81|%EF%BC%9F|%EF%BC%89|%29|%2C|%3B|%21|%3F|%5D)+$/i

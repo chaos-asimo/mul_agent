@@ -18,6 +18,7 @@ DDL = [
         disabled      INTEGER NOT NULL DEFAULT 0,
         created_at    TEXT    NOT NULL,
         last_login_at TEXT,
+        last_login_device TEXT DEFAULT '',
         totp_secret   TEXT    DEFAULT '',
         totp_enabled  INTEGER NOT NULL DEFAULT 0
     )""",
@@ -154,9 +155,12 @@ DDL = [
         stored_name TEXT DEFAULT '',
         file_size   INTEGER,
         chunk_count INTEGER DEFAULT 0,
+        content_hash TEXT DEFAULT '',
+        is_public   INTEGER NOT NULL DEFAULT 0,
         created_at  TEXT NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_mu_kb_user ON mu_knowledge_docs(user_id)",
+    # 注意：idx_mu_kb_public 索引在迁移补列后单独创建（旧库需先 ALTER 才有 is_public 列）
     """CREATE TABLE IF NOT EXISTS mu_knowledge_vectors (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id     INTEGER NOT NULL,
@@ -299,11 +303,14 @@ _MEMO_MIGRATION_COLUMNS = [
 _USER_MIGRATION_COLUMNS = [
     ("totp_secret", "TEXT DEFAULT ''"),
     ("totp_enabled", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_login_device", "TEXT DEFAULT ''"),
 ]
 
 _KB_DOCS_MIGRATION_COLUMNS = [
     ("content_hash", "TEXT DEFAULT ''"),
     ("stored_name", "TEXT DEFAULT ''"),
+    # 公共知识库：is_public=1 表示管理员发布的公共文档，所有用户检索可命中（user_id 保留原作者）
+    ("is_public", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 _SESSION_MIGRATION_COLUMNS = [
@@ -373,6 +380,8 @@ def init_db():
             for col, coldef in cols:
                 if col not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coldef}")
+        # 迁移补列后才能创建的索引（依赖 is_public 等新列）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mu_kb_public ON mu_knowledge_docs(is_public)")
         # 更新统计信息，帮助查询优化器选择正确计划（数据量增长后尤其重要）
         try:
             conn.execute("ANALYZE")

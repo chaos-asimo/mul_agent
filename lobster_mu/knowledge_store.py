@@ -212,12 +212,12 @@ def warmup_sync(timeout: int = 120) -> bool:
 
 
 def user_has_docs(user_id: int) -> bool:
-    """用户是否已上传知识库文档（决定聊天时是否需要同步预热 embedding 模型）"""
+    """用户是否需要预热知识库检索（自己有文档，或存在公共文档）"""
     try:
         conn = get_conn()
         try:
             row = conn.execute(
-                "SELECT COUNT(*) AS c FROM mu_knowledge_docs WHERE user_id = ?",
+                "SELECT COUNT(*) AS c FROM mu_knowledge_docs WHERE user_id = ? OR is_public = 1",
                 (user_id,),
             ).fetchone()
             return bool(row and row["c"] > 0)
@@ -264,9 +264,10 @@ def search(user_id: int, query: str, top_k: int = 5, threshold: float = 0.3) -> 
 
     conn = get_conn()
     try:
-        # 1. 该用户的所有文档引用（含 filename 和 content_hash）
+        # 1. 该用户的文档引用 + 所有公共文档（公共文档任何用户都可检索命中）
         docs = conn.execute(
-            "SELECT id, filename, content_hash FROM mu_knowledge_docs WHERE user_id = ?",
+            "SELECT id, filename, content_hash FROM mu_knowledge_docs"
+            " WHERE user_id = ? OR is_public = 1",
             (user_id,),
         ).fetchall()
         if not docs:
@@ -465,7 +466,7 @@ def admin_all_users_knowledge() -> Dict:
         users = []
         for ur in user_rows:
             docs = conn.execute(
-                "SELECT id, filename, file_size, chunk_count, content_hash, created_at"
+                "SELECT id, filename, file_size, chunk_count, content_hash, created_at, is_public"
                 " FROM mu_knowledge_docs WHERE user_id = ? ORDER BY created_at DESC",
                 (ur["user_id"],),
             ).fetchall()
@@ -482,6 +483,7 @@ def admin_all_users_knowledge() -> Dict:
                     "chunk_count": d["chunk_count"],
                     "content_hash": d["content_hash"],
                     "created_at": d["created_at"],
+                    "is_public": bool(d["is_public"]),
                     "shared": is_shared,
                     "shared_by": shared_counts.get(d["content_hash"], 1),
                 })
@@ -530,6 +532,30 @@ def admin_all_users_knowledge() -> Dict:
         conn.close()
 
 
+def set_public(doc_id: str, is_public: bool) -> Optional[Dict]:
+    """管理员设置/取消某知识库文档为公共（所有用户检索可命中）。
+
+    公共时保留原 user_id（作者归属），仅翻转 is_public 标记；
+    文档不存在返回 None。
+    """
+    conn = get_conn()
+    try:
+        doc = conn.execute(
+            "SELECT id, filename FROM mu_knowledge_docs WHERE id = ?",
+            (doc_id,),
+        ).fetchone()
+        if not doc:
+            return None
+        conn.execute(
+            "UPDATE mu_knowledge_docs SET is_public = ? WHERE id = ?",
+            (1 if is_public else 0, doc_id),
+        )
+        conn.commit()
+        return {"id": doc_id, "filename": doc["filename"], "is_public": bool(is_public)}
+    finally:
+        conn.close()
+
+
 def admin_get_doc_file(doc_id) -> Optional[Dict]:
     """管理员取某知识库文档的原始文件信息，返回 {user_id, filename, stored_name}；
     文档不存在或未留存原文件（stored_name 为空）返回 None。"""
@@ -569,6 +595,37 @@ def admin_get_doc_content(doc_id) -> Optional[Dict]:
             "filename": row["filename"] or "",
             "file_size": row["file_size"] or 0,
             "content": content,
+        }
+    finally:
+        conn.close()
+
+
+def admin_get_doc_chunks(doc_id) -> Optional[Dict]:
+    """管理员按块读取某知识库文档的分块内容（用于共享情况页逐块查看）。
+    返回 {filename, chunk_count, chunks: [{chunk_index, content}]}；文档不存在返回 None。"""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT filename, chunk_count, content_hash FROM mu_knowledge_docs WHERE id = ?",
+            (doc_id,),
+        ).fetchone()
+        if not row:
+            return None
+        c_hash = row["content_hash"] or ""
+        chunks = []
+        if c_hash:
+            rows = conn.execute(
+                "SELECT chunk_index, content FROM kb_content_vectors WHERE content_hash = ? ORDER BY chunk_index",
+                (c_hash,),
+            ).fetchall()
+            chunks = [
+                {"chunk_index": r["chunk_index"], "content": r["content"] or ""}
+                for r in rows
+            ]
+        return {
+            "filename": row["filename"] or "",
+            "chunk_count": row["chunk_count"] or 0,
+            "chunks": chunks,
         }
     finally:
         conn.close()
