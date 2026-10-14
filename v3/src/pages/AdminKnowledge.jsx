@@ -40,6 +40,15 @@ function AdminKnowledge() {
   const [expanded, setExpanded] = useState({})
   const [viewing, setViewing] = useState(null) // {id, filename}
   const [chunkViewing, setChunkViewing] = useState(null) // {id, filename}
+  const [idxStatus, setIdxStatus] = useState(null) // {available, indexed, expected}
+  const [reindexing, setReindexing] = useState('') // '' | 'sync' | 'full'
+
+  const loadIdxStatus = useCallback(async () => {
+    try {
+      const res = await apiGet('/admin/knowledge/index-status')
+      setIdxStatus(res)
+    } catch { /* 状态获取失败不阻塞页面 */ }
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -47,14 +56,39 @@ function AdminKnowledge() {
     try {
       const result = await apiGet('/admin/knowledge')
       setData(result.data || result)
+      loadIdxStatus()
     } catch (e) {
       setError(e.message || '加载失败')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [loadIdxStatus])
 
   useEffect(() => { load() }, [load])
+
+  // 重建/同步 Chroma 向量索引
+  const reindex = async (mode) => {
+    if (mode === 'full' && !window.confirm('全量重建会重新构建整个向量索引（数据量大时较慢），期间检索自动回退。确认继续？')) return
+    setReindexing(mode)
+    try {
+      const res = await apiPost(`/admin/knowledge/reindex?mode=${mode}`, {})
+      if (res.success) {
+        const r = res.result || {}
+        if (mode === 'full') {
+          alert(`重建完成：${r.count} 条向量 / ${r.docs} 篇文档，耗时 ${r.elapsed_sec}s`)
+        } else {
+          alert(`同步完成：补齐 ${r.added ?? 0} 条，索引共 ${r.total ?? 0} 条`)
+        }
+        loadIdxStatus()
+      } else {
+        alert((res.result && res.result.error) || res.error || '重建失败')
+      }
+    } catch (e) {
+      alert(e.message)
+    } finally {
+      setReindexing('')
+    }
+  }
 
   const toggle = (uid) => setExpanded((p) => ({ ...p, [uid]: !p[uid] }))
 
@@ -120,6 +154,47 @@ function AdminKnowledge() {
             刷新
           </button>
         </div>
+
+        {/* 向量索引状态 */}
+        {idxStatus && (
+          <div className="mb-4 flex flex-wrap items-center gap-3 p-3 t-bg-panel border t-border rounded-xl text-xs">
+            <span className="inline-flex items-center gap-1.5 font-semibold">
+              <Database className="w-3.5 h-3.5 t-text-accent" />
+              HNSW 向量索引
+            </span>
+            <span className={idxStatus.available ? 't-text-accent' : 't-text-danger'}>
+              {idxStatus.available ? '已启用（Chroma）' : '未启用（正在用内存暴力检索）'}
+            </span>
+            {idxStatus.available && (
+              <span className="t-text-muted">
+                索引 {idxStatus.indexed} 条 / 应有 {idxStatus.expected} 条
+                {idxStatus.indexed < idxStatus.expected && (
+                  <span className="ml-1 t-text-danger">（差 {idxStatus.expected - idxStatus.indexed} 条，建议同步）</span>
+                )}
+              </span>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={() => reindex('sync')}
+                disabled={!!reindexing || !idxStatus.available}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md t-bg-accent/10 t-text-accent t-hover-bg disabled:opacity-50"
+                title="增量补齐缺失向量条目（快）"
+              >
+                {reindexing === 'sync' ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                增量同步
+              </button>
+              <button
+                onClick={() => reindex('full')}
+                disabled={!!reindexing || !idxStatus.available}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border t-border-strong t-text-2 t-hover-card disabled:opacity-50"
+                title="全量重建索引（修复损坏，较慢）"
+              >
+                {reindexing === 'full' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Layers className="w-3 h-3" />}
+                全量重建
+              </button>
+            </div>
+          </div>
+        )}
 
         {loading && !data ? (
           <div className="p-10 text-center t-text-faint loading-pulse">加载中...</div>

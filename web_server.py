@@ -122,6 +122,17 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Knowledge embedding model warmup failed: {e}")
     _threading.Thread(target=_kb_warmup, daemon=True).start()
 
+    # Chroma 向量索引增量同步：把存量「文档引用 × 分块」补齐到 HNSW 索引（幂等，只依赖 SQLite）
+    def _kb_index_sync():
+        try:
+            from lobster_mu import vector_index
+            if vector_index.available():
+                result = vector_index.sync_index()
+                logger.info(f"Knowledge vector index sync done: {result}")
+        except Exception as e:
+            logger.warning(f"Knowledge vector index sync failed: {e}")
+    _threading.Thread(target=_kb_index_sync, daemon=True).start()
+
     # 定期清理登录限流器的过期记录（防内存泄漏）
     import asyncio as _asyncio
     async def _limiter_cleanup():

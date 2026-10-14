@@ -36,6 +36,7 @@ def _build_ppt_prompt_block(ppt_intent: bool) -> str:
         return ""
     return (
         "\n\n【PPT 生成能力 - 重要】用户希望制作 PPT 演示文稿，你必须直接输出一个大纲标记块来生成真实可下载的 PPT 文件。"
+        "\n优先级说明：如果上方「可用技能」列表中存在与 PPT / 演示文稿 / 幻灯片制作相关的技能，则忽略本段全部内容，改为输出 [SKILL_CALL] 标记调用该技能；仅当没有合适技能时才使用下面的 [PPT_GEN] 方式。"
         "\n正确做法：直接输出下面这个标记块（独占一段，前后不要有其他解释文字）："
         '\n[PPT_GEN]{"title":"演示标题","subtitle":"副标题","theme":"blue","slides":[{"heading":"页标题","layout":"bullets","bullets":["要点1","要点2"],"note":"演讲备注"},{"heading":"数据页","layout":"text_chart","bullets":["结论1","结论2"],"chart":{"type":"bar","title":"销量对比","categories":["Q1","Q2","Q3"],"series":[{"name":"2026","values":[120,180,240]}]}}]}[/PPT_GEN]'
         "\n规则："
@@ -238,6 +239,7 @@ def _build_skill_prompt_block(skills: List[Dict[str, Any]]) -> str:
         "- skill_id 必须是下面列出的技能 ID，不要编造",
         "- params 必须是合法 JSON，键名要与技能参数一致",
         "- 技能执行结果由系统自动回传，你再基于结果给出最终回答；最终回复中不要保留 [SKILL_CALL] 标记",
+        "- 技能结果中若包含文件下载链接，必须原样引用（不得自行编造或修改链接中的文件名）",
         "",
         "可用技能：",
     ]
@@ -257,6 +259,9 @@ def _build_skill_prompt_block(skills: List[Dict[str, Any]]) -> str:
                     pn = p.get("name", "")
                     parts.append(f"{pn}({'必填' if p.get('required') else '可选'})")
             param_hint = " 参数: " + ", ".join(parts)
+        elif cfg.get("scripts"):
+            # 工作流技能（skillmd 标准包）：引导模型把任务写进 input，素材由系统自动附带
+            param_hint = ' 用法: params 传 {"input": "<任务要求>"}，用户消息与附件内容由系统自动附带，无需复制'
         tag = "【公共】" if s.get("is_public") else ""
         lines.append(f"- {tag}技能: {name} (id={sid}) — {desc}{param_hint}")
     return "\n".join(lines)
@@ -1096,12 +1101,13 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
             elif request.files:
                 user_content = f"""用户问题: {request.message}
 
-用户已上传文件，以下是文件内容，请直接分析文件内容并给出回答，不需要创建脚本：
+用户已上传文件，以下是文件内容：
 {"".join(file_info)}
 
 {summary_context}{memory_context}{knowledge_context}
 
-请基于上述文件内容、记忆信息和知识库参考，为用户提供详细的分析和解答。不要添加 [NEED_SCRIPT] 标记。"""
+请基于上述文件内容、记忆信息和知识库参考，为用户提供详细的分析和解答。
+如果系统提示的「可用技能」中有适合完成该任务的技能（例如用户明确要求使用某个技能，或有技能可基于文件内容生成 PPT / 文档 / 图表等产物），请输出 [SKILL_CALL] 标记调用该技能；否则直接分析回答，不要添加 [NEED_SCRIPT] 标记。"""
             elif has_images:
                 img_count = len(request.images)
                 user_content = f"""用户问题: {request.message}
@@ -1117,7 +1123,10 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
 
 {summary_context}{memory_context}{knowledge_context}
 
-用户要求制作 PPT。请直接按系统提示中的 [PPT_GEN] 标记格式输出 PPT 大纲，不要输出 [NEED_SCRIPT] 标记，不要编写脚本。"""
+用户要求制作 PPT。请按以下优先级处理：
+1. 如果系统提示的"可用技能"中有与 PPT / 演示文稿 / 幻灯片制作相关的技能，优先输出 [SKILL_CALL] 标记调用该技能完成，不要输出 [PPT_GEN] 标记；
+2. 没有合适的技能时，再按系统提示中的 [PPT_GEN] 标记格式输出 PPT 大纲。
+不要输出 [NEED_SCRIPT] 标记，不要编写脚本。"""
                 else:
                     user_content = f"""用户问题: {request.message}
 
@@ -1140,8 +1149,9 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
             agent_filter = _AgentMarkerFilter()
             ws_filter = _WebSearchMarkerFilter()
             ppt_filter = _MarkerFilter("[PPT_GEN]", "[/PPT_GEN]")
+            skill_filter = _MarkerFilter("[SKILL_CALL]", "[/SKILL_CALL]")
             if ppt_intent:
-                yield "data: " + json.dumps({'success': True, 'content': "📊 正在为您生成 PPT 大纲...\n\n", 'session_id': session_id}) + "\n\n"
+                yield "data: " + json.dumps({'success': True, 'content': "📊 正在处理您的 PPT 请求...\n\n", 'session_id': session_id}) + "\n\n"
             # PPT 大纲 JSON 较长，提高输出上限避免截断（openai 适配器不限制，claude/deepseek 默认2000）
             stream_kwargs = {"max_tokens": 8000} if ppt_intent else {}
             for chunk in adapter.chat_stream(messages, **stream_kwargs):
@@ -1169,13 +1179,13 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                     continue
                 if content and not content.startswith("{\"__stats__"):
                     full_response += content
-                    # 串联过滤：PPT → AGENT → MCP → WEB_SEARCH
-                    safe_content = ws_filter.feed(agent_filter.feed(mcp_filter.feed(ppt_filter.feed(content))))
+                    # 串联过滤：PPT → SKILL → AGENT → MCP → WEB_SEARCH
+                    safe_content = ws_filter.feed(agent_filter.feed(mcp_filter.feed(skill_filter.feed(ppt_filter.feed(content)))))
                     if safe_content:
                         yield f"data: {json.dumps({'success': True, 'content': safe_content, 'session_id': session_id})}\n\n"
 
             # 首流结束，冲刷过滤器残留
-            tail = ws_filter.feed(agent_filter.feed(mcp_filter.feed(ppt_filter.flush()))) + ws_filter.flush()
+            tail = ws_filter.feed(agent_filter.feed(mcp_filter.feed(skill_filter.feed(ppt_filter.flush())))) + ws_filter.flush()
             if tail:
                 yield f"data: {json.dumps({'success': True, 'content': tail, 'session_id': session_id})}\n\n"
 
@@ -1319,8 +1329,8 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                     if agent_final.strip():
                         full_response = agent_final.strip()
 
-            # ============ PPT 生成分支 ============
-            if not request.files and not has_images and "[PPT_GEN]" in full_response:
+            # ============ PPT 生成分支（技能调用优先：含 [SKILL_CALL] 时不走内置渲染） ============
+            if not request.files and not has_images and "[PPT_GEN]" in full_response and "[SKILL_CALL]" not in full_response:
                 from lobster_mu import ppt_service
                 raw_payload = _parse_ppt_gen(full_response) or ""
                 full_response = PPT_GEN_PATTERN.sub("", full_response)
@@ -1496,8 +1506,8 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                     if mcp_final.strip():
                         full_response = mcp_final.strip()
 
-            # ============ 技能(Skill)调用分支 ============
-            if not request.files and not has_images and "[SKILL_CALL]" in full_response:
+            # ============ 技能(Skill)调用分支（允许带附件：技能常需处理用户上传的文件） ============
+            if "[SKILL_CALL]" in full_response:
                 from lobster_mu import skill_store
                 skill_calls = _parse_skill_calls(full_response)
                 full_response = SKILL_CALL_PATTERN.sub("", full_response).strip()
@@ -1509,8 +1519,17 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                         skill_result_blocks.append(f"[技能 {idx}] 失败: {err_msg}")
                         continue
                     sid = call["skill_id"]
-                    yield "data: " + json.dumps({'success': True, 'content': f"\n🔧 正在执行技能: {sid}...\n", 'session_id': session_id}) + "\n\n"
-                    res = skill_store.execute(user_id, sid, call.get("params") or {})
+                    yield "data: " + json.dumps({'success': True, 'content': f"\n🔧 正在执行技能: {sid}（复杂技能可能需要几分钟，请耐心等待）...\n", 'session_id': session_id}) + "\n\n"
+                    # 注入原始请求与附件文本作为技能素材（模型 params 通常只给主题，缺实际内容）
+                    call_params = dict(call.get("params") or {})
+                    _material_parts = []
+                    if request.message:
+                        _material_parts.append("用户需求: " + request.message)
+                    if file_info:
+                        _material_parts.append("附件内容:\n" + "".join(file_info))
+                    if _material_parts and "_material" not in call_params:
+                        call_params["_material"] = "\n\n".join(_material_parts)
+                    res = skill_store.execute(user_id, sid, call_params)
                     if res.get("success"):
                         yield "data: " + json.dumps({'success': True, 'content': f"📋 技能 {sid} 执行完成。\n\n", 'session_id': session_id}) + "\n\n"
                         skill_result_blocks.append(

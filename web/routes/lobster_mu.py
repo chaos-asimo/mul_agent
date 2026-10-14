@@ -1154,6 +1154,51 @@ async def mu_files_raw(file_id: int, download: int = 0, user: dict = Depends(che
     )
 
 
+@router.post("/files/{file_id}/to-knowledge")
+async def mu_files_to_knowledge(file_id: int, user: dict = Depends(check_user_rate)):
+    """把「我的文件」库中的文件加入知识库：重新提取文本（带乱码检测）后入库"""
+    ensure_db()
+    import shutil
+    from lobster_mu import file_store
+    from lobster_mu.paths import uploads_dir, gen_filename
+    from lobster_mu.upload_service import extract_text
+
+    f = file_store.get(user["id"], file_id)
+    if not f:
+        return {"success": False, "error": "文件不存在"}
+
+    src_path = f.get("stored_path") or ""
+    try:
+        if src_path and os.path.exists(src_path):
+            # 有原始文件：复制到知识库 uploads 目录并从原始文件重新提取（PDF 等更准确）
+            ext = os.path.splitext(f["filename"] or "")[1][:16].lower()
+            dst_path = os.path.join(uploads_dir(user["id"]), gen_filename(f["filename"]))
+
+            def _copy_and_extract():
+                shutil.copyfile(src_path, dst_path)
+                return extract_text(dst_path, ext)
+
+            text_content = await asyncio.to_thread(_copy_and_extract)
+            stored_name = os.path.basename(dst_path)
+            file_size = f["file_size"] or os.path.getsize(dst_path)
+        else:
+            # 无原始文件（仅存了提取文本）：直接用已存内容入库
+            text_content = f.get("content") or ""
+            stored_name = ""
+            file_size = f["file_size"] or len(text_content.encode("utf-8", "ignore"))
+
+        result = await asyncio.to_thread(
+            knowledge_store.add_document,
+            user["id"], f["filename"], file_size, text_content, stored_name,
+        )
+        return {"success": True, "doc_id": result["doc_id"], "filename": f["filename"],
+                "chunk_count": result["chunk_count"], "shared": result.get("shared", False)}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @router.post("/upload/text")
 async def mu_upload_text(file: UploadFile = File(...), user: dict = Depends(check_user_rate)):
     try:
@@ -1441,28 +1486,99 @@ async def mu_skill_import_upload(
     return skill_importer.import_skill_package(user["id"], parsed, is_public=is_public, is_admin=is_admin)
 
 
+def _github_zip_url(owner: str, repo: str, branch: str) -> str:
+    return f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"
+
+
+def _expand_skill_url_candidates(url: str) -> list:
+    """GitHub 页面地址自动补全为可下载的技能包地址（按优先级排序的候选列表）。
+
+    - 仓库主页      github.com/o/r            → 默认分支 zip（API 解析失败则 main/master 依次尝试）
+    - 分支页        github.com/o/r/tree/b     → 该分支 zip
+    - 文件页        github.com/o/r/blob/b/p   → raw 文件地址
+    - 其余（raw/codeload/直链/非 GitHub）→ 原样返回
+    """
+    from urllib.parse import urlparse
+    try:
+        pu = urlparse(url)
+    except Exception:
+        return [url]
+    host = (pu.hostname or "").lower()
+    path = pu.path.strip("/")
+    if host != "github.com" or not path:
+        return [url]
+    parts = path.split("/")
+    if len(parts) < 2:
+        return [url]
+    owner, repo = parts[0], parts[1]
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    if not owner or not repo:
+        return [url]
+    # 仓库主页（含 .git 后缀）：解析默认分支 → zip 归档
+    if len(parts) == 2:
+        cands = []
+        try:
+            import httpx
+            with httpx.Client(timeout=8, follow_redirects=True) as c:
+                r = c.get(f"https://api.github.com/repos/{owner}/{repo}",
+                          headers={"Accept": "application/vnd.github+json"})
+                if r.status_code == 200:
+                    branch = (r.json() or {}).get("default_branch")
+                    if branch:
+                        cands.append(_github_zip_url(owner, repo, branch))
+        except Exception:
+            pass
+        for b in ("main", "master"):
+            u = _github_zip_url(owner, repo, b)
+            if u not in cands:
+                cands.append(u)
+        return cands
+    # 分支/目录页：直接用该分支打 zip（导入器会在包内定位 SKILL.md）
+    if parts[2] == "tree" and len(parts) >= 4:
+        return [_github_zip_url(owner, repo, parts[3])]
+    # 文件页：转 raw 直链
+    if parts[2] == "blob" and len(parts) >= 5:
+        fpath = "/".join(parts[4:])
+        return [f"https://raw.githubusercontent.com/{owner}/{repo}/{parts[3]}/{fpath}"]
+    return [url]
+
+
 @router.post("/skill/import/url")
 async def mu_skill_import_url(body: dict, user: dict = Depends(get_mu_user)):
-    """从 URL 拉取 SKILL.md / zip 导入。confirm=False 仅预览。"""
+    """从 URL 拉取 SKILL.md / zip 导入；GitHub 仓库/分支/文件页地址自动补全。confirm=False 仅预览。"""
     from lobster_mu import skill_importer
-    url = (body or {}).get("url") or ""
+    url = ((body or {}).get("url") or "").strip()
     is_public = bool((body or {}).get("is_public"))
     confirm = bool((body or {}).get("confirm", True))
     is_admin = user.get("role") == "admin"
-    ok, msg = _is_safe_url(url)
-    if not ok:
-        return {"success": False, "error": msg}
-    try:
-        import httpx
-        with httpx.Client(timeout=15, follow_redirects=True) as client:
-            resp = client.get(url)
-            resp.raise_for_status()
-            data = resp.content
-    except Exception as e:
-        return {"success": False, "error": f"拉取失败: {e}"}
+
+    candidates = _expand_skill_url_candidates(url)
+    data = None
+    used_url = url
+    last_err = ""
+    import httpx
+    for cand in candidates:
+        ok, msg = _is_safe_url(cand)
+        if not ok:
+            last_err = msg
+            continue
+        try:
+            with httpx.Client(timeout=20, follow_redirects=True) as client:
+                resp = client.get(cand)
+                resp.raise_for_status()
+                data = resp.content
+                used_url = cand
+                break
+        except Exception as e:
+            last_err = f"{cand} → {e}"
+            continue
+    if data is None:
+        return {"success": False, "error": f"拉取失败: {last_err or '无可用地址'}"}
+
     # 按扩展名或内容判定
     from urllib.parse import urlparse
-    path = urlparse(url).path.lower()
+    path = urlparse(used_url).path.lower()
     if not path.endswith(".zip") and skill_importer._is_zip_bytes(data) is False and path.endswith((".md", ".markdown")):
         parsed = skill_importer.parse_skill_md(data.decode("utf-8", errors="replace"))
     else:
@@ -1470,8 +1586,12 @@ async def mu_skill_import_url(body: dict, user: dict = Depends(get_mu_user)):
     if parsed.get("error"):
         return {"success": False, "error": parsed["error"]}
     if not confirm:
-        return {"success": True, "preview": _skill_import_preview(parsed), "parsed": parsed}
-    return skill_importer.import_skill_package(user["id"], parsed, is_public=is_public, is_admin=is_admin)
+        return {"success": True, "preview": _skill_import_preview(parsed), "parsed": parsed,
+                "resolved_url": used_url}
+    result = skill_importer.import_skill_package(user["id"], parsed, is_public=is_public, is_admin=is_admin)
+    if isinstance(result, dict):
+        result["resolved_url"] = used_url
+    return result
 
 
 @router.get("/skill/{skill_id}")
@@ -2249,6 +2369,39 @@ async def admin_knowledge_set_public(doc_id: str, body: dict, admin: dict = Depe
     if result is None:
         raise HTTPException(status_code=404, detail="文档不存在")
     return {"success": True, "doc": result}
+
+
+@router.get("/admin/knowledge/index-status")
+async def admin_knowledge_index_status(admin: dict = Depends(require_admin)):
+    """Chroma HNSW 向量索引状态：是否可用 + 索引条目数 + 理论应有条目数"""
+    ensure_db()
+    from lobster_mu import vector_index
+    conn = db.get_conn()
+    try:
+        expected = conn.execute(
+            "SELECT COALESCE(SUM(chunk_count), 0) AS s FROM mu_knowledge_docs"
+        ).fetchone()["s"]
+    finally:
+        conn.close()
+    return {
+        "available": vector_index.available(),
+        "indexed": vector_index.index_count(),
+        "expected": int(expected or 0),
+    }
+
+
+@router.post("/admin/knowledge/reindex")
+async def admin_knowledge_reindex(mode: str = "sync", admin: dict = Depends(require_admin)):
+    """管理员重建 Chroma 向量索引。
+    mode=sync（默认）：增量补齐缺失条目，快；mode=full：全量重建到新目录后切换，慢但可修复损坏。"""
+    ensure_db()
+    from lobster_mu import vector_index
+    if mode == "full":
+        result = await asyncio.to_thread(vector_index.rebuild_index)
+    else:
+        result = await asyncio.to_thread(vector_index.sync_index)
+    ok = result.get("success", True) and "error" not in result
+    return {"success": bool(ok), "mode": mode, "result": result}
 
 
 @router.get("/admin/model-speed")

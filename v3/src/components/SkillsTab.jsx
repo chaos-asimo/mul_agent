@@ -333,8 +333,13 @@ function SkillsTab() {
               className="text-[11px] t-text-2 file:mr-2 file:px-2 file:py-1 file:rounded file:border-0 file:text-[11px] file:t-bg-accent file:text-white" />
           )}
           {importMode === 'url' && (
-            <input className={inputCls} placeholder="https://.../SKILL.md 或 .zip（仅 http/https）"
-              value={importUrl} onChange={(e) => setImportUrl(e.target.value)} />
+            <div className="space-y-1">
+              <input className={inputCls} placeholder="https://github.com/owner/repo 或 SKILL.md / .zip 直链"
+                value={importUrl} onChange={(e) => setImportUrl(e.target.value)} />
+              <p className="text-[10px] t-text-fainter leading-relaxed">
+                支持直接粘贴 GitHub 仓库主页 / 分支页 / 文件页地址，自动补全为可下载的技能包。
+              </p>
+            </div>
           )}
 
           {isAdmin && (

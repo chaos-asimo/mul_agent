@@ -14,6 +14,48 @@ def _now() -> str:
     return datetime.now().isoformat(sep=" ", timespec="seconds")
 
 
+def _is_garbled(text: str) -> bool:
+    """检测文本是否为乱码（PDF 提取常见问题）。
+    典型特征：
+    - 大量 U+FFFD 替换字符或连续 ? 占位符（编码损坏的常见表现）
+    - 高比例不可见控制字符
+    - 字符多样性过低（大量重复字符，无正常词汇）
+    """
+    if not text or not text.strip():
+        return True
+    chars = [c for c in text if c.isprintable() or c in '\n\r\t']
+    if not chars:
+        return True
+    replacement_ratio = sum(1 for c in text if c == '\ufffd') / len(text)
+    if replacement_ratio > 0.05:
+        return True
+    printable_ratio = len(chars) / len(text)
+    if printable_ratio < 0.5:
+        return True
+    # 连续 ? 占位符（fitz 等库把无法解码的字符转成 ? 的形态）
+    # 用正则匹配连续 2 个及以上的 ? 占比
+    import re
+    q_runs = re.findall(r'\?{2,}', text)
+    q_count = sum(len(r) for r in q_runs)
+    if q_count / max(len(text), 1) > 0.10:
+        return True
+    # 字符多样性过低：去重字符数 / 总字符数 < 0.15（大量重复，无正常词汇）
+    # 排除常见空白字符后统计
+    content_chars = [c for c in chars if not c.isspace()]
+    if content_chars:
+        unique_ratio = len(set(content_chars)) / len(content_chars)
+        if unique_ratio < 0.15:
+            return True
+    # 可打印字符中，ASCII 可见字符占比过低（大量未知 Unicode）也是乱码信号
+    ascii_visible = sum(1 for c in chars if c.isascii() and c.isprintable())
+    if ascii_visible / len(chars) < 0.05 and replacement_ratio < 0.05:
+        # 极少 ASCII 且非替换字符主导——可能是编码损坏，保守判定
+        cjk = sum(1 for c in chars if '\u4e00' <= c <= '\u9fff')
+        if cjk / len(chars) < 0.3:
+            return True
+    return False
+
+
 def extract_text(file_path: str, ext: str, raw: bytes = None) -> str:
     """按扩展名提取文本内容（复制自原版逻辑）"""
     if ext in ['.txt', '.md', '.json', '.py', '.js', '.html', '.css', '.xml', '.csv']:
@@ -35,6 +77,10 @@ def extract_text(file_path: str, ext: str, raw: bytes = None) -> str:
             import fitz
             doc = fitz.open(file_path)
             text = '\n'.join([page.get_text() for page in doc])
+            # 直接提取的文本若已乱码，立即拒绝（不再尝试 OCR）
+            if _is_garbled(text):
+                raise ValueError("PDF 文本提取结果异常（疑似乱码），已拒绝入库。请确认 PDF 文字层编码正确（常见于扫描件误存为可提取 PDF 或编码损坏）。")
+            # 文本过少（可能是扫描件）时尝试 OCR 回退
             if len(text.strip()) < 100:
                 try:
                     import pytesseract
@@ -45,7 +91,11 @@ def extract_text(file_path: str, ext: str, raw: bytes = None) -> str:
                         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                         ocr_text += pytesseract.image_to_string(img, lang='chi_sim') + '\n'
                     text = ocr_text
-                except Exception:
+                    if _is_garbled(text):
+                        raise ValueError("PDF OCR 结果异常（疑似乱码），已拒绝入库。请确认 PDF 文字层编码正确，或转换为图片 PDF 后重试。")
+                except ImportError:
+                    # OCR 库未安装：无法对扫描件回退识别。
+                    # 正常短文档（已含可提取文本）放行；真正的空文档已被上方 _is_garbled 拦截。
                     pass
             return text
         except ImportError:
@@ -57,6 +107,9 @@ def extract_text(file_path: str, ext: str, raw: bytes = None) -> str:
                 return "[需要安装 PyMuPDF(fitz) 或 PyPDF2 库来解析PDF文档]"
             except Exception as e:
                 return f"[使用PyPDF2解析PDF失败: {str(e)}]"
+        except ValueError:
+            # 乱码检测抛出的 ValueError 向上传递，让上传路由捕获并返回 success=False
+            raise
         except Exception as e:
             return f"[解析PDF文档失败: {str(e)}]"
     if ext in ['.xls', '.xlsx']:

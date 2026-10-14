@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Paperclip, FileText, X, UploadCloud, Trash2, PlusCircle, RefreshCw, Eye } from 'lucide-react'
-import { apiUpload, apiGet, apiDelete, formatSize } from '../api/client'
+import { Paperclip, FileText, X, UploadCloud, Trash2, PlusCircle, RefreshCw, BookPlus, Loader2 } from 'lucide-react'
+import { apiUpload, apiGet, apiDelete, apiPost, formatSize } from '../api/client'
 import FileViewer from './FileViewer'
 
 const SUPPORTED_TEXT = 'txt / md / json / py / js / html / css / xml / csv'
@@ -18,7 +18,28 @@ function FilesTab({
   files, onFilesChange, uploading, setUploading,
 }) {
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [viewing, setViewing] = useState(null) // 正在查看的文件 {id, filename}
+  const [kbBusyId, setKbBusyId] = useState(null) // 正在加入知识库的文件 id
+
+  // 把文件库中的文件加入知识库（后端重新提取文本并切块入库）
+  const addToKnowledge = async (file) => {
+    setError('')
+    setNotice('')
+    setKbBusyId(file.id)
+    try {
+      const res = await apiPost(`/files/${file.id}/to-knowledge`, {})
+      if (res.success) {
+        setNotice(`「${file.filename}」已加入知识库（${res.chunk_count} 块${res.shared ? '，内容已存在，复用向量' : ''}）`)
+      } else {
+        setError(`加入知识库失败：${res.error || '未知错误'}`)
+      }
+    } catch (e) {
+      setError('加入知识库失败：' + (e?.message || '未知错误'))
+    } finally {
+      setKbBusyId(null)
+    }
+  }
 
   // 上传到「我的文件」库（持久化），成功后将其加入待发送以便直接复用
   const handleUpload = async (fileList) => {
@@ -137,6 +158,7 @@ function FilesTab({
         </label>
 
         {error && <p className="text-[11px] text-red-500 mt-1.5">{error}</p>}
+        {notice && <p className="text-[11px] t-text-accent mt-1.5">{notice}</p>}
 
         {files.length === 0 ? (
           <p className="text-xs t-text-fainter text-center py-4">文件库为空</p>
@@ -156,18 +178,19 @@ function FilesTab({
                 </div>
                 <div className="flex items-center gap-1 mt-1.5">
                   <button
-                    onClick={() => setViewing({ id: file.id, filename: file.filename })}
-                    className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md t-text-2 border t-border-strong t-hover-card"
-                    title="查看内容"
-                  >
-                    <Eye className="w-3 h-3" /> 查看
-                  </button>
-                  <button
                     onClick={() => reuse(file)}
                     className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md t-bg-accent/10 t-text-accent t-hover-bg"
                     title="加入当前会话作为附件"
                   >
                     <PlusCircle className="w-3 h-3" /> 加入会话
+                  </button>
+                  <button
+                    onClick={() => addToKnowledge(file)}
+                    disabled={kbBusyId === file.id}
+                    className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md t-text-2 border t-border-strong t-hover-card disabled:opacity-50"
+                    title="切块后入库知识库，可被 RAG 检索"
+                  >
+                    {kbBusyId === file.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <BookPlus className="w-3 h-3" />} 加入知识库
                   </button>
                   <button
                     onClick={() => remove(file)}

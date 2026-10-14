@@ -85,6 +85,43 @@ def _get_embedding_adapter():
     return None
 
 
+def _index_new_doc(doc_id: str, user_id: int, filename: str, c_hash: str,
+                   chunks: List[Dict], embeddings: List[List[float]]) -> None:
+    """新内容入库后同步写 Chroma 索引（embedding 已算好，直接复用）"""
+    try:
+        from lobster_mu import vector_index
+        items = [
+            {"chunk_index": c["chunk_index"], "content": c["content"], "vector": emb}
+            for c, emb in zip(chunks, embeddings)
+        ]
+        vector_index.upsert_doc(doc_id, user_id, False, c_hash, filename, items)
+    except Exception as e:
+        logger.warning(f"[mu-kb] Chroma 索引写入失败（可由后台同步补齐）doc={doc_id}: {e}")
+
+
+def _index_shared_doc(conn, doc_id: str, user_id: int, filename: str,
+                      c_hash: str, is_public: bool) -> None:
+    """共享内容被新用户引用时，从 SQLite 复用已有向量写该引用的索引条目（不重新 embedding）"""
+    try:
+        from lobster_mu import vector_index
+        rows = conn.execute(
+            "SELECT chunk_index, content, vector FROM kb_content_vectors WHERE content_hash = ?",
+            (c_hash,),
+        ).fetchall()
+        items = []
+        for r in rows:
+            try:
+                vec = json.loads(r["vector"])
+            except Exception:
+                continue
+            items.append({"chunk_index": r["chunk_index"], "content": r["content"] or "",
+                          "vector": vec})
+        if items:
+            vector_index.upsert_doc(doc_id, user_id, is_public, c_hash, filename, items)
+    except Exception as e:
+        logger.warning(f"[mu-kb] Chroma 共享索引写入失败 doc={doc_id}: {e}")
+
+
 def add_document(user_id: int, filename: str, file_size: int, content: str, stored_name: str = "") -> Dict:
     """上传知识库文档（内容寻址去重 + 共享向量池）
 
@@ -121,6 +158,7 @@ def add_document(user_id: int, filename: str, file_size: int, content: str, stor
             )
             conn.commit()
             logger.info(f"[mu-kb] user={user_id} 文件 {filename} 命中共享内容 (hash={c_hash[:16]}...)，跳过 embedding")
+            _index_shared_doc(conn, doc_id, user_id, filename, c_hash, is_public=False)
             return {"doc_id": doc_id, "filename": filename, "chunk_count": chunk_count,
                     "file_size": file_size, "shared": True}
 
@@ -174,6 +212,8 @@ def add_document(user_id: int, filename: str, file_size: int, content: str, stor
         )
         conn.commit()
         logger.info(f"[mu-kb] user={user_id} 文件 {filename} 已入库 (hash={c_hash[:16]}..., {len(chunks)} chunks)")
+        # 写入 Chroma HNSW 索引（失败不影响入库事实，后台 sync 会补齐）
+        _index_new_doc(doc_id, user_id, filename, c_hash, chunks, embeddings)
         return {"doc_id": doc_id, "filename": filename, "chunk_count": len(chunks),
                 "file_size": file_size, "shared": False}
     except Exception:
@@ -261,6 +301,16 @@ def search(user_id: int, query: str, top_k: int = 5, threshold: float = 0.3) -> 
     except Exception as e:
         logger.error(f"[mu-kb] 查询向量化失败: {e}")
         return []
+
+    # 优先走 Chroma HNSW 索引（元数据预过滤 + 近似最近邻）；不可用/异常时回退暴力检索
+    try:
+        from lobster_mu import vector_index
+        indexed = vector_index.query(user_id, query_embedding, top_k=top_k,
+                                     threshold=threshold)
+        if indexed is not None:
+            return indexed
+    except Exception as e:
+        logger.warning(f"[mu-kb] Chroma 检索失败，回退暴力检索: {e}")
 
     conn = get_conn()
     try:
@@ -366,6 +416,12 @@ def delete_document(user_id: int, doc_id: str) -> Optional[int]:
             (doc_id, user_id),
         )
         conn.commit()
+        # 同步删除该引用的 Chroma 索引条目（共享内容本体保留，其他用户引用不受影响）
+        try:
+            from lobster_mu import vector_index
+            vector_index.delete_doc(doc_id)
+        except Exception as e:
+            logger.warning(f"[mu-kb] Chroma 索引删除失败 doc={doc_id}: {e}")
         return doc["chunk_count"]
     finally:
         conn.close()
@@ -392,6 +448,12 @@ def gc_orphaned_content() -> int:
         conn.execute(f"DELETE FROM kb_content_vectors WHERE content_hash IN ({placeholders})", hashes)
         conn.execute(f"DELETE FROM kb_content WHERE content_hash IN ({placeholders})", hashes)
         conn.commit()
+        # 同步清理 Chroma 索引（正常情况下引用删除时条目已随 doc 删除，这里兜底）
+        try:
+            from lobster_mu import vector_index
+            vector_index.delete_by_content_hashes(hashes)
+        except Exception as e:
+            logger.warning(f"[mu-kb] Chroma 孤儿索引清理失败: {e}")
         logger.info(f"[mu-kb] GC 清理孤儿内容 {len(hashes)} 个")
         return len(hashes)
     finally:
@@ -551,6 +613,12 @@ def set_public(doc_id: str, is_public: bool) -> Optional[Dict]:
             (1 if is_public else 0, doc_id),
         )
         conn.commit()
+        # 同步翻转 Chroma 元数据（其他用户立即可检索）
+        try:
+            from lobster_mu import vector_index
+            vector_index.set_doc_public(doc_id, is_public)
+        except Exception as e:
+            logger.warning(f"[mu-kb] Chroma 公共标记同步失败 doc={doc_id}: {e}")
         return {"id": doc_id, "filename": doc["filename"], "is_public": bool(is_public)}
     finally:
         conn.close()

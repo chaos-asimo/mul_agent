@@ -294,6 +294,23 @@ def _call_llm(prompt: str, system: str = None) -> str:
     return str(resp)
 
 
+def _format_script_exec_result(exec_result: Any) -> Dict[str, Any]:
+    """把 script_service.execute_python_script 的返回规整为技能执行结果。
+    关键：附带 generated_files 的真实下载链接，防止模型编造不存在的下载地址。"""
+    if not isinstance(exec_result, dict):
+        return {"success": True, "result": str(exec_result)}
+    if not exec_result.get("success", True):
+        return {"success": False, "error": exec_result.get("error") or exec_result.get("result") or "执行失败"}
+    result = exec_result.get("result", "") or ""
+    gen_files = exec_result.get("generated_files") or []
+    if gen_files:
+        lines = ["", "【生成的文件】（下载链接必须原样引用，不得改动文件名）"]
+        for f in gen_files:
+            lines.append(f"- {f.get('original_name') or f.get('name')}: {f.get('download_url')}")
+        result = (result.rstrip() + "\n" + "\n".join(lines)).strip()
+    return {"success": True, "result": result, "generated_files": gen_files}
+
+
 def execute(user_id: int, skill_id: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
     """执行技能。任何异常都捕获并返回 success:false，绝不抛出。"""
     params = params or {}
@@ -315,9 +332,12 @@ def execute(user_id: int, skill_id: str, params: Dict[str, Any] = None) -> Dict[
                 return {"success": False, "error": f"脚本不存在: {params['run_script']}"}
             from lobster_mu import script_service
             exec_result = script_service.execute_python_script(user_id, code)
-            if isinstance(exec_result, dict) and not exec_result.get("success", True):
-                return {"success": False, "error": exec_result.get("error") or exec_result.get("result") or "执行失败"}
-            return {"success": True, "result": (exec_result.get("result", "") if isinstance(exec_result, dict) else str(exec_result))}
+            return _format_script_exec_result(exec_result)
+
+        # 标准技能包（带脚本）：走代理式执行循环（多轮 LLM + 受限命令执行）
+        if is_skillmd and cfg.get("scripts"):
+            from lobster_mu import skill_runner
+            return skill_runner.run_skillmd(user_id, skill, params)
 
         if executor == "llm":
             body = cfg.get("skillmd_body") or cfg.get("prompt_template", "")
@@ -339,12 +359,7 @@ def execute(user_id: int, skill_id: str, params: Dict[str, Any] = None) -> Dict[
             code = cfg.get("script", "")
             if not code:
                 return {"success": False, "error": "脚本技能缺少 script 代码"}
-            exec_result = script_service.execute_python_script(user_id, code)
-            if isinstance(exec_result, dict):
-                if not exec_result.get("success", True):
-                    return {"success": False, "error": exec_result.get("error") or exec_result.get("result") or "执行失败"}
-                return {"success": True, "result": exec_result.get("result", "")}
-            return {"success": True, "result": str(exec_result)}
+            return _format_script_exec_result(script_service.execute_python_script(user_id, code))
 
         if executor in ("search", "web_search"):
             from lobster_mu.tools import web_search

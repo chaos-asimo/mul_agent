@@ -43,7 +43,13 @@ export default function OfficePreview({ filename, getBuffer }) {
         } else if (ext === 'pptx') {
           const { init } = await import('pptx-preview')
           host.innerHTML = ''
-          const viewer = init(host, { width: 960, height: 540 })
+          // 按容器实际尺寸渲染幻灯片（保持 16:9，充分利用最大化后的弹窗）
+          const rect = host.getBoundingClientRect()
+          let w = Math.max(320, Math.floor(rect.width) - 24)
+          let h = Math.floor(w * 9 / 16)
+          const maxH = Math.max(240, Math.floor(rect.height) - 16)
+          if (h > maxH) { h = maxH; w = Math.floor(h * 16 / 9) }
+          const viewer = init(host, { width: w, height: h })
           await viewer.preview(buffer)
         }
         if (alive) setStatus('ok')
