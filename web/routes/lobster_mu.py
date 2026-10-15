@@ -331,6 +331,39 @@ async def mu_logout(request: Request):
 
 # ============ 直接登录（按用户名/显示名，不存在则自动创建） ============
 
+# 平台 token 身份校验接口（内网），可用环境变量覆盖
+PLATFORM_TOKEN_VERIFY_URL = os.environ.get(
+    "PLATFORM_TOKEN_VERIFY_URL",
+    "http://10.111.1.250:32516/PT/business/token/getUserInfoViaToken",
+)
+# 校验失败时是否拒绝登录（默认拒绝；仅调试时可设 false 放行）
+PLATFORM_TOKEN_VERIFY_STRICT = os.environ.get("PLATFORM_TOKEN_VERIFY_STRICT", "true").lower() != "false"
+
+
+def _verify_platform_token(token: str, username: str) -> "tuple[bool, str]":
+    """调用平台 token 校验接口，确认 token 对应用户(grbh)与登录 username 一致（本人操作）。
+    返回 (ok, 失败原因)。同步阻塞，调用方须用 asyncio.to_thread 包装。"""
+    import requests as _requests
+    try:
+        resp = _requests.get(PLATFORM_TOKEN_VERIFY_URL, params={"token": token}, timeout=8)
+    except Exception as e:
+        return False, f"平台校验服务不可达: {e}"
+    if resp.status_code != 200:
+        return False, f"平台校验服务返回 HTTP {resp.status_code}"
+    try:
+        data = resp.json()
+    except Exception:
+        return False, "平台校验服务返回非 JSON"
+    if data.get("valid") is not True or data.get("tokenState") != 0:
+        return False, "平台 token 无效或已过期"
+    grbh = str(data.get("grbh") or "").strip()
+    if not grbh:
+        return False, "平台返回缺少 grbh 字段"
+    if grbh != str(username).strip():
+        return False, "token 对应用户与登录用户名不一致"
+    return True, ""
+
+
 class MuDirectLoginRequest(BaseModel):
     username: str
     display_name: str
@@ -386,6 +419,20 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
         raise HTTPException(status_code=400, detail="用户名不能为空")
     if not display_name:
         raise HTTPException(status_code=400, detail="显示名不能为空")
+
+    # ---- 平台身份校验：携带 login_token 时，调用平台接口确认 token 对应用户(grbh)
+    # 与 username 一致（本人操作）。校验失败一律拒绝，防止冒用他人身份直登。----
+    if body.login_token:
+        ok, why = await asyncio.to_thread(_verify_platform_token, body.login_token, username)
+        if not ok:
+            tools.log_operation(0, "login_direct_token_denied",
+                                f"{username} 平台token校验失败: {why}",
+                                success=False, ip=get_client_ip(request))
+            if PLATFORM_TOKEN_VERIFY_STRICT:
+                raise HTTPException(status_code=403, detail=f"身份校验失败: {why}")
+        else:
+            tools.log_operation(0, "login_direct_token_ok",
+                                f"{username} 平台token校验通过", ip=get_client_ip(request))
 
     row = user_store.get_by_username(username)
     created = False

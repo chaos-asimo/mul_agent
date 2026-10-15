@@ -236,7 +236,9 @@ def _build_skill_prompt_block(skills: List[Dict[str, Any]]) -> str:
         "\n\n你可以调用以下用户技能（Skill）来完成任务。需要使用时，在回复中输出标记块：",
         '[SKILL_CALL]{"skill_id":"<技能ID>","params":{<参数JSON>}}[/SKILL_CALL]',
         "规则：",
-        "- skill_id 必须是下面列出的技能 ID，不要编造",
+        "- skill_id 必须原样使用下方技能条目 (id=...) 中的值——不是技能名称，不要加 / 前缀，不要编造",
+        "- 必须实际输出上述完整标记块（含 [/SKILL_CALL] 闭合）才会真正执行；只用文字声称“正在调用技能”不会产生任何效果",
+        "- 输出标记块时，块外不要附加其他解释文字",
         "- params 必须是合法 JSON，键名要与技能参数一致",
         "- 技能执行结果由系统自动回传，你再基于结果给出最终回答；最终回复中不要保留 [SKILL_CALL] 标记",
         "- 技能结果中若包含文件下载链接，必须原样引用（不得自行编造或修改链接中的文件名）",
@@ -281,6 +283,28 @@ def _parse_skill_calls(text: str) -> List[Dict[str, Any]]:
             })
         except Exception:
             calls.append({"skill_id": "", "params": {}, "raw_ok": False, "raw": payload[:200]})
+    # 兜底：模型忘写 [/SKILL_CALL] 闭合标签时，尝试解析尾部 JSON 片段，
+    # 避免整次技能调用被静默丢弃（此前表现为只保存一句"正在调用技能..."）
+    if not calls and text and "[SKILL_CALL]" in text:
+        frag = text.split("[SKILL_CALL]", 1)[1].strip()
+        start = frag.find("{")
+        if start >= 0:
+            cand = frag[start:]
+            variants = [cand]
+            end = cand.rfind("}")
+            if end > 0:
+                variants.append(cand[:end + 1])
+            for v in variants:
+                try:
+                    obj = json.loads(v)
+                    calls.append({
+                        "skill_id": str(obj.get("skill_id", "")),
+                        "params": obj.get("params") or {},
+                        "raw_ok": True,
+                    })
+                    break
+                except Exception:
+                    continue
     return calls
 
 
@@ -1023,12 +1047,6 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
             except Exception as _e:
                 print(f"[DEBUG] Agent 清单发现失败，跳过注入: {_e}")
                 agent_block = ""
-            try:
-                from lobster_mu import skill_store
-                skill_block = _build_skill_prompt_block(skill_store.list_enabled(user_id))
-            except Exception as _e:
-                print(f"[DEBUG] 技能清单发现失败，跳过注入: {_e}")
-                skill_block = ""
             # 检查是否有启用的搜索引擎
             try:
                 from search.search_manager import SearchManager
@@ -1038,6 +1056,14 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                 print(f"[DEBUG] 搜索引擎检查失败: {_e}")
                 web_search_enabled = False
             web_search_block = _build_web_search_prompt_block(web_search_enabled)
+        # 技能清单始终注入（含带附件/图片的请求——技能常需处理用户上传的文件，
+        # 否则模型看不到技能 ID 与标记格式，只会"口头声称"在调用技能）
+        try:
+            from lobster_mu import skill_store
+            skill_block = _build_skill_prompt_block(skill_store.list_enabled(user_id))
+        except Exception as _e:
+            print(f"[DEBUG] 技能清单发现失败，跳过注入: {_e}")
+            skill_block = ""
         ppt_block = _build_ppt_prompt_block(ppt_intent)
         effective_system_prompt = system_prompt + web_search_block + agent_block + mcp_block + skill_block + ppt_block
         try:
@@ -1519,7 +1545,9 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                         skill_result_blocks.append(f"[技能 {idx}] 失败: {err_msg}")
                         continue
                     sid = call["skill_id"]
-                    yield "data: " + json.dumps({'success': True, 'content': f"\n🔧 正在执行技能: {sid}（复杂技能可能需要几分钟，请耐心等待）...\n", 'session_id': session_id}) + "\n\n"
+                    _skill_obj = skill_store.resolve(user_id, sid)
+                    sname = (_skill_obj or {}).get("name") or sid
+                    yield "data: " + json.dumps({'success': True, 'content': f"\n🔧 正在执行技能: {sname}（多步骤技能可能需要几分钟，下方为实时进度）\n", 'session_id': session_id}) + "\n\n"
                     # 注入原始请求与附件文本作为技能素材（模型 params 通常只给主题，缺实际内容）
                     call_params = dict(call.get("params") or {})
                     _material_parts = []
@@ -1529,17 +1557,50 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                         _material_parts.append("附件内容:\n" + "".join(file_info))
                     if _material_parts and "_material" not in call_params:
                         call_params["_material"] = "\n\n".join(_material_parts)
-                    res = skill_store.execute(user_id, sid, call_params)
+                    # 后台线程执行技能 + 队列轮询：代理循环每步的执行情况实时推给前端
+                    import queue as _queue
+                    import threading as _threading
+                    progress_q = _queue.Queue()
+
+                    def _emit_progress(text):
+                        try:
+                            progress_q.put(str(text))
+                        except Exception:
+                            pass
+
+                    _holder = {}
+
+                    def _run_skill():
+                        try:
+                            _holder['res'] = skill_store.execute(user_id, sid, call_params, _emit_progress)
+                        except Exception as _e:
+                            _holder['res'] = {"success": False, "error": f"技能执行异常: {_e}"}
+
+                    _t = _threading.Thread(target=_run_skill, daemon=True)
+                    _t.start()
+
+                    def _sse(msg):
+                        return "data: " + json.dumps({'success': True, 'content': msg, 'session_id': session_id}) + "\n\n"
+                    while _t.is_alive():
+                        try:
+                            yield _sse(progress_q.get(timeout=0.5))
+                        except _queue.Empty:
+                            pass
+                    while not progress_q.empty():
+                        yield _sse(progress_q.get_nowait())
+                    res = _holder.get('res') or {"success": False, "error": "技能执行未返回结果"}
                     if res.get("success"):
-                        yield "data: " + json.dumps({'success': True, 'content': f"📋 技能 {sid} 执行完成。\n\n", 'session_id': session_id}) + "\n\n"
+                        _n_files = len(res.get("generated_files") or [])
+                        _done = f"📋 技能 {sname} 执行完成" + (f"，生成 {_n_files} 个产物文件" if _n_files else "") + "。\n\n"
+                        yield _sse(_done)
                         skill_result_blocks.append(
-                            f"[技能 {idx}] id={sid}\n参数: {json.dumps(call.get('params') or {}, ensure_ascii=False)[:500]}\n"
+                            f"[技能 {idx}] {sname} (id={sid})\n参数: {json.dumps(call.get('params') or {}, ensure_ascii=False)[:500]}\n"
                             f"结果:\n{str(res.get('result', ''))[:4000]}"
                         )
                     else:
                         err = res.get("error") or "未知错误"
-                        yield "data: " + json.dumps({'success': True, 'content': f"❌ 技能 {sid} 执行失败: {err}\n\n", 'session_id': session_id}) + "\n\n"
-                        skill_result_blocks.append(f"[技能 {idx}] id={sid}\n执行失败: {err}")
+                        yield _sse(f"❌ 技能 {sname} 执行失败: {err}\n\n")
+                        skill_result_blocks.append(f"[技能 {idx}] {sname} (id={sid})\n执行失败: {err}")
                 if skill_result_blocks:
                     skill_summary = "\n\n".join(skill_result_blocks)
                     # 把技能执行结果实时流式输出（此前仅入库，导致需刷新才可见），
@@ -1549,6 +1610,9 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                         f"系统已按你的要求调用了技能，结果如下：\n\n{skill_summary}\n\n"
                         "请基于上述技能执行结果，为用户提供完整、准确的最终解答。"
                         "若结果已足够，可直接整理呈现；不要输出任何 [SKILL_CALL] 标记，也不要向用户解释标记机制。"
+                        "严禁编造“后台处理中”“稍后自动提供”“任务已启动”等不存在的异步机制——技能结果就是全部最终结果；"
+                        "若结果中注明任务未完成/中断，或没有最终交付文件（如 .pptx）的下载链接，必须如实告知用户未完成及原因，不得伪装成功；"
+                        "下载链接只能原样引用结果中【生成的文件】列出的链接，不得自行构造。"
                     )
                     interpret_messages = adapter.create_prompt(
                         "你是龙虾Claw，一个强大的AI智能体助手。请基于技能调用结果为用户提供详细解答。",

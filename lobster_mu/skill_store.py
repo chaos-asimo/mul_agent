@@ -265,6 +265,25 @@ def set_public(skill_id: str, is_public: bool, is_admin: bool = False) -> Dict[s
     return {"success": True}
 
 
+def _resolve_by_name(user_id: int, raw: str) -> Optional[Dict[str, Any]]:
+    """按名称解析技能：兼容 '/name'、'/owner/name'、纯名称（大小写不敏感）。
+    模型有时用技能名而非 UUID 输出 skill_id，此处兜底解析。"""
+    name = (raw or "").strip().strip("/").split("/")[-1].strip().lower()
+    if not name:
+        return None
+    for s in list_skills(user_id):
+        if name == (s.get("name") or "").strip().lower():
+            return s
+        if name == (s.get("skill_id") or "").lower():
+            return s
+    return None
+
+
+def resolve(user_id: int, skill_id: str) -> Optional[Dict[str, Any]]:
+    """按 ID 或名称解析当前用户可见技能（与 execute 同一套解析，供展示技能名等场景使用）"""
+    return get(user_id, skill_id) or _resolve_by_name(user_id, skill_id)
+
+
 # ============ 执行 ============
 
 def _fill_template(template: str, params: Dict[str, Any]) -> str:
@@ -311,11 +330,13 @@ def _format_script_exec_result(exec_result: Any) -> Dict[str, Any]:
     return {"success": True, "result": result, "generated_files": gen_files}
 
 
-def execute(user_id: int, skill_id: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
-    """执行技能。任何异常都捕获并返回 success:false，绝不抛出。"""
+def execute(user_id: int, skill_id: str, params: Dict[str, Any] = None,
+            progress=None) -> Dict[str, Any]:
+    """执行技能。progress 为可选回调 fn(text)，skillmd 代理循环每步会推执行进度。
+    任何异常都捕获并返回 success:false，绝不抛出。"""
     params = params or {}
     try:
-        skill = get(user_id, skill_id)
+        skill = resolve(user_id, skill_id)
         if not skill:
             return {"success": False, "error": "技能不存在或无权访问"}
         if not skill.get("enabled"):
@@ -337,7 +358,7 @@ def execute(user_id: int, skill_id: str, params: Dict[str, Any] = None) -> Dict[
         # 标准技能包（带脚本）：走代理式执行循环（多轮 LLM + 受限命令执行）
         if is_skillmd and cfg.get("scripts"):
             from lobster_mu import skill_runner
-            return skill_runner.run_skillmd(user_id, skill, params)
+            return skill_runner.run_skillmd(user_id, skill, params, progress=progress)
 
         if executor == "llm":
             body = cfg.get("skillmd_body") or cfg.get("prompt_template", "")
