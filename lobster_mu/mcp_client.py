@@ -78,13 +78,14 @@ async def _connect_and_list(srv: Dict[str, Any]) -> List[Dict[str, Any]]:
                 result = await asyncio.wait_for(session.list_tools(), timeout=CONNECT_TIMEOUT)
                 return [_tool_to_dict(t) for t in result.tools]
     elif transport == "sse":
-        async with sse_client(srv["url"]) as (read, write):
+        async with sse_client(srv["url"], headers=srv.get("headers") or None) as (read, write):
             async with ClientSession(read, write) as session:
                 await asyncio.wait_for(session.initialize(), timeout=CONNECT_TIMEOUT)
                 result = await asyncio.wait_for(session.list_tools(), timeout=CONNECT_TIMEOUT)
                 return [_tool_to_dict(t) for t in result.tools]
     elif transport in ("http", "streamable-http"):
-        async with streamablehttp_client(srv["url"]) as (read, write, _):
+        # 支持配置 headers（如连接本系统 /mcp 服务端需 Authorization: Bearer <token>）
+        async with streamablehttp_client(srv["url"], headers=srv.get("headers") or None) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await asyncio.wait_for(session.initialize(), timeout=CONNECT_TIMEOUT)
                 result = await asyncio.wait_for(session.list_tools(), timeout=CONNECT_TIMEOUT)
@@ -105,14 +106,14 @@ async def _connect_and_call(srv: Dict[str, Any], tool_name: str, arguments: Dict
                                                 timeout=CALL_TIMEOUT)
                 return _serialize_result(result)
     elif transport == "sse":
-        async with sse_client(srv["url"]) as (read, write):
+        async with sse_client(srv["url"], headers=srv.get("headers") or None) as (read, write):
             async with ClientSession(read, write) as session:
                 await asyncio.wait_for(session.initialize(), timeout=CONNECT_TIMEOUT)
                 result = await asyncio.wait_for(session.call_tool(tool_name, arguments or {}),
                                                 timeout=CALL_TIMEOUT)
                 return _serialize_result(result)
     elif transport in ("http", "streamable-http"):
-        async with streamablehttp_client(srv["url"]) as (read, write, _):
+        async with streamablehttp_client(srv["url"], headers=srv.get("headers") or None) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await asyncio.wait_for(session.initialize(), timeout=CONNECT_TIMEOUT)
                 result = await asyncio.wait_for(session.call_tool(tool_name, arguments or {}),

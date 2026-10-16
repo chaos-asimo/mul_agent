@@ -460,7 +460,7 @@ def _run_mcp_call_sync(user_id: int, call: Dict[str, Any]):
         res = mcp_client.call_tool(user_id, call.get("server", ""), call.get("tool", ""),
                                    call.get("arguments") or {})
         if res.get("success"):
-            return True, str(res.get("result") or "")[:4000]
+            return True, str(res.get("result") or "")[:20000]
         return False, str(res.get("error") or "未知错误")
     except Exception as e:
         return False, str(e)
@@ -1484,7 +1484,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                         yield "data: " + json.dumps({'success': True, 'content': f"📋 MCP 工具 {label} 调用成功，正在整理结果...\n\n", 'session_id': session_id}) + "\n\n"
                         mcp_result_blocks.append(
                             f"[调用 {idx}] 工具: {label}\n参数: {json.dumps(call['arguments'], ensure_ascii=False)[:500]}\n"
-                            f"结果:\n{result_text[:4000]}"
+                            f"结果:\n{result_text[:20000]}"
                         )
                     else:
                         err = mcp_res.get("error") or "未知错误"

@@ -56,7 +56,7 @@ function McpTab() {
   }, [loadServers])
 
   const resetForm = () => {
-    setForm({ name: '', transport: 'stdio', command: '', argsText: '', envText: '', url: '', enabled: true })
+    setForm({ name: '', transport: 'stdio', command: '', argsText: '', envText: '', url: '', headersText: '', enabled: true })
     setEditingId(null)
     setShowForm(false)
   }
@@ -78,6 +78,12 @@ function McpTab() {
       })
     } else {
       body.url = form.url.trim()
+      body.headers = {}
+      parseLines(form.headersText || '', (l) => {
+        const idx = l.indexOf(':')
+        if (idx > 0) body.headers[l.slice(0, idx).trim()] = l.slice(idx + 1).trim()
+        return null
+      })
     }
     return body
   }
@@ -126,6 +132,10 @@ function McpTab() {
         ? Object.entries(srv.env).map(([k]) => `${k}=***`).join('\n')
         : '',
       url: srv.url || '',
+      // 编辑时 headers 为脱敏 {KEY: '***'}，预填为 KEY: ***（保持不变）
+      headersText: srv.headers && typeof srv.headers === 'object'
+        ? Object.entries(srv.headers).map(([k]) => `${k}: ***`).join('\n')
+        : '',
       enabled: !!srv.enabled,
     })
     setShowForm(true)
@@ -267,12 +277,20 @@ function McpTab() {
               />
             </>
           ) : (
-            <input
-              className={inputCls}
-              value={form.url}
-              onChange={(e) => setForm({ ...form, url: e.target.value })}
-              placeholder="服务 URL *（如：http://localhost:8000/sse）"
-            />
+            <>
+              <input
+                className={inputCls}
+                value={form.url}
+                onChange={(e) => setForm({ ...form, url: e.target.value })}
+                placeholder="服务 URL *（如：http://localhost:8000/sse 或 http://host:8888/mcp）"
+              />
+              <textarea
+                className={inputCls + ' resize-none h-14'}
+                value={form.headersText || ''}
+                onChange={(e) => setForm({ ...form, headersText: e.target.value })}
+                placeholder={'请求头，每行一个 Key: Value（可留空）\n如：Authorization: Bearer mcp_xxx\n编辑时 *** 表示保持原值不变'}
+              />
+            </>
           )}
 
           <label className="flex items-center gap-2 text-xs t-text-muted">

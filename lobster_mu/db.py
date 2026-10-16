@@ -208,11 +208,44 @@ DDL = [
         args       TEXT DEFAULT '[]',
         env        TEXT DEFAULT '{}',
         url        TEXT DEFAULT '',
+        headers    TEXT DEFAULT '{}',
         enabled    INTEGER DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_mu_mcp_user ON mu_mcp_servers(user_id, enabled)",
+    # MCP 服务端：配置化 API 封装工具（user_id 隔离）
+    """CREATE TABLE IF NOT EXISTS mu_mcp_tools (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id       INTEGER NOT NULL,
+        name          TEXT NOT NULL,
+        description   TEXT DEFAULT '',
+        url           TEXT NOT NULL,
+        method        TEXT NOT NULL DEFAULT 'GET',
+        headers       TEXT DEFAULT '{}',
+        query_params  TEXT DEFAULT '{}',
+        body_template TEXT DEFAULT '',
+        params_schema TEXT DEFAULT '[]',
+        timeout       INTEGER DEFAULT 30,
+        enabled       INTEGER DEFAULT 1,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        UNIQUE(user_id, name)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_mu_mcp_tools_user ON mu_mcp_tools(user_id, enabled)",
+    # MCP 服务端：每用户访问令牌（仅存 sha256，不存明文）
+    """CREATE TABLE IF NOT EXISTS mu_mcp_tokens (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id      INTEGER NOT NULL,
+        name         TEXT DEFAULT '',
+        token_hash   TEXT UNIQUE NOT NULL,
+        prefix       TEXT DEFAULT '',
+        revoked      INTEGER DEFAULT 0,
+        last_used_at TEXT,
+        expires_at   TEXT DEFAULT '',
+        created_at   TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_mu_mcp_tokens_user ON mu_mcp_tokens(user_id, revoked)",
     # 会话上下文压缩摘要（user_id 隔离，每会话一条）
     """CREATE TABLE IF NOT EXISTS mu_session_summaries (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -317,6 +350,11 @@ _SESSION_MIGRATION_COLUMNS = [
     ("starred", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
+_MCP_SERVERS_MIGRATION_COLUMNS = [
+    # MCP client 连接外部 server 时的自定义请求头（如 Authorization: Bearer ...）
+    ("headers", "TEXT DEFAULT '{}'"),
+]
+
 
 def get_conn() -> sqlite3.Connection:
     """获取新连接（短连接模式，WAL 下读写不互斥）。
@@ -375,7 +413,8 @@ def init_db():
                             ("mu_agents", _AGENT_MIGRATION_COLUMNS),
                             ("mu_agent_memories", _MEMO_MIGRATION_COLUMNS),
                             ("mu_knowledge_docs", _KB_DOCS_MIGRATION_COLUMNS),
-                            ("mu_chat_sessions", _SESSION_MIGRATION_COLUMNS)):
+                            ("mu_chat_sessions", _SESSION_MIGRATION_COLUMNS),
+                            ("mu_mcp_servers", _MCP_SERVERS_MIGRATION_COLUMNS)):
             existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
             for col, coldef in cols:
                 if col not in existing:

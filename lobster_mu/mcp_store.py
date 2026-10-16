@@ -40,6 +40,12 @@ def _row_to_dict(row, mask_env: bool = True) -> Dict[str, Any]:
         d["env"] = {k: "***" for k in env.keys()}
     else:
         d["env"] = env
+    headers = _parse_json(d.get("headers"), {})
+    if mask_env and isinstance(headers, dict):
+        # headers 常含 Authorization 等敏感值，与 env 同样脱敏
+        d["headers"] = {k: "***" for k in headers.keys()}
+    else:
+        d["headers"] = headers
     return d
 
 
@@ -83,17 +89,20 @@ def get_server_raw(user_id: int, server_id: int) -> Optional[Dict[str, Any]]:
 def create_server(user_id: int, name: str, transport: str,
                   command: str = "", args: Optional[List[str]] = None,
                   env: Optional[Dict[str, str]] = None, url: str = "",
-                  enabled: bool = True) -> Dict[str, Any]:
+                  enabled: bool = True,
+                  headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     ts = _now()
     conn = get_conn()
     try:
         cur = conn.execute(
             "INSERT INTO mu_mcp_servers (user_id, name, transport, command, args, env, url,"
-            " enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " headers, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (user_id, name, transport, command or "",
              json.dumps(args or [], ensure_ascii=False),
              json.dumps(env or {}, ensure_ascii=False),
-             url or "", 1 if enabled else 0, ts, ts),
+             url or "",
+             json.dumps(headers or {}, ensure_ascii=False),
+             1 if enabled else 0, ts, ts),
         )
         conn.commit()
         server_id = cur.lastrowid
@@ -137,6 +146,20 @@ def update_server(user_id: int, server_id: int, fields: Dict[str, Any]) -> Optio
                     merged[k] = v
             sets.append("env = ?")
             vals.append(json.dumps(merged, ensure_ascii=False))
+    if "headers" in fields:
+        new_headers = fields["headers"]
+        if isinstance(new_headers, dict):
+            # 与 env 相同的脱敏合并逻辑（*** 保持原值）
+            old_headers = dict(current.get("headers") or {})
+            merged_h: Dict[str, str] = {}
+            for k, v in new_headers.items():
+                if v == "***":
+                    if k in old_headers:
+                        merged_h[k] = old_headers[k]
+                elif v != "":
+                    merged_h[k] = v
+            sets.append("headers = ?")
+            vals.append(json.dumps(merged_h, ensure_ascii=False))
     if "enabled" in fields:
         sets.append("enabled = ?")
         vals.append(1 if fields["enabled"] else 0)

@@ -3,7 +3,7 @@
 import os
 import asyncio
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Request, Depends, File, UploadFile, Form
+from fastapi import APIRouter, HTTPException, Request, Depends, File, UploadFile, Form, Body
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 
@@ -2671,6 +2671,7 @@ class McpServerRequest(BaseModel):
     args: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None
     url: Optional[str] = ""
+    headers: Optional[Dict[str, str]] = None  # sse/http 自定义请求头（如 Authorization）
     enabled: bool = True
 
 
@@ -2697,6 +2698,7 @@ async def mu_mcp_create(body: McpServerRequest, user: dict = Depends(check_user_
         user["id"], body.name, body.transport,
         command=body.command or "", args=body.args or [],
         env=body.env or {}, url=body.url or "", enabled=body.enabled,
+        headers=body.headers or {},
     )
     mcp_client.invalidate_cache(user["id"], srv["id"])
     return {"success": True, "server": srv}
@@ -2737,7 +2739,7 @@ async def mu_mcp_test(server_id: int, user: dict = Depends(check_user_rate)):
     raw = mcp_store.get_server_raw(user["id"], server_id)
     if not raw:
         raise HTTPException(status_code=404, detail="MCP server 不存在")
-    result = mcp_client.refresh_server_tools(user["id"], server_id, raw)
+    result = await asyncio.to_thread(mcp_client.refresh_server_tools, user["id"], server_id, raw)
     return {"success": result["success"], "tools": result.get("tools", []),
             "error": result.get("error"), "tool_count": len(result.get("tools", []))}
 
@@ -2751,8 +2753,130 @@ async def mu_mcp_tools(server_id: int, refresh: bool = False, user: dict = Depen
     tools = mcp_client.get_cached_tools(user["id"], server_id)
     if tools is None or refresh:
         raw = mcp_store.get_server_raw(user["id"], server_id)
-        result = mcp_client.refresh_server_tools(user["id"], server_id, raw)
+        result = await asyncio.to_thread(mcp_client.refresh_server_tools, user["id"], server_id, raw)
         if not result["success"]:
             return {"success": False, "error": result["error"], "tools": []}
         tools = result["tools"]
     return {"success": True, "tools": tools}
+
+
+# ============ MCP 服务端（本系统作为 MCP server：配置化 API 封装 + 令牌管理） ============
+
+class McpToolConfigRequest(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    url: str
+    method: Optional[str] = "GET"
+    headers: Optional[Dict[str, str]] = None
+    query_params: Optional[Dict[str, str]] = None
+    body_template: Optional[str] = ""
+    params_schema: Optional[List[Dict[str, Any]]] = None
+    timeout: Optional[int] = 30
+
+
+@router.get("/mcp-server/tools")
+async def mu_mcpsrv_list_tools(user: dict = Depends(get_mu_user)):
+    from lobster_mu import mcp_tool_store
+    return {"success": True, "tools": mcp_tool_store.list_tools(user["id"])}
+
+
+@router.post("/mcp-server/tools")
+async def mu_mcpsrv_create_tool(body: McpToolConfigRequest, user: dict = Depends(check_user_rate)):
+    from lobster_mu import mcp_tool_store
+    result = mcp_tool_store.create_tool(user["id"], body.model_dump(exclude_none=True))
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error"))
+    tools.log_operation(user["id"], "mcp_tool_create", f"创建MCP工具: {body.name}", ip="")
+    return result
+
+
+@router.put("/mcp-server/tools/{tool_id}")
+async def mu_mcpsrv_update_tool(tool_id: int, body: McpToolConfigRequest,
+                                user: dict = Depends(check_user_rate)):
+    from lobster_mu import mcp_tool_store
+    result = mcp_tool_store.update_tool(user["id"], tool_id, body.model_dump(exclude_none=True))
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error"))
+    return result
+
+
+@router.delete("/mcp-server/tools/{tool_id}")
+async def mu_mcpsrv_delete_tool(tool_id: int, user: dict = Depends(check_user_rate)):
+    from lobster_mu import mcp_tool_store
+    result = mcp_tool_store.delete_tool(user["id"], tool_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail=result.get("error"))
+    return result
+
+
+@router.post("/mcp-server/tools/{tool_id}/toggle")
+async def mu_mcpsrv_toggle_tool(tool_id: int, body: Dict[str, bool] = Body(...),
+                                user: dict = Depends(check_user_rate)):
+    from lobster_mu import mcp_tool_store
+    result = mcp_tool_store.toggle_tool(user["id"], tool_id, bool(body.get("enabled", True)))
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail=result.get("error"))
+    return result
+
+
+@router.post("/mcp-server/tools/{tool_id}/test")
+async def mu_mcpsrv_test_tool(tool_id: int, body: Dict[str, Any] = Body(default={}),
+                              user: dict = Depends(check_user_rate)):
+    from lobster_mu import mcp_tool_store, mcp_tool_executor
+    tool = mcp_tool_store.get_tool(user["id"], tool_id)
+    if not tool:
+        raise HTTPException(status_code=404, detail="工具不存在")
+    args = body.get("arguments") if isinstance(body, dict) else None
+    result = await mcp_tool_executor.execute_api_tool(user["id"], tool, args or {})
+    return {"success": True, "result": result}
+
+
+class McpTokenCreateRequest(BaseModel):
+    name: Optional[str] = ""
+    expires_at: Optional[str] = ""
+
+
+@router.get("/mcp-server/tokens")
+async def mu_mcpsrv_list_tokens(user: dict = Depends(get_mu_user)):
+    from lobster_mu import mcp_token_store
+    return {"success": True, "tokens": mcp_token_store.list_tokens(user["id"])}
+
+
+@router.post("/mcp-server/tokens")
+async def mu_mcpsrv_create_token(body: McpTokenCreateRequest, user: dict = Depends(check_user_rate)):
+    from lobster_mu import mcp_token_store
+    row, plaintext = mcp_token_store.create_token(user["id"], body.name or "", body.expires_at or "")
+    tools.log_operation(user["id"], "mcp_token_create", f"创建MCP令牌: {row['prefix']}...", ip="")
+    # 明文仅此一次返回，前端须提示用户立即保存
+    return {"success": True, "token": row, "plaintext": plaintext}
+
+
+@router.delete("/mcp-server/tokens/{token_id}")
+async def mu_mcpsrv_revoke_token(token_id: int, user: dict = Depends(check_user_rate)):
+    from lobster_mu import mcp_token_store
+    result = mcp_token_store.revoke_token(user["id"], token_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail=result.get("error"))
+    tools.log_operation(user["id"], "mcp_token_revoke", f"吊销MCP令牌#{token_id}", ip="")
+    return result
+
+
+@router.get("/mcp-server/endpoint-info")
+async def mu_mcpsrv_endpoint_info(request: Request, user: dict = Depends(get_mu_user)):
+    from lobster_mu import mcp_server as _ms
+    base = str(request.base_url).rstrip("/")
+    endpoint = f"{base}/mcp"
+    return {
+        "success": True,
+        "available": _ms.MCP_SERVER_AVAILABLE,
+        "endpoint": endpoint,
+        "transport": "streamable-http",
+        "client_config_example": {
+            "mcpServers": {
+                "lobster-mu": {
+                    "url": endpoint,
+                    "headers": {"Authorization": "Bearer <在此粘贴你的令牌>"}
+                }
+            }
+        },
+    }

@@ -4,6 +4,7 @@ import {
   Shell, Shield, ShieldCheck, Plus, Trash2, MessageSquare, Star,
   FolderOpen, FileCode, Brain, Clock, BookOpen, Wrench, Bot, Wand2,
   PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen, Lightbulb, Send, X,
+  Server,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { apiGet, apiPost, apiDelete, readFileContent } from '../api/client'
@@ -15,6 +16,7 @@ import CronTab from '../components/CronTab'
 import KnowledgeTab from '../components/KnowledgeTab'
 import McpTab from '../components/McpTab'
 import SkillsTab from '../components/SkillsTab'
+import McpServerTab from '../components/McpServerTab'
 import AgentTab from '../components/AgentTab'
 import ThemeSwitcher from '../components/ThemeSwitcher'
 import SecuritySettings from '../components/SecuritySettings'
@@ -28,6 +30,7 @@ const TABS = [
   { key: 'knowledge', label: '知识库', icon: BookOpen },
   { key: 'mcp', label: 'MCP', icon: Wrench },
   { key: 'skills', label: '技能', icon: Wand2 },
+  { key: 'mcp-server', label: 'MCP 服务', icon: Server },
 ]
 
 function formatSessionTime(ts) {
@@ -412,6 +415,7 @@ function Workbench() {
             {activeTab === 'knowledge' && <KnowledgeTab />}
             {activeTab === 'mcp' && <McpTab />}
             {activeTab === 'skills' && <SkillsTab />}
+            {activeTab === 'mcp-server' && <McpServerTab />}
           </div>
             </>
           )}

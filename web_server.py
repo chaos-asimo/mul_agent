@@ -239,7 +239,10 @@ async def lifespan(app: FastAPI):
             _time.sleep(86400)  # 每天一次
     _threading.Thread(target=_log_retention_loop, daemon=True).start()
 
-    yield
+    # MCP 服务端：session manager 任务组（stateless 模式同样必需，其 _task_group 由 run() 建立）
+    from lobster_mu import mcp_server as _mcp_server
+    async with _mcp_server.run_session_manager():
+        yield
 
     _cleanup_task.cancel()
     _heartbeat_task.cancel()
@@ -460,6 +463,23 @@ app.include_router(ai_chat_router.router, prefix="/api", dependencies=_API_AUTH)
 app.include_router(lobster_claw_router.router, prefix="", dependencies=_API_AUTH)
 app.include_router(lobster_mu_router.router, prefix="")
 app.include_router(feishu_router.router)
+
+# MCP 服务端端点：/mcp（streamable-http, stateless；Bearer token 鉴权在 mcp_asgi 内完成）
+# 注意：Starlette 的 Mount("/mcp") 对空子路径会 307 重定向到 /mcp/，导致 MCP 客户端
+# 与 curl POST 丢失请求体；这里用 Route 直接挂 ASGI 类实例（非函数端点不会被包成
+# request-response 模式），/mcp 与 /mcp/ 同时直挂，杜绝重定向。
+from starlette.routing import Route as _McpRoute
+from lobster_mu import mcp_server as _mcp_server_module
+
+
+class _McpAsgiApp:
+    async def __call__(self, scope, receive, send):
+        await _mcp_server_module.mcp_asgi(scope, receive, send)
+
+
+_mcp_app = _McpAsgiApp()
+app.router.routes.append(_McpRoute("/mcp", _mcp_app, methods=["GET", "POST", "DELETE"]))
+app.router.routes.append(_McpRoute("/mcp/", _mcp_app, methods=["GET", "POST", "DELETE"]))
 
 # 为 OpenAPI 文档端点（/docs、/redoc、/openapi.json）加上认证，防止接口清单对外泄露。
 # FastAPI 在 app 初始化时已注册这三个端点，其依赖在 __init__ 时就编译进 dependant，
