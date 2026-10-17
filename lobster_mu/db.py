@@ -210,6 +210,7 @@ DDL = [
         url        TEXT DEFAULT '',
         headers    TEXT DEFAULT '{}',
         enabled    INTEGER DEFAULT 1,
+        is_public  INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )""",
@@ -228,6 +229,7 @@ DDL = [
         params_schema TEXT DEFAULT '[]',
         timeout       INTEGER DEFAULT 30,
         enabled       INTEGER DEFAULT 1,
+        is_public     INTEGER DEFAULT 0,
         created_at    TEXT NOT NULL,
         updated_at    TEXT NOT NULL,
         UNIQUE(user_id, name)
@@ -353,6 +355,13 @@ _SESSION_MIGRATION_COLUMNS = [
 _MCP_SERVERS_MIGRATION_COLUMNS = [
     # MCP client 连接外部 server 时的自定义请求头（如 Authorization: Bearer ...）
     ("headers", "TEXT DEFAULT '{}'"),
+    # server 是否公共（公共 server 所有用户 chat 时可调用）
+    ("is_public", "INTEGER DEFAULT 0"),
+]
+
+_MCP_TOOLS_MIGRATION_COLUMNS = [
+    # 工具是否公共（公共工具所有用户可通过 MCP 服务端调用）
+    ("is_public", "INTEGER DEFAULT 0"),
 ]
 
 
@@ -414,13 +423,16 @@ def init_db():
                             ("mu_agent_memories", _MEMO_MIGRATION_COLUMNS),
                             ("mu_knowledge_docs", _KB_DOCS_MIGRATION_COLUMNS),
                             ("mu_chat_sessions", _SESSION_MIGRATION_COLUMNS),
-                            ("mu_mcp_servers", _MCP_SERVERS_MIGRATION_COLUMNS)):
+                            ("mu_mcp_servers", _MCP_SERVERS_MIGRATION_COLUMNS),
+                            ("mu_mcp_tools", _MCP_TOOLS_MIGRATION_COLUMNS)):
             existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
             for col, coldef in cols:
                 if col not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coldef}")
         # 迁移补列后才能创建的索引（依赖 is_public 等新列）
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mu_kb_public ON mu_knowledge_docs(is_public)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mu_mcp_tools_public ON mu_mcp_tools(is_public, enabled)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mu_mcp_servers_public ON mu_mcp_servers(is_public, enabled)")
         # 更新统计信息，帮助查询优化器选择正确计划（数据量增长后尤其重要）
         try:
             conn.execute("ANALYZE")

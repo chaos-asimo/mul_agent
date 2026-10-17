@@ -68,6 +68,26 @@ def list_servers(user_id: int, enabled_only: bool = False) -> List[Dict[str, Any
     return [_row_to_dict(r, mask_env=True) for r in rows]
 
 
+def list_enabled_servers_with_public(user_id: int) -> List[Dict[str, Any]]:
+    """本用户启用的 server + 所有公共启用的 server（去重，优先本用户的）"""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM mu_mcp_servers WHERE (user_id = ? AND enabled = 1) OR (is_public = 1 AND enabled = 1) ORDER BY id",
+            (user_id,),
+        ).fetchall()
+        seen = set()
+        out = []
+        for r in rows:
+            if r["id"] in seen:
+                continue
+            seen.add(r["id"])
+            out.append(_row_to_dict(r, mask_env=True))
+        return out
+    finally:
+        conn.close()
+
+
 def get_server(user_id: int, server_id: int, mask_env: bool = True) -> Optional[Dict[str, Any]]:
     """获取单个 server 配置（默认 env 脱敏）"""
     conn = get_conn()
@@ -82,27 +102,42 @@ def get_server(user_id: int, server_id: int, mask_env: bool = True) -> Optional[
 
 
 def get_server_raw(user_id: int, server_id: int) -> Optional[Dict[str, Any]]:
-    """获取含明文 env 的完整配置（仅后端连接 MCP 时使用，不经过 API）"""
-    return get_server(user_id, server_id, mask_env=False)
+    """获取含明文 env 的完整配置（仅后端连接 MCP 时使用，不经过 API）。
+    先查本用户的，再查公共的（user_id 不匹配时）。"""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM mu_mcp_servers WHERE id = ? AND user_id = ?",
+            (server_id, user_id),
+        ).fetchone()
+        if not row:
+            row = conn.execute(
+                "SELECT * FROM mu_mcp_servers WHERE id = ? AND is_public = 1",
+                (server_id,),
+            ).fetchone()
+    finally:
+        conn.close()
+    return _row_to_dict(row, mask_env=False) if row else None
 
 
 def create_server(user_id: int, name: str, transport: str,
                   command: str = "", args: Optional[List[str]] = None,
                   env: Optional[Dict[str, str]] = None, url: str = "",
                   enabled: bool = True,
-                  headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                  headers: Optional[Dict[str, str]] = None,
+                  is_public: bool = False) -> Dict[str, Any]:
     ts = _now()
     conn = get_conn()
     try:
         cur = conn.execute(
             "INSERT INTO mu_mcp_servers (user_id, name, transport, command, args, env, url,"
-            " headers, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " headers, enabled, is_public, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (user_id, name, transport, command or "",
              json.dumps(args or [], ensure_ascii=False),
              json.dumps(env or {}, ensure_ascii=False),
              url or "",
              json.dumps(headers or {}, ensure_ascii=False),
-             1 if enabled else 0, ts, ts),
+             1 if enabled else 0, 1 if is_public else 0, ts, ts),
         )
         conn.commit()
         server_id = cur.lastrowid
@@ -163,6 +198,9 @@ def update_server(user_id: int, server_id: int, fields: Dict[str, Any]) -> Optio
     if "enabled" in fields:
         sets.append("enabled = ?")
         vals.append(1 if fields["enabled"] else 0)
+    if "is_public" in fields:
+        sets.append("is_public = ?")
+        vals.append(1 if fields["is_public"] else 0)
 
     if not sets:
         return get_server(user_id, server_id)

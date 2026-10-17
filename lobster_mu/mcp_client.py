@@ -225,11 +225,11 @@ def get_cached_tools(user_id: int, server_id: int) -> Optional[List[Dict[str, An
 
 
 def get_enabled_tools(user_id: int) -> List[Dict[str, Any]]:
-    """聚合当前用户所有启用 server 的工具（缓存优先，未命中按需拉取）。
+    """聚合当前用户所有启用 server（含公共）的工具（缓存优先，未命中按需拉取）。
     返回 [{server, server_id, name, description, input_schema}]；失败的 server 跳过。"""
     from lobster_mu import mcp_store
 
-    servers = mcp_store.list_servers(user_id, enabled_only=True)
+    servers = mcp_store.list_enabled_servers_with_public(user_id)
     aggregated: List[Dict[str, Any]] = []
     for srv in servers:
         sid = srv["id"]
@@ -262,9 +262,9 @@ def call_tool(user_id: int, server_name: str, tool_name: str, arguments: Optiona
         return {"success": False, "result": None, "error": INSTALL_HINT}
     from lobster_mu import mcp_store
 
-    # 按名称匹配启用的 server（重名时取第一个）
+    # 按名称匹配启用的 server（含公共，重名时取第一个）
     target = None
-    for srv in mcp_store.list_servers(user_id, enabled_only=True):
+    for srv in mcp_store.list_enabled_servers_with_public(user_id):
         if srv["name"] == server_name:
             target = srv
             break

@@ -30,7 +30,7 @@ const TABS = [
   { key: 'knowledge', label: '知识库', icon: BookOpen },
   { key: 'mcp', label: 'MCP', icon: Wrench },
   { key: 'skills', label: '技能', icon: Wand2 },
-  { key: 'mcp-server', label: 'MCP 服务', icon: Server },
+  { key: 'mcp-server', label: 'MCP 服务', icon: Server, adminOnly: true },
 ]
 
 function formatSessionTime(ts) {
@@ -373,7 +373,7 @@ function Workbench() {
             <>
           <div className="flex items-stretch border-b t-border shrink-0">
             <div className="flex-1 flex">
-              {TABS.map(({ key, label, icon: Icon }) => (
+              {TABS.filter(t => !t.adminOnly || user?.role === 'admin').map(({ key, label, icon: Icon }) => (
                 <button
                   key={key}
                   onClick={() => setActiveTab(key)}

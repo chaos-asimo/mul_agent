@@ -3,6 +3,7 @@ import {
   Plus, Trash2, Plug, RefreshCw, Loader2, X, Power, Wrench, Edit3, Zap, AlertTriangle,
 } from 'lucide-react'
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client'
+import { useAuthStore } from '../stores/authStore'
 
 const TRANSPORT_LABELS = {
   stdio: 'stdio',
@@ -20,8 +21,11 @@ function parseLines(text, mapper) {
 }
 
 function McpTab() {
+  const user = useAuthStore((s) => s.user)
+  const isAdmin = user?.role === 'admin'
   const [servers, setServers] = useState([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [mcpAvailable, setMcpAvailable] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState(null)
@@ -35,17 +39,23 @@ function McpTab() {
     envText: '',
     url: '',
     enabled: true,
+    isPublic: false,
   })
 
-  const loadServers = useCallback(async () => {
+  const loadServers = useCallback(async (isManual = false) => {
+    setLoading(true)
     try {
       const result = await apiGet('/mcp/servers')
       if (result.success) {
         setServers(result.servers || [])
         setMcpAvailable(result.mcp_available !== false)
+        if (isManual) setMessage(`已刷新，共 ${result.servers?.length ?? 0} 个 MCP server`)
+      } else if (isManual) {
+        setMessage(result.error || '刷新失败')
       }
     } catch (e) {
       console.error('加载 MCP server 失败:', e)
+      if (isManual) setMessage('刷新失败: ' + e.message)
     } finally {
       setLoading(false)
     }
@@ -56,7 +66,7 @@ function McpTab() {
   }, [loadServers])
 
   const resetForm = () => {
-    setForm({ name: '', transport: 'stdio', command: '', argsText: '', envText: '', url: '', headersText: '', enabled: true })
+    setForm({ name: '', transport: 'stdio', command: '', argsText: '', envText: '', url: '', headersText: '', enabled: true, isPublic: false })
     setEditingId(null)
     setShowForm(false)
   }
@@ -66,6 +76,7 @@ function McpTab() {
       name: form.name.trim(),
       transport: form.transport,
       enabled: form.enabled,
+      is_public: form.isPublic,
     }
     if (form.transport === 'stdio') {
       body.command = form.command.trim()
@@ -137,6 +148,7 @@ function McpTab() {
         ? Object.entries(srv.headers).map(([k]) => `${k}: ***`).join('\n')
         : '',
       enabled: !!srv.enabled,
+      isPublic: !!srv.is_public,
     })
     setShowForm(true)
   }
@@ -199,18 +211,20 @@ function McpTab() {
           MCP 工具
         </h3>
         <div className="flex items-center gap-1.5">
-          <button onClick={loadServers} className={btnGhost} title="刷新">
-            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+          <button
+            onClick={() => { setRefreshing(true); setMessage(''); loadServers(true).finally(() => setRefreshing(false)) }}
+            className={btnGhost}
+            title="刷新"
+          >
+            <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
+            刷新
           </button>
           <button
             onClick={() => {
               setMessage('')
-              if (showForm) resetForm()
-              else {
-                setEditingId(null)
-                setForm({ name: '', transport: 'stdio', command: '', argsText: '', envText: '', url: '', enabled: true })
-                setShowForm(true)
-              }
+              setEditingId(null)
+              setForm({ name: '', transport: 'stdio', command: '', argsText: '', envText: '', url: '', enabled: true, isPublic: false })
+              setShowForm(true)
             }}
             className={btnPrimary}
           >
@@ -302,6 +316,17 @@ function McpTab() {
             />
             保存后启用（启用后 AI 对话中可调用其工具）
           </label>
+          {isAdmin && (
+            <label className="flex items-center gap-2 text-xs t-text-muted">
+              <input
+                type="checkbox"
+                checked={form.isPublic}
+                onChange={(e) => setForm({ ...form, isPublic: e.target.checked })}
+                className="accent-indigo-500"
+              />
+              设为公共（所有用户的 AI 对话中均可调用此 server 的工具）
+            </label>
+          )}
           <div className="flex gap-2">
             <button type="submit" className="px-3 py-1.5 text-xs rounded-lg t-bg-accent t-hover-accent text-white">
               {editingId ? '保存' : '创建'}
@@ -347,6 +372,11 @@ function McpTab() {
                     >
                       {srv.enabled ? '启用' : '禁用'}
                     </span>
+                    {srv.is_public ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full border t-badge-accent">
+                        公共
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <p className="text-[10px] t-text-fainter mt-1 break-all">
@@ -359,22 +389,28 @@ function McpTab() {
                 </p>
 
                 <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                  <button onClick={() => handleToggle(srv)} className={btnGhost}>
-                    <Power className="w-3 h-3" />
-                    {srv.enabled ? '禁用' : '启用'}
-                  </button>
+                  {isAdmin && (
+                    <button onClick={() => handleToggle(srv)} className={btnGhost}>
+                      <Power className="w-3 h-3" />
+                      {srv.enabled ? '禁用' : '启用'}
+                    </button>
+                  )}
                   <button onClick={() => handleTest(srv)} disabled={ts?.loading} className={btnPrimary}>
                     {ts?.loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
                     测试连接
                   </button>
-                  <button onClick={() => handleEdit(srv)} className={btnGhost}>
-                    <Edit3 className="w-3 h-3" />
-                    编辑
-                  </button>
-                  <button onClick={() => handleDelete(srv)} className={btnDanger}>
-                    <Trash2 className="w-3 h-3" />
-                    删除
-                  </button>
+                  {(isAdmin || !srv.is_public) && (
+                    <>
+                      <button onClick={() => handleEdit(srv)} className={btnGhost}>
+                        <Edit3 className="w-3 h-3" />
+                        编辑
+                      </button>
+                      <button onClick={() => handleDelete(srv)} className={btnDanger}>
+                        <Trash2 className="w-3 h-3" />
+                        删除
+                      </button>
+                    </>
+                  )}
                 </div>
 
                 {/* 测试结果 */}

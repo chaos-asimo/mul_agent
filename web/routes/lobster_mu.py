@@ -1094,7 +1094,8 @@ async def mu_chat_message(body: ChatMessageRequest, request: Request, user: dict
 async def mu_chat_stream(body: ChatStreamRequest, request: Request, user: dict = Depends(check_user_rate)):
     ip = get_client_ip(request)
     tools.log_operation(user["id"], "chat", f"发送消息: {body.message[:100]}", ip=ip)
-    return chat_service.chat_stream_response(user["id"], body)
+    ctx = {"login_token": request.session.get("mu_login_token")}
+    return chat_service.chat_stream_response(user["id"], body, ctx=ctx)
 
 
 @router.get("/chat/sessions")
@@ -2673,12 +2674,16 @@ class McpServerRequest(BaseModel):
     url: Optional[str] = ""
     headers: Optional[Dict[str, str]] = None  # sse/http 自定义请求头（如 Authorization）
     enabled: bool = True
+    is_public: bool = False  # 公共 server：所有用户 AI 对话中均可调用
 
 
 @router.get("/mcp/servers")
 async def mu_mcp_list(user: dict = Depends(get_mu_user)):
     from lobster_mu import mcp_store, mcp_client
-    servers = mcp_store.list_servers(user["id"])
+    if user.get("role") == "admin":
+        servers = mcp_store.list_servers(user["id"])
+    else:
+        servers = mcp_store.list_enabled_servers_with_public(user["id"])
     for srv in servers:
         cached = mcp_client.get_cached_tools(user["id"], srv["id"])
         srv["tool_count_cached"] = len(cached) if cached is not None else None
@@ -2687,6 +2692,9 @@ async def mu_mcp_list(user: dict = Depends(get_mu_user)):
 
 @router.post("/mcp/servers")
 async def mu_mcp_create(body: McpServerRequest, user: dict = Depends(check_user_rate)):
+    # 公共 server 仅管理员可创建；非管理员强制 is_public=False（自己的外部 MCP 连接）
+    if body.is_public and user.get("role") != "admin":
+        body.is_public = False
     from lobster_mu import mcp_store, mcp_client
     if body.transport not in ("stdio", "sse", "http", "streamable-http"):
         raise HTTPException(status_code=400, detail="transport 仅支持 stdio / sse / http")
@@ -2698,7 +2706,7 @@ async def mu_mcp_create(body: McpServerRequest, user: dict = Depends(check_user_
         user["id"], body.name, body.transport,
         command=body.command or "", args=body.args or [],
         env=body.env or {}, url=body.url or "", enabled=body.enabled,
-        headers=body.headers or {},
+        headers=body.headers or {}, is_public=body.is_public,
     )
     mcp_client.invalidate_cache(user["id"], srv["id"])
     return {"success": True, "server": srv}
@@ -2707,9 +2715,14 @@ async def mu_mcp_create(body: McpServerRequest, user: dict = Depends(check_user_
 @router.put("/mcp/servers/{server_id}")
 async def mu_mcp_update(server_id: int, body: McpServerRequest, user: dict = Depends(check_user_rate)):
     from lobster_mu import mcp_store, mcp_client
-    if not mcp_store.get_server(user["id"], server_id):
+    existing = mcp_store.get_server(user["id"], server_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="MCP server 不存在")
     fields = body.model_dump(exclude_none=True)
+    # 公共标识仅管理员可修改；非管理员不可把 server 设为公共
+    if "is_public" in fields and user.get("role") != "admin":
+        if existing.get("is_public") != fields["is_public"]:
+            raise HTTPException(status_code=403, detail="无权修改公共标识")
     srv = mcp_store.update_server(user["id"], server_id, fields)
     mcp_client.invalidate_cache(user["id"], server_id)
     return {"success": True, "server": srv}
@@ -2745,7 +2758,7 @@ async def mu_mcp_test(server_id: int, user: dict = Depends(check_user_rate)):
 
 
 @router.get("/mcp/servers/{server_id}/tools")
-async def mu_mcp_tools(server_id: int, refresh: bool = False, user: dict = Depends(get_mu_user)):
+async def mu_mcp_tools(server_id: int, refresh: bool = False, user: dict = Depends(check_user_rate)):
     from lobster_mu import mcp_store, mcp_client
     srv = mcp_store.get_server(user["id"], server_id)
     if not srv:
@@ -2772,16 +2785,17 @@ class McpToolConfigRequest(BaseModel):
     body_template: Optional[str] = ""
     params_schema: Optional[List[Dict[str, Any]]] = None
     timeout: Optional[int] = 30
+    is_public: Optional[bool] = False
 
 
 @router.get("/mcp-server/tools")
-async def mu_mcpsrv_list_tools(user: dict = Depends(get_mu_user)):
+async def mu_mcpsrv_list_tools(user: dict = Depends(require_admin)):
     from lobster_mu import mcp_tool_store
     return {"success": True, "tools": mcp_tool_store.list_tools(user["id"])}
 
 
 @router.post("/mcp-server/tools")
-async def mu_mcpsrv_create_tool(body: McpToolConfigRequest, user: dict = Depends(check_user_rate)):
+async def mu_mcpsrv_create_tool(body: McpToolConfigRequest, user: dict = Depends(require_admin)):
     from lobster_mu import mcp_tool_store
     result = mcp_tool_store.create_tool(user["id"], body.model_dump(exclude_none=True))
     if not result.get("success"):
@@ -2792,7 +2806,7 @@ async def mu_mcpsrv_create_tool(body: McpToolConfigRequest, user: dict = Depends
 
 @router.put("/mcp-server/tools/{tool_id}")
 async def mu_mcpsrv_update_tool(tool_id: int, body: McpToolConfigRequest,
-                                user: dict = Depends(check_user_rate)):
+                                user: dict = Depends(require_admin)):
     from lobster_mu import mcp_tool_store
     result = mcp_tool_store.update_tool(user["id"], tool_id, body.model_dump(exclude_none=True))
     if not result.get("success"):
@@ -2801,7 +2815,7 @@ async def mu_mcpsrv_update_tool(tool_id: int, body: McpToolConfigRequest,
 
 
 @router.delete("/mcp-server/tools/{tool_id}")
-async def mu_mcpsrv_delete_tool(tool_id: int, user: dict = Depends(check_user_rate)):
+async def mu_mcpsrv_delete_tool(tool_id: int, user: dict = Depends(require_admin)):
     from lobster_mu import mcp_tool_store
     result = mcp_tool_store.delete_tool(user["id"], tool_id)
     if not result.get("success"):
@@ -2811,7 +2825,7 @@ async def mu_mcpsrv_delete_tool(tool_id: int, user: dict = Depends(check_user_ra
 
 @router.post("/mcp-server/tools/{tool_id}/toggle")
 async def mu_mcpsrv_toggle_tool(tool_id: int, body: Dict[str, bool] = Body(...),
-                                user: dict = Depends(check_user_rate)):
+                                user: dict = Depends(require_admin)):
     from lobster_mu import mcp_tool_store
     result = mcp_tool_store.toggle_tool(user["id"], tool_id, bool(body.get("enabled", True)))
     if not result.get("success"):
@@ -2821,7 +2835,7 @@ async def mu_mcpsrv_toggle_tool(tool_id: int, body: Dict[str, bool] = Body(...),
 
 @router.post("/mcp-server/tools/{tool_id}/test")
 async def mu_mcpsrv_test_tool(tool_id: int, body: Dict[str, Any] = Body(default={}),
-                              user: dict = Depends(check_user_rate)):
+                              user: dict = Depends(require_admin)):
     from lobster_mu import mcp_tool_store, mcp_tool_executor
     tool = mcp_tool_store.get_tool(user["id"], tool_id)
     if not tool:
@@ -2837,13 +2851,13 @@ class McpTokenCreateRequest(BaseModel):
 
 
 @router.get("/mcp-server/tokens")
-async def mu_mcpsrv_list_tokens(user: dict = Depends(get_mu_user)):
+async def mu_mcpsrv_list_tokens(user: dict = Depends(require_admin)):
     from lobster_mu import mcp_token_store
     return {"success": True, "tokens": mcp_token_store.list_tokens(user["id"])}
 
 
 @router.post("/mcp-server/tokens")
-async def mu_mcpsrv_create_token(body: McpTokenCreateRequest, user: dict = Depends(check_user_rate)):
+async def mu_mcpsrv_create_token(body: McpTokenCreateRequest, user: dict = Depends(require_admin)):
     from lobster_mu import mcp_token_store
     row, plaintext = mcp_token_store.create_token(user["id"], body.name or "", body.expires_at or "")
     tools.log_operation(user["id"], "mcp_token_create", f"创建MCP令牌: {row['prefix']}...", ip="")
@@ -2852,7 +2866,7 @@ async def mu_mcpsrv_create_token(body: McpTokenCreateRequest, user: dict = Depen
 
 
 @router.delete("/mcp-server/tokens/{token_id}")
-async def mu_mcpsrv_revoke_token(token_id: int, user: dict = Depends(check_user_rate)):
+async def mu_mcpsrv_revoke_token(token_id: int, user: dict = Depends(require_admin)):
     from lobster_mu import mcp_token_store
     result = mcp_token_store.revoke_token(user["id"], token_id)
     if not result.get("success"):

@@ -39,13 +39,22 @@ def list_tools(user_id: int) -> List[Dict[str, Any]]:
 
 
 def list_enabled(user_id: int) -> List[Dict[str, Any]]:
+    """本用户启用的工具 + 所有公共启用的工具（去重，优先本用户的）"""
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT * FROM mu_mcp_tools WHERE user_id = ? AND enabled = 1 ORDER BY name",
+            "SELECT * FROM mu_mcp_tools WHERE (user_id = ? AND enabled = 1) OR (is_public = 1 AND enabled = 1) ORDER BY name",
             (user_id,),
         ).fetchall()
-        return [_row_to_dict(r) for r in rows]
+        seen = set()
+        out = []
+        for r in rows:
+            key = (r["user_id"], r["name"])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(_row_to_dict(r))
+        return out
     finally:
         conn.close()
 
@@ -63,12 +72,18 @@ def get_tool(user_id: int, tool_id: int) -> Optional[Dict[str, Any]]:
 
 
 def get_tool_by_name(user_id: int, name: str) -> Optional[Dict[str, Any]]:
+    """按名称取工具：先本用户的，再公共的"""
     conn = get_conn()
     try:
         row = conn.execute(
             "SELECT * FROM mu_mcp_tools WHERE user_id = ? AND name = ? AND enabled = 1",
             (user_id, name),
         ).fetchone()
+        if not row:
+            row = conn.execute(
+                "SELECT * FROM mu_mcp_tools WHERE is_public = 1 AND name = ? AND enabled = 1",
+                (name,),
+            ).fetchone()
         return _row_to_dict(row) if row else None
     finally:
         conn.close()
@@ -92,6 +107,7 @@ def _norm(data: Dict[str, Any]) -> Dict[str, Any]:
         "body_template": str(data.get("body_template") or ""),
         "params_schema": json.dumps(schema, ensure_ascii=False) if not isinstance(schema, str) else schema,
         "timeout": max(1, min(300, int(data.get("timeout") or 30))),
+        "is_public": 1 if data.get("is_public") else 0,
     }
 
 
@@ -104,10 +120,11 @@ def create_tool(user_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
     try:
         cur = conn.execute(
             "INSERT INTO mu_mcp_tools (user_id, name, description, url, method, headers, "
-            "query_params, body_template, params_schema, timeout, enabled, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            "query_params, body_template, params_schema, timeout, is_public, enabled, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
             (user_id, f["name"], f["description"], f["url"], f["method"], f["headers"],
-             f["query_params"], f["body_template"], f["params_schema"], f["timeout"], now, now),
+             f["query_params"], f["body_template"], f["params_schema"], f["timeout"],
+             f["is_public"], now, now),
         )
         conn.commit()
         return {"success": True, "tool": get_tool(user_id, cur.lastrowid)}
@@ -127,11 +144,11 @@ def update_tool(user_id: int, tool_id: int, data: Dict[str, Any]) -> Dict[str, A
     try:
         conn.execute(
             "UPDATE mu_mcp_tools SET name=?, description=?, url=?, method=?, headers=?, "
-            "query_params=?, body_template=?, params_schema=?, timeout=?, updated_at=? "
+            "query_params=?, body_template=?, params_schema=?, timeout=?, is_public=?, updated_at=? "
             "WHERE id=? AND user_id=?",
             (f["name"], f["description"], f["url"], f["method"], f["headers"],
              f["query_params"], f["body_template"], f["params_schema"], f["timeout"],
-             _now(), tool_id, user_id),
+             f["is_public"], _now(), tool_id, user_id),
         )
         conn.commit()
         return {"success": True, "tool": get_tool(user_id, tool_id)}

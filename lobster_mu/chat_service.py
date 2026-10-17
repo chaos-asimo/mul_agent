@@ -177,7 +177,7 @@ def _AgentMarkerFilter() -> _MarkerFilter:
     return _MarkerFilter("[AGENT_CALL]", "[/AGENT_CALL]")
 
 
-def _build_mcp_prompt_block(mcp_tools: List[Dict[str, Any]]) -> str:
+def _build_mcp_prompt_block(mcp_tools: List[Dict[str, Any]], has_login_token: bool = False) -> str:
     """把启用的 MCP 工具清单构造为系统提示词段落"""
     if not mcp_tools:
         return ""
@@ -192,6 +192,12 @@ def _build_mcp_prompt_block(mcp_tools: List[Dict[str, Any]]) -> str:
         "",
         "可用 MCP 工具：",
     ]
+    if has_login_token:
+        lines.append(
+            "- 【免填令牌】当前会话已持有平台登录令牌。凡需要 token/令牌/身份 参数的工具，"
+            "该参数值固定填写占位符 {{login_token}}（双花括号），系统执行时会自动替换为真实令牌；"
+            "不要编造、不要留空、不要向用户索取"
+        )
     for t in mcp_tools:
         desc = (t.get("description") or "").strip().replace("\n", " ")
         if len(desc) > 120:
@@ -453,12 +459,34 @@ def _run_web_search_sync(query: str, timeout: int = 15) -> str:
             pool.shutdown(wait=False, cancel_futures=True)
 
 
-def _run_mcp_call_sync(user_id: int, call: Dict[str, Any]):
+def _inject_ctx(arguments: Dict[str, Any], ctx: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """服务端会话上下文占位符替换：arguments 中的 {{login_token}} 等占位值
+    在执行前替换为 session 中的真实值。模型上下文只接触占位符，不接触真实令牌。"""
+    if not ctx or not isinstance(arguments, dict):
+        return arguments
+
+    def _sub(v):
+        if isinstance(v, str):
+            for k, val in ctx.items():
+                if val:
+                    v = v.replace("{{" + k + "}}", str(val))
+            return v
+        if isinstance(v, dict):
+            return {kk: _sub(vv) for kk, vv in v.items()}
+        if isinstance(v, list):
+            return [_sub(x) for x in v]
+        return v
+
+    return _sub(arguments)
+
+
+def _run_mcp_call_sync(user_id: int, call: Dict[str, Any], ctx: Optional[Dict[str, Any]] = None):
     """同步执行一个 MCP 调用，返回 (ok, 结果文本)"""
     try:
         from lobster_mu import mcp_client
+        arguments = _inject_ctx(call.get("arguments") or {}, ctx)
         res = mcp_client.call_tool(user_id, call.get("server", ""), call.get("tool", ""),
-                                   call.get("arguments") or {})
+                                   arguments)
         if res.get("success"):
             return True, str(res.get("result") or "")[:20000]
         return False, str(res.get("error") or "未知错误")
@@ -846,7 +874,8 @@ def _warmup_knowledge() -> None:
         pass
 
 
-def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingResponse:
+def chat_stream_response(user_id: int, request: ChatStreamRequest,
+                         ctx: Optional[Dict[str, Any]] = None) -> StreamingResponse:
     """多用户流式聊天入口"""
     session_id = session_store.get_or_create_session(user_id, request.session_id)
 
@@ -1037,7 +1066,10 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
         if not request.files and not has_images:
             try:
                 from lobster_mu import mcp_client
-                mcp_block = _build_mcp_prompt_block(mcp_client.get_enabled_tools(user_id))
+                mcp_block = _build_mcp_prompt_block(
+                    mcp_client.get_enabled_tools(user_id),
+                    has_login_token=bool(ctx and ctx.get("login_token")),
+                )
             except Exception as _e:
                 print(f"[DEBUG] MCP 工具发现失败，跳过注入: {_e}")
                 mcp_block = ""
@@ -1478,7 +1510,8 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest) -> StreamingR
                         continue
                     label = f"{call['server']}/{call['tool']}"
                     yield "data: " + json.dumps({'success': True, 'content': f"\n🔧 正在调用 MCP 工具: {label}...\n", 'session_id': session_id}) + "\n\n"
-                    mcp_res = mcp_client.call_tool(user_id, call["server"], call["tool"], call["arguments"])
+                    call_args = _inject_ctx(call["arguments"] or {}, ctx)
+                    mcp_res = mcp_client.call_tool(user_id, call["server"], call["tool"], call_args)
                     if mcp_res.get("success"):
                         result_text = mcp_res.get("result") or ""
                         yield "data: " + json.dumps({'success': True, 'content': f"📋 MCP 工具 {label} 调用成功，正在整理结果...\n\n", 'session_id': session_id}) + "\n\n"

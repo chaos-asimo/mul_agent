@@ -4,6 +4,7 @@ import {
   KeyRound, BookOpen, Wrench, AlertTriangle, Loader2,
 } from 'lucide-react'
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client'
+import { useAuthStore } from '../stores/authStore'
 import Modal from './Modal'
 
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']
@@ -20,6 +21,7 @@ function emptyToolForm() {
     bodyTemplate: '',
     paramsSchema: '',
     timeout: 30,
+    isPublic: false,
   }
 }
 
@@ -111,7 +113,18 @@ function KvEditor({ rows, onChange, keyPlaceholder = 'Key', valuePlaceholder = '
 }
 
 function McpServerTab() {
-  const [section, setSection] = useState('tools') // tools | tokens | guide
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin'
+  const defaultSection = isAdmin ? 'tools' : 'guide'
+  const [section, setSection] = useState(defaultSection) // tools | tokens | guide
+
+  const sections = [
+    ...(isAdmin ? [
+      { k: 'tools', label: '工具管理', icon: Wrench },
+      { k: 'tokens', label: '令牌管理', icon: KeyRound },
+    ] : []),
+    { k: 'guide', label: '接入指南', icon: BookOpen },
+  ]
 
   return (
     <div className="space-y-4">
@@ -122,13 +135,9 @@ function McpServerTab() {
         </h3>
       </div>
 
-      {/* 内部分段 */}
+      {/* 内部分段（工具/令牌仅管理员可见） */}
       <div className="flex items-center gap-1">
-        {[
-          { k: 'tools', label: '工具管理', icon: Wrench },
-          { k: 'tokens', label: '令牌管理', icon: KeyRound },
-          { k: 'guide', label: '接入指南', icon: BookOpen },
-        ].map((t) => (
+        {sections.map((t) => (
           <button
             key={t.k}
             onClick={() => setSection(t.k)}
@@ -141,9 +150,12 @@ function McpServerTab() {
         ))}
       </div>
 
-      {section === 'tools' && <ToolsSection />}
-      {section === 'tokens' && <TokensSection />}
+      {section === 'tools' && isAdmin && <ToolsSection />}
+      {section === 'tokens' && isAdmin && <TokensSection />}
       {section === 'guide' && <GuideSection />}
+      {!isAdmin && section !== 'guide' && (
+        <p className="text-xs t-text-faint text-center py-6">仅管理员可管理工具与令牌</p>
+      )}
     </div>
   )
 }
@@ -204,6 +216,7 @@ function ToolsSection() {
       bodyTemplate: t.body_template || '',
       paramsSchema: t.params_schema ? JSON.stringify(t.params_schema, null, 2) : '',
       timeout: t.timeout ?? 30,
+      isPublic: !!t.is_public,
     })
     setFormMsg('')
     setShowForm(true)
@@ -230,6 +243,7 @@ function ToolsSection() {
       body_template: form.bodyTemplate,
       params_schema: paramsSchema,
       timeout: Number(form.timeout) || 30,
+      is_public: form.isPublic,
     }
   }
 
@@ -336,6 +350,7 @@ function ToolsSection() {
                 <p className="text-xs t-text-2 truncate flex-1" title={t.description}>
                   <span className="text-[9px] px-1 py-0.5 rounded t-badge-accent mr-1.5 font-mono">{(t.method || 'GET').toUpperCase()}</span>
                   <span className="truncate">{t.name}</span>
+                  {t.is_public && <span className="text-[9px] px-1 py-0.5 rounded t-badge-neutral mr-1.5">公共</span>}
                   {!t.enabled && <span className="text-[9px] t-text-faint ml-1">（已禁用）</span>}
                 </p>
                 <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-all">
@@ -392,6 +407,15 @@ function ToolsSection() {
               <span className="text-[11px] t-text-muted shrink-0">超时（秒）</span>
               <input type="number" min="1" max="300" className="w-24 px-2 py-1.5 t-bg-input border t-border-strong rounded-lg text-xs t-text t-focus" value={form.timeout} onChange={(e) => setForm({ ...form, timeout: e.target.value })} />
             </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.isPublic}
+                onChange={(e) => setForm({ ...form, isPublic: e.target.checked })}
+                className="w-3.5 h-3.5 accent-current t-text-accent"
+              />
+              <span className="text-[11px] t-text-muted">设为公共（所有用户可通过 MCP 服务端调用此工具）</span>
+            </label>
             {formMsg && <p className="text-xs t-text-warn break-all">{formMsg}</p>}
             <div className="flex items-center gap-2 pt-1">
               <button onClick={handleSave} disabled={saving} className="px-3 py-1.5 text-xs rounded-lg t-bg-accent text-white t-hover-accent disabled:opacity-50">
