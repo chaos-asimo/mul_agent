@@ -2224,6 +2224,50 @@ def execute_tools_in_response(content: str) -> str:
     
     return content
 
+
+# Python 代码的启发式特征：出现这些 token 更可能是代码而非自然语言
+_PY_CODE_TOKENS = (
+    'import ', 'from ', 'def ', 'class ', 'print(', 'return ', 'if ', 'for ',
+    'while ', 'try:', 'except', 'with ', 'lambda ', 'yield', 'raise ', 'assert ',
+    'pass', 'break', 'continue', 'global ', 'nonlocal ',
+)
+
+
+def _looks_like_python_code(text: str) -> bool:
+    """判断文本是否像可执行的 Python 代码（而非自然语言任务描述）。"""
+    if not text or not text.strip():
+        return False
+    stripped = text.strip()
+    # 单行且无任何代码特征 → 自然语言
+    if '\n' not in stripped:
+        if any(tok in stripped for tok in _PY_CODE_TOKENS):
+            return True
+        # 含赋值或函数调用
+        if '=' in stripped or '(' in stripped:
+            # 但排除纯中文句子
+            if re.search(r'[，。！？；：]', stripped) and not re.search(r'[a-zA-Z_]\w*', stripped):
+                return False
+            return True
+        return False
+    # 多行：检查是否含有代码特征行
+    code_lines = 0
+    for line in stripped.split('\n'):
+        s = line.strip()
+        if not s:
+            continue
+        if any(s.startswith(tok) for tok in _PY_CODE_TOKENS):
+            code_lines += 1
+        elif s.startswith(('#', '"""', "'''", '@')):
+            code_lines += 1
+        elif any(ch in s for ch in ('=', '(', ')', '[', ']', '{', '}', ':', '+', '-', '*', '/')):
+            # 排除纯中文行
+            if not (re.search(r'[，。！？；：]', s) and not re.search(r'[a-zA-Z_]\w*', s)):
+                code_lines += 1
+    # 至少 1 行代码特征，且代码行占比 ≥ 30%
+    total_lines = len([l for l in stripped.split('\n') if l.strip()])
+    return code_lines > 0 and (code_lines / max(total_lines, 1)) >= 0.3
+
+
 def detect_tool_intent(message: str) -> dict:
     """检测用户消息中的工具调用意图，返回工具调用信息"""
     msg_lower = message.lower()
@@ -2281,9 +2325,14 @@ def detect_tool_intent(message: str) -> dict:
                 return {"tool": "script_execute", "script_id": int(m.group(1))}
             else:
                 code = message.replace("执行脚本", "").replace("运行脚本", "").replace("执行", "").replace("运行", "").strip()
-                if code.startswith("python"):
+                if code.lower().startswith("python"):
                     code = code[6:].strip()
-                return {"tool": "script_execute", "code": code}
+                # 判断提取出的内容是否为实际 Python 代码；
+                # 若是任务描述（自然语言），应走 script_create 自动生成代码，
+                # 而不是直接把自然语言当代码执行
+                if _looks_like_python_code(code):
+                    return {"tool": "script_execute", "code": code}
+                return {"tool": "script_create", "code": message}
     
     for pattern in exec_patterns:
         m = re.search(pattern, msg_lower)
@@ -2337,7 +2386,11 @@ def detect_tool_intent(message: str) -> dict:
                 elif tool == "script_list":
                     return {"tool": "script_list"}
                 elif tool == "script_execute":
-                    return {"tool": "script_execute", "code": message}
+                    # 关键词匹配到"运行脚本/执行脚本"时，判断消息是否含实际代码；
+                    # 若是任务描述则走 script_create 自动生成代码
+                    if _looks_like_python_code(message):
+                        return {"tool": "script_execute", "code": message}
+                    return {"tool": "script_create", "code": message}
     
     return None
 

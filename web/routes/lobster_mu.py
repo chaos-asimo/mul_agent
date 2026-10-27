@@ -1098,6 +1098,38 @@ async def mu_chat_stream(body: ChatStreamRequest, request: Request, user: dict =
     return chat_service.chat_stream_response(user["id"], body, ctx=ctx)
 
 
+@router.post("/chat/confirm")
+async def mu_chat_confirm(body: dict, request: Request, user: dict = Depends(get_mu_user)):
+    """HITL：用户确认/拒绝中等及以上风险工具执行。"""
+    from lobster_mu.agent import confirm_manager
+    request_id = body.get("request_id")
+    approved = bool(body.get("approved", False))
+    if not request_id:
+        return {"success": False, "error": "缺少 request_id"}
+    ok = confirm_manager.resolve(request_id, approved)
+    return {"success": ok, "resolved": ok}
+
+
+@router.post("/chat/cancel-sub-agent")
+async def mu_chat_cancel_sub_agent(body: dict, user: dict = Depends(get_mu_user)):
+    """取消正在执行的子 Agent（返回部分结果）。"""
+    from lobster_mu.agent import cancel_sub_agent
+    token = body.get("cancel_token")
+    if not token:
+        return {"success": False, "error": "缺少 cancel_token"}
+    ok = cancel_sub_agent(token)
+    return {"success": ok, "cancelled": ok}
+
+
+@router.get("/admin/agent-traces")
+async def mu_admin_agent_traces(session_id: str = "", limit: int = 100,
+                                admin: dict = Depends(require_admin)):
+    """管理员查看 Agent 执行轨迹。"""
+    from lobster_mu.agent import list_traces
+    traces = list_traces(session_id=session_id or None, limit=limit)
+    return {"success": True, "traces": traces}
+
+
 @router.get("/chat/sessions")
 async def mu_chat_sessions(user: dict = Depends(get_mu_user)):
     return {"success": True, "sessions": session_store.list_sessions(user["id"])}
@@ -2419,6 +2451,67 @@ async def admin_knowledge_set_public(doc_id: str, body: dict, admin: dict = Depe
     return {"success": True, "doc": result}
 
 
+# ---- 健康检查（no-auth，供心跳探针/外部监控用）----
+import time as _health_t
+
+@router.get("/health")
+async def health_check():
+    """零开销健康检查，供后端心跳探针和外部监控使用。
+    返回 {"ok": true, "ts": <unix秒>}，不访问 DB、不做任何 I/O。"""
+    return {"ok": True, "ts": int(_health_t.time())}
+
+
+# ---- 系统配置管理（管理员）----
+@router.get("/admin/config")
+async def admin_list_config(admin: dict = Depends(require_admin)):
+    """列出所有系统配置项"""
+    ensure_db()
+    import json as _json
+    conn = db.get_conn()
+    try:
+        rows = conn.execute("SELECT key, value FROM mu_config ORDER BY key").fetchall()
+        result = {r["key"]: r["value"] for r in rows}
+        # 返回时对常用字段做类型推断
+        parsed = {}
+        for k, v in result.items():
+            try:
+                parsed[k] = _json.loads(v)
+            except Exception:
+                parsed[k] = v
+        return parsed
+    finally:
+        conn.close()
+
+
+@router.put("/admin/config/{key}")
+async def admin_set_config(key: str, body: dict, admin: dict = Depends(require_admin)):
+    """写入一个系统配置项（upsert），body={value: <any>}"""
+    ensure_db()
+    import json as _json
+    value = body.get("value")
+    if value is None:
+        raise HTTPException(status_code=400, detail="body.value 不能为空")
+    # 序列化：字符串直接存，其他类型 JSON 序列化
+    if isinstance(value, str):
+        db.set_config(key, value)
+    else:
+        db.set_config(key, _json.dumps(value, ensure_ascii=False))
+    return {"success": True, "key": key, "value": value}
+
+
+@router.delete("/admin/config/{key}")
+async def admin_delete_config(key: str, admin: dict = Depends(require_admin)):
+    """删除一个系统配置项"""
+    ensure_db()
+    conn = db.get_conn()
+    try:
+        conn.execute("DELETE FROM mu_config WHERE key = ?", (key,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"success": True, "key": key}
+
+
 @router.get("/admin/knowledge/index-status")
 async def admin_knowledge_index_status(admin: dict = Depends(require_admin)):
     """Chroma HNSW 向量索引状态：是否可用 + 索引条目数 + 理论应有条目数"""
@@ -2843,6 +2936,47 @@ async def mu_mcpsrv_test_tool(tool_id: int, body: Dict[str, Any] = Body(default=
     args = body.get("arguments") if isinstance(body, dict) else None
     result = await mcp_tool_executor.execute_api_tool(user["id"], tool, args or {})
     return {"success": True, "result": result}
+
+
+# ---- 原生函数工具（方式 C：进程内 service 函数直调，不走 HTTP 回环）----
+@router.get("/mcp-server/native-tools")
+async def mu_mcpsrv_list_native_tools(user: dict = Depends(require_admin)):
+    from lobster_mu import mcp_server
+    if not mcp_server.MCP_SERVER_AVAILABLE:
+        return {"success": False, "error": "MCP 服务端依赖不可用"}
+    out = []
+    for name, tdef in mcp_server.NATIVE_TOOLS.items():
+        out.append({
+            "name": name,
+            "description": tdef.get("description") or "",
+            "schema": tdef.get("schema") or {"type": "object", "properties": {}},
+        })
+    return {"success": True, "tools": out}
+
+
+@router.post("/mcp-server/native-tools/{tool_name}/test")
+async def mu_mcpsrv_test_native_tool(tool_name: str, body: Dict[str, Any] = Body(default={}),
+                                     user: dict = Depends(require_admin)):
+    import asyncio
+    from lobster_mu import mcp_server, tools as mu_tools
+    if not mcp_server.MCP_SERVER_AVAILABLE:
+        raise HTTPException(status_code=503, detail="MCP 服务端依赖不可用")
+    entry = mcp_server.NATIVE_TOOLS.get(tool_name)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"原生工具不存在: {tool_name}")
+    args = body.get("arguments") if isinstance(body, dict) else {}
+    if not isinstance(args, dict):
+        args = {}
+    try:
+        res = await asyncio.to_thread(entry["fn"], user["id"], args)
+    except Exception as e:
+        mu_tools.log_operation(user["id"], "mcp_native_tool_test",
+                               f"{tool_name} 测试失败: {str(e)[:80]}", success=False, ip="")
+        return {"success": False, "error": f"执行失败: {str(e)[:200]}"}
+    text = mcp_server._to_text(res)
+    mu_tools.log_operation(user["id"], "mcp_native_tool_test",
+                           f"{tool_name} -> {text[:80]}", success=True, ip="")
+    return {"success": True, "result": text}
 
 
 class McpTokenCreateRequest(BaseModel):

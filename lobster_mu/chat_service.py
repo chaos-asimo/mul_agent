@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """多用户龙虾Claw子项目 - 流式聊天核心（复制改造自 lobster_claw.chat_stream，会话/记忆/工具/脚本均按 user_id 隔离）"""
 import json
+import os
+import queue
 import re
 import threading
 from collections import defaultdict
@@ -12,7 +14,7 @@ from pydantic import BaseModel
 
 from lobster_mu import session_store, memory_store, tools, script_service
 from lobster_mu.security import PBKDF2_ITERATIONS  # noqa: F401 (保持包依赖清晰)
-from lobster_mu.db import get_conn
+from lobster_mu.db import get_conn, get_config as db_get_config
 
 # 复用原版纯函数（无用户态，只读）
 from web.routes.lobster_claw import (
@@ -105,6 +107,16 @@ def _clean_md_link_urls(text: str) -> str:
             return f"](<{inner}>)"
         return f"]({_TRAIL_PUNCT_RE.sub('', url)})"
     return _MD_LINK_URL_RE.sub(_sub, text or "")
+
+
+def _trace_marker(user_id, session_id, tool_name, detail=""):
+    """旧标记链路也写入执行轨迹，保证管理后台能看到完整的执行过程。"""
+    try:
+        from lobster_mu.agent.trace_store import log_trace
+        log_trace(user_id, session_id, 1, "tool", tool_name, "",
+                  detail or f"标记执行：{tool_name}", "ok")
+    except Exception:
+        pass
 
 
 class _MarkerFilter:
@@ -503,13 +515,9 @@ def _strip_all_marks(text: str) -> str:
     return text.strip()
 
 
-def _execute_sub_agent(user_id: int, agent: Dict[str, Any], task: str) -> Dict[str, Any]:
-    """执行子Agent：以其人设作系统提示、绑定模型（未绑定则用默认模型）、
-    注入该 Agent 的相关记忆与活跃长期计划，独立完成 LLM 调用并返回结果文本。
-
-    批次3：具备能力（capabilities: web_search / mcp）的子Agent可在最多
-    MAX_SUB_AGENT_TOOL_ROUNDS 轮内调用工具，工具结果回注后继续生成；
-    执行过程通过 events 返回进度；结束后自动处理 [AGENT_MEM]/[PLAN_UPDATE]。"""
+def _execute_sub_agent(user_id: int, agent: Dict[str, Any], task: str,
+                       cancel_event=None) -> Dict[str, Any]:
+    """执行子Agent（支持取消：cancel_event 为 threading.Event，置位则返回部分结果）。"""
     from lobster_mu import agent_store, plan_store
 
     adapter = None
@@ -598,6 +606,12 @@ def _execute_sub_agent(user_id: int, agent: Dict[str, Any], task: str) -> Dict[s
         used_tools = False
 
         for round_i in range(MAX_SUB_AGENT_TOOL_ROUNDS):
+            if cancel_event is not None and cancel_event.is_set():
+                events.append("⏹️ 用户已取消子Agent执行，返回部分结果")
+                final_content = "\n".join(rounds_content)
+                return {"success": True, "result": _strip_all_marks(final_content),
+                        "mems_saved": 0, "plan_updated": "",
+                        "events": events, "used_tools": used_tools, "cancelled": True}
             resp = adapter.chat(messages)
             content = resp.get("content", "") if isinstance(resp, dict) else (getattr(resp, "content", "") or str(resp))
             rounds_content.append(content)
@@ -674,7 +688,7 @@ def _execute_sub_agent(user_id: int, agent: Dict[str, Any], task: str) -> Dict[s
 
         return {"success": True, "result": _strip_all_marks(final_content),
                 "mems_saved": mems_saved, "plan_updated": plan_updated,
-                "events": events, "used_tools": used_tools}
+                "events": events, "used_tools": used_tools, "cancelled": False}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -702,6 +716,43 @@ def _sem(user_id: int) -> threading.BoundedSemaphore:
         if user_id not in _sse_semaphores:
             _sse_semaphores[user_id] = threading.BoundedSemaphore(2)
         return _sse_semaphores[user_id]
+
+
+# ============ 三层配额：全局闸 / 每用户闸 / 会话锁 ============
+# 全局聊天并发上限：单进程内所有用户共享，防止长任务打满线程池
+_GLOBAL_CHAT_MAX = max(1, int(os.environ.get("MU_GLOBAL_CHAT_MAX", "8")))
+_global_sem = threading.BoundedSemaphore(_GLOBAL_CHAT_MAX)
+# 全局闸等待上限（秒）：取不到立即拒绝，不长时间排队
+_GLOBAL_ACQUIRE_TIMEOUT = float(os.environ.get("MU_GLOBAL_ACQUIRE_TIMEOUT", "8"))
+# 会话锁等待上限（秒）
+_SESSION_ACQUIRE_TIMEOUT = float(os.environ.get("MU_SESSION_ACQUIRE_TIMEOUT", "120"))
+
+# 会话级串行锁：同一会话同一时刻仅允许一个生成器写入历史
+_session_locks: Dict[str, threading.Lock] = {}
+_session_locks_guard = threading.Lock()
+_SESSION_LOCK_MAX = 512
+
+
+def _session_lock(user_id: int, session_id: str) -> threading.Lock:
+    """取指定会话的串行锁（按需创建；字典超限时清理未持有的锁）"""
+    key = f"{user_id}:{session_id}"
+    with _session_locks_guard:
+        lock = _session_locks.get(key)
+        if lock is None:
+            if len(_session_locks) >= _SESSION_LOCK_MAX:
+                for stale in [k for k, v in _session_locks.items() if not v.locked()]:
+                    _session_locks.pop(stale, None)
+            lock = threading.Lock()
+            _session_locks[key] = lock
+        return lock
+
+
+def _busy_event(message: str, session_id: str) -> str:
+    """配额拒绝时的 SSE 事件（前端已有 success=false 分支，可直接展示）"""
+    return "data: " + json.dumps(
+        {'success': False, 'error': message, 'session_id': session_id, 'type': 'busy'},
+        ensure_ascii=False,
+    ) + "\n\n"
 
 
 def get_default_llm_adapter(model_name: Optional[str] = None):
@@ -1052,11 +1103,70 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
     tool_call = None if (request.files or has_images) else detect_tool_intent(request.message)
 
     def sync_stream_generator():
+        """包装内核生成器：统一收集本轮后台生成的产物文件。
+
+        通过在流开始/结束对比用户产物目录的文件名，识别出"本轮新增"的文件，
+        随 done 事件下发给前端（对话里可直接点击下载），并挂到本轮助手消息上
+        （重开历史会话仍可见）。该方式覆盖脚本/技能/PPT 等所有产出路径。"""
+        files_before = script_service.snapshot_generated_names(user_id)
+        _files = []
+        _attached = False
+
+        def _collect_new_files():
+            new_names = script_service.snapshot_generated_names(user_id) - files_before
+            return script_service.build_file_entries(user_id, new_names) if new_names else []
+
+        try:
+            for chunk in _sync_stream_generator_core():
+                if chunk.startswith("data: "):
+                    try:
+                        payload = json.loads(chunk[6:].strip())
+                    except Exception:
+                        payload = None
+                    if isinstance(payload, dict) and payload.get("done"):
+                        _files = _collect_new_files()
+                        if _files:
+                            session_store.attach_files_to_last_message(user_id, session_id, _files)
+                            _attached = True
+                            payload['files'] = _files
+                            chunk = "data: " + json.dumps(payload) + "\n\n"
+                yield chunk
+        finally:
+            # 客户端中断（GeneratorExit）或未走到 done 的错误路径：
+            # 仍把已产出的文件挂到本轮消息，避免"生成了却查不到"
+            if not _attached:
+                try:
+                    _files = _files or _collect_new_files()
+                    if _files:
+                        session_store.attach_files_to_last_message(user_id, session_id, _files)
+                except Exception:
+                    pass
+
+    def _sync_stream_generator_core():
         full_response = ""
         tool_result = ""
         token_stats = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        # ===== 三层配额：获取顺序 全局 → 用户 → 会话（失败即拒绝，禁止绕过配额）=====
+        if not _global_sem.acquire(timeout=_GLOBAL_ACQUIRE_TIMEOUT):
+            yield _busy_event("服务繁忙，请稍后重试", session_id)
+            return
         sem = _sem(user_id)
-        acquired = sem.acquire(timeout=30)
+        if not sem.acquire(timeout=30):
+            try:
+                _global_sem.release()
+            except Exception:
+                pass
+            yield _busy_event("您有过多任务正在处理中，请等待当前任务完成后再试", session_id)
+            return
+        session_lock = _session_lock(user_id, session_id)
+        if not session_lock.acquire(timeout=_SESSION_ACQUIRE_TIMEOUT):
+            for _rel in (sem.release, _global_sem.release):
+                try:
+                    _rel()
+                except Exception:
+                    pass
+            yield _busy_event("该会话已有任务正在处理中，请等待其完成后再发送", session_id)
+            return
         # MCP 工具清单 + Agent 编排清单（仅纯文本对话注入；发现失败静默降级）
         mcp_block = ""
         agent_block = ""
@@ -1106,7 +1216,32 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
                              "generate_pdf": "生成PDF"}.get(tool_name, tool_name)
                 tool_header = "\n🔧 正在执行工具: " + tool_desc + "...\n\n"
                 yield f"data: {json.dumps({'success': True, 'content': tool_header, 'session_id': session_id})}\n\n"
-                tool_result = tools.execute_tool_call(tool_call, user_id)
+                yield f"data: {json.dumps({'success': True, 'session_id': session_id, 'type': 'status', 'text': '🔧 正在执行工具 ' + tool_desc + '...'})}\n\n"
+                # 后台线程执行工具 + 队列轮询：脚本生成/执行/装依赖的实时状态推给前端
+                _tool_q = queue.Queue()
+                _tool_holder = {}
+
+                def _tool_status_cb(text):
+                    _tool_q.put(text)
+
+                def _tool_run():
+                    try:
+                        _tool_holder['r'] = tools.execute_tool_call(tool_call, user_id, status_cb=_tool_status_cb)
+                    except Exception as _te:
+                        _tool_holder['r'] = f"❌ 工具执行异常: {_te}"
+
+                _tool_thread = threading.Thread(target=_tool_run, daemon=True)
+                _tool_thread.start()
+                while _tool_thread.is_alive():
+                    try:
+                        st = _tool_q.get(timeout=0.5)
+                        yield f"data: {json.dumps({'success': True, 'session_id': session_id, 'type': 'status', 'text': st})}\n\n"
+                    except queue.Empty:
+                        pass
+                while not _tool_q.empty():
+                    st = _tool_q.get_nowait()
+                    yield f"data: {json.dumps({'success': True, 'session_id': session_id, 'type': 'status', 'text': st})}\n\n"
+                tool_result = _tool_holder.get('r', '')
                 if tool_result:
                     result_header = "📋 工具执行结果:\n" + tool_result + "\n\n---\n\n"
                     yield f"data: {json.dumps({'success': True, 'content': result_header, 'session_id': session_id})}\n\n"
@@ -1134,16 +1269,27 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
                         weight_info = f" (权重: {memory.get('weight', 1.0):.1f})" if memory.get('weight') else ""
                         memory_context += f"{i}. [{mem_type}{weight_info}] {memory['content']}\n"
 
-            # 知识库：有文档的用户首次聊天同步预热 embedding 模型（首次数十秒，之后秒级），
-            # 保证本轮即可注入知识库上下文与参考来源
+            # 知识库：embedding 模型未就绪时异步触发后台加载，不阻塞当前请求
+            # （注：经排查「空闲后首请求卡 30 秒」根因在反代网络层，此处仅消除潜在同步阻塞路径）
             knowledge_sources = []
+            _kb_model_ready = True
             try:
+                import threading as _kb_th
                 from lobster_mu import knowledge_store as _ks
                 if _ks.user_has_docs(user_id) and not _ks.is_model_ready():
-                    _ks.warmup_sync()
+                    _kb_model_ready = False
+                    # 后台线程触发 warmup（daemon=True，不阻塞进程退出）
+                    def _async_warmup():
+                        try:
+                            _ks.warmup()
+                        except Exception:
+                            pass
+                    _kb_th.Thread(target=_async_warmup, daemon=True).start()
             except Exception:
                 pass
-            knowledge_context, knowledge_sources = _knowledge_context(user_id, request.message)
+            knowledge_context, knowledge_sources = (
+                _knowledge_context(user_id, request.message) if _kb_model_ready else ("", [])
+            )
 
             if tool_result:
                 user_content = f"""用户问题: {request.message}
@@ -1203,6 +1349,136 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
             except Exception:
                 pass
 
+            # ============ 双轨路由：ReAct（function calling）优先，失败/未启用回退标记路径 ============
+            react_enabled = str(db_get_config("agent_react_enabled", "false")).lower() in ("1", "true", "yes")
+            dual_track = str(db_get_config("agent_dual_track", "true")).lower() in ("1", "true", "yes")
+            _use_react = (
+                not request.files and not has_images and react_enabled and dual_track
+                and getattr(adapter, "supports_tools", lambda: False)()
+            )
+            # 模型若仍输出旧方括号标记，则丢弃本次 ReAct 流式内容，改走下文的标记执行分支
+            _react_marker_fallback = False
+            if _use_react:
+                try:
+                    from lobster_mu.agent import TOOL_REGISTRY, ReActLoop, get_tool_schema_list
+
+                    max_steps = int(db_get_config("agent_max_steps", "3") or "3")
+                    # 注意：不可命名为 tools，会遮蔽模块级 tools 导入
+                    tool_schemas = get_tool_schema_list()
+                    ctx_local = {"user_id": user_id, "session_id": session_id}
+                    loop = ReActLoop(adapter, tool_schemas, TOOL_REGISTRY, user_id, ctx_local, max_steps=max_steps)
+
+                    # 标记模式的说明仍留在 system prompt 中，这里追加最高优先级指令消解冲突
+                    _react_directive = (
+                        "\n\n【工具调用模式 - 最高优先级，覆盖上文所有关于标记的说明】"
+                        "本次已为你启用原生工具调用（function calling）。"
+                        "需要计算、搜索、调用技能/MCP/子Agent、生成PPT时，必须直接调用提供的工具函数，"
+                        "不要用文字描述打算做什么。"
+                        "严禁在回复中输出 [NEED_SCRIPT]、[SKILL_CALL]、[AGENT_CALL]、[MCP_CALL]、"
+                        "[PPT_GEN]、[WEB_SEARCH] 等方括号标记文本。"
+                    )
+                    if messages and messages[0].get("role") == "system":
+                        messages[0]["content"] = str(messages[0].get("content", "")) + _react_directive
+
+                    # ReAct 流的正文同样要过标记过滤器，避免标记文本直接暴露给用户
+                    _rf_ppt = _MarkerFilter("[PPT_GEN]", "[/PPT_GEN]")
+                    _rf_skill = _MarkerFilter("[SKILL_CALL]", "[/SKILL_CALL]")
+                    _rf_mcp = _McpMarkerFilter()
+                    _rf_agent = _AgentMarkerFilter()
+                    _rf_ws = _WebSearchMarkerFilter()
+
+                    def _rf_feed(chunk: str) -> str:
+                        return _rf_ws.feed(_rf_agent.feed(_rf_mcp.feed(_rf_skill.feed(_rf_ppt.feed(chunk)))))
+
+                    def _rf_flush() -> str:
+                        return _rf_ws.feed(
+                            _rf_agent.feed(_rf_mcp.feed(_rf_skill.feed(_rf_ppt.flush())))
+                        ) + _rf_ws.flush()
+
+                    _legacy_markers = ("[NEED_SCRIPT]", "[SKILL_CALL]", "[AGENT_CALL]",
+                                       "[MCP_CALL]", "[PPT_GEN]", "[WEB_SEARCH]")
+
+                    react_result = None
+                    for evt in loop.run(messages):
+                        etype = evt.get("type")
+                        if etype == "content":
+                            c = evt.get("content", "")
+                            if c:
+                                full_response += c
+                                safe_react = _rf_feed(c)
+                                if safe_react:
+                                    yield "data: " + json.dumps({'success': True, 'content': safe_react, 'session_id': session_id}) + "\n\n"
+                        elif etype == "thinking":
+                            # 中间步骤的思考过程，推送给前端折叠展示
+                            yield "data: " + json.dumps({
+                                'success': True,
+                                'session_id': session_id,
+                                'type': 'thinking',
+                                'content': evt.get("content", ""),
+                            }) + "\n\n"
+                        elif etype == "status":
+                            # 思考/工具执行状态文本，推送给前端展示"后台正在运行"的反馈
+                            yield "data: " + json.dumps({
+                                'success': True,
+                                'session_id': session_id,
+                                'type': 'status',
+                                'text': evt.get("text", ""),
+                            }) + "\n\n"
+                        elif etype == "confirm":
+                            yield "data: " + json.dumps({
+                                'success': True,
+                                'session_id': session_id,
+                                'type': 'confirm',
+                                'request_id': evt.get("request_id"),
+                                'summary': evt.get("summary"),
+                                'meta': evt.get("meta"),
+                            }) + "\n\n"
+                        elif etype == "plan":
+                            yield "data: " + json.dumps({
+                                'success': True,
+                                'session_id': session_id,
+                                'type': 'plan',
+                                'title': evt.get("title"),
+                                'steps': evt.get("steps"),
+                            }) + "\n\n"
+                        elif etype == "reclassify":
+                            # 中间步骤：把已发的 content 修正为 thinking（前端折叠展示）
+                            yield "data: " + json.dumps({
+                                'success': True,
+                                'session_id': session_id,
+                                'type': 'reclassify',
+                                'from': evt.get("from", "content"),
+                                'to': evt.get("to", "thinking"),
+                            }) + "\n\n"
+                        elif etype == "done":
+                            react_result = evt.get("result")
+                            break
+
+                    _react_tail = _rf_flush()
+                    if _react_tail:
+                        yield "data: " + json.dumps({'success': True, 'content': _react_tail, 'session_id': session_id}) + "\n\n"
+
+                    if any(tok in full_response for tok in _legacy_markers):
+                        # 模型没有走 function calling，而是输出了旧标记：
+                        # 丢弃本次输出，交给下方原有的标记执行分支真正执行
+                        _react_marker_fallback = True
+                        print("[ReAct] 检测到旧标记输出，回退到标记执行路径")
+
+                    if not _react_marker_fallback:
+                        if react_result is not None:
+                            token_stats = react_result.token_stats or token_stats
+                        # 保存 AI 回复到数据库（ReAct 路径直接 return，不会走到下方常规保存逻辑）
+                        session_store.append_message(user_id, session_id, "assistant", full_response,
+                                                     model_name=getattr(adapter, "model_name", None),
+                                                     token_stats=token_stats)
+                        done_event = {'success': True, 'content': '', 'session_id': session_id, 'done': True,
+                                      'model_name': adapter.model_name, 'token_stats': token_stats}
+                        yield "data: " + json.dumps(done_event) + "\n\n"
+                        return  # finally 会释放三层配额
+                except Exception as e:
+                    yield "data: " + json.dumps({'success': True, 'content': f"⚠️ ReAct 路径异常，回退常规模式：{str(e)[:120]}\n\n", 'session_id': session_id}) + "\n\n"
+                    _use_react = False
+
             mcp_filter = _McpMarkerFilter()
             agent_filter = _AgentMarkerFilter()
             ws_filter = _WebSearchMarkerFilter()
@@ -1212,7 +1488,9 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
                 yield "data: " + json.dumps({'success': True, 'content': "📊 正在处理您的 PPT 请求...\n\n", 'session_id': session_id}) + "\n\n"
             # PPT 大纲 JSON 较长，提高输出上限避免截断（openai 适配器不限制，claude/deepseek 默认2000）
             stream_kwargs = {"max_tokens": 8000} if ppt_intent else {}
-            for chunk in adapter.chat_stream(messages, **stream_kwargs):
+            # ReAct 已产出旧标记时不再重复调用模型，直接用其输出做标记执行
+            _stream_iter = iter(()) if _react_marker_fallback else adapter.chat_stream(messages, **stream_kwargs)
+            for chunk in _stream_iter:
                 if isinstance(chunk, dict):
                     content = chunk.get("content", "")
                     if chunk.get("usage"):
@@ -1263,12 +1541,15 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
 
             # 检测是否需要创建脚本（有文件或图片上传时不生成脚本；PPT 意图走 [PPT_GEN] 分支不生成脚本）
             if not request.files and not has_images and "[NEED_SCRIPT]" in full_response and "[PPT_GEN]" not in full_response:
+                _trace_marker(user_id, session_id, "run_python_script", "[NEED_SCRIPT] 标记触发脚本生成")
                 full_response = full_response.replace("[NEED_SCRIPT]", "").strip()
                 script_task = request.message
                 yield "data: " + json.dumps({'success': True, 'content': '\n\n🔧 检测到需要编写脚本完成任务，正在生成...\n', 'session_id': session_id}) + "\n\n"
+                yield "data: " + json.dumps({'success': True, 'session_id': session_id, 'type': 'status', 'text': '📝 正在生成脚本代码...'}) + "\n\n"
 
                 script_code, script_name, script_desc = script_service.generate_script_code(script_task)
                 if script_code:
+                    yield "data: " + json.dumps({'success': True, 'session_id': session_id, 'type': 'status', 'text': '✅ 脚本生成完成，正在检查语法...'}) + "\n\n"
                     syntax_result = script_service.check_script_syntax(script_code)
                     if syntax_result["success"]:
                         script_service.save_script_to_file(user_id, script_name, script_code)
@@ -1276,7 +1557,33 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
                         script_info = '✅ 脚本已生成并保存到脚本库\n📝 脚本: ' + script_name + '（' + script_desc + '）\n\n正在执行...\n'
                         yield "data: " + json.dumps({'success': True, 'content': script_info, 'session_id': session_id}) + "\n\n"
 
-                        exec_result = script_service.execute_python_script(user_id, script_code)
+                        # 后台线程执行脚本，队列轮询转发实时状态（依赖安装等长操作不静默）
+                        _status_q = queue.Queue()
+                        _exec_holder = {}
+
+                        def _exec_status_cb(text):
+                            _status_q.put(text)
+
+                        def _exec_run():
+                            try:
+                                _exec_holder['r'] = script_service.execute_python_script(
+                                    user_id, script_code, status_cb=_exec_status_cb
+                                )
+                            except Exception as _ee:
+                                _exec_holder['r'] = {"success": False, "result": f"❌ 执行错误: {_ee}", "generated_files": []}
+
+                        _exec_thread = threading.Thread(target=_exec_run, daemon=True)
+                        _exec_thread.start()
+                        while _exec_thread.is_alive():
+                            try:
+                                st = _status_q.get(timeout=0.5)
+                                yield "data: " + json.dumps({'success': True, 'session_id': session_id, 'type': 'status', 'text': st}) + "\n\n"
+                            except queue.Empty:
+                                pass
+                        while not _status_q.empty():
+                            st = _status_q.get_nowait()
+                            yield "data: " + json.dumps({'success': True, 'session_id': session_id, 'type': 'status', 'text': st}) + "\n\n"
+                        exec_result = _exec_holder.get('r') or {"success": False, "result": "❌ 脚本执行异常中断", "generated_files": []}
                         exec_result_str = exec_result.get("result", "") if isinstance(exec_result, dict) else str(exec_result)
 
                         yield "data: " + json.dumps({'success': True, 'content': '📋 执行结果:\n\n', 'session_id': session_id}) + "\n\n"
@@ -1301,6 +1608,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
 
             # ============ 多Agent编排分支 ============
             if not request.files and not has_images and "[AGENT_CALL]" in full_response:
+                _trace_marker(user_id, session_id, "delegate_agent", "[AGENT_CALL] 标记触发子 Agent")
                 from lobster_mu import agent_store
                 agent_calls = _parse_agent_calls(full_response)
                 # 去除标记块（最终答复以二次生成为准）
@@ -1389,6 +1697,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
 
             # ============ PPT 生成分支（技能调用优先：含 [SKILL_CALL] 时不走内置渲染） ============
             if not request.files and not has_images and "[PPT_GEN]" in full_response and "[SKILL_CALL]" not in full_response:
+                _trace_marker(user_id, session_id, "generate_ppt", "[PPT_GEN] 标记触发 PPT 生成")
                 from lobster_mu import ppt_service
                 raw_payload = _parse_ppt_gen(full_response) or ""
                 full_response = PPT_GEN_PATTERN.sub("", full_response)
@@ -1400,6 +1709,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
                     full_response = (full_response + "\n\n" + degrade).strip()
                 else:
                     yield "data: " + json.dumps({'success': True, 'content': "⏳ 正在渲染幻灯片...\n", 'session_id': session_id}) + "\n\n"
+                    yield "data: " + json.dumps({'success': True, 'session_id': session_id, 'type': 'status', 'text': '📊 正在生成 PPT（渲染幻灯片，可能需要 1-2 分钟）...'}) + "\n\n"
                     result = ppt_service.generate_ppt(user_id, data)
                     if result.get("success"):
                         trunc_note = "（页数超出上限，已截断）" if result.get("truncated") else ""
@@ -1416,6 +1726,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
 
             # ============ 联网搜索分支 ============
             if not request.files and not has_images and "[WEB_SEARCH]" in full_response and web_search_enabled:
+                _trace_marker(user_id, session_id, "web_search", "[WEB_SEARCH] 标记触发联网搜索")
                 search_query = _parse_web_search(full_response)
                 if search_query:
                     yield "data: " + json.dumps({'success': True, 'content': f"\n🔍 正在搜索: {search_query}...\n", 'session_id': session_id}) + "\n\n"
@@ -1497,6 +1808,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
 
             # ============ MCP 外部工具调用分支 ============
             if not request.files and not has_images and "[MCP_CALL]" in full_response:
+                _trace_marker(user_id, session_id, "call_mcp_tool", "[MCP_CALL] 标记触发 MCP 工具")
                 from lobster_mu import mcp_client
                 mcp_calls = _parse_mcp_calls(full_response)
                 # 去除标记块（最终答复以二次生成为准）
@@ -1510,6 +1822,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
                         continue
                     label = f"{call['server']}/{call['tool']}"
                     yield "data: " + json.dumps({'success': True, 'content': f"\n🔧 正在调用 MCP 工具: {label}...\n", 'session_id': session_id}) + "\n\n"
+                    yield "data: " + json.dumps({'success': True, 'session_id': session_id, 'type': 'status', 'text': f'🔌 正在调用 MCP 工具 {label}...'}) + "\n\n"
                     call_args = _inject_ctx(call["arguments"] or {}, ctx)
                     mcp_res = mcp_client.call_tool(user_id, call["server"], call["tool"], call_args)
                     if mcp_res.get("success"):
@@ -1567,6 +1880,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
 
             # ============ 技能(Skill)调用分支（允许带附件：技能常需处理用户上传的文件） ============
             if "[SKILL_CALL]" in full_response:
+                _trace_marker(user_id, session_id, "run_skill", "[SKILL_CALL] 标记触发技能调用")
                 from lobster_mu import skill_store
                 skill_calls = _parse_skill_calls(full_response)
                 full_response = SKILL_CALL_PATTERN.sub("", full_response).strip()
@@ -1581,6 +1895,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
                     _skill_obj = skill_store.resolve(user_id, sid)
                     sname = (_skill_obj or {}).get("name") or sid
                     yield "data: " + json.dumps({'success': True, 'content': f"\n🔧 正在执行技能: {sname}（多步骤技能可能需要几分钟，下方为实时进度）\n", 'session_id': session_id}) + "\n\n"
+                    yield "data: " + json.dumps({'success': True, 'session_id': session_id, 'type': 'status', 'text': f'🧩 正在执行技能 {sname}...'}) + "\n\n"
                     # 注入原始请求与附件文本作为技能素材（模型 params 通常只给主题，缺实际内容）
                     call_params = dict(call.get("params") or {})
                     _material_parts = []
@@ -1707,9 +2022,10 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
         except Exception as e:
             yield f"data: {json.dumps({'success': False, 'error': str(e), 'session_id': session_id})}\n\n"
         finally:
-            if acquired:
+            # ===== 三层配额释放：顺序与会话/用户/全局相反（会话 → 用户 → 全局）=====
+            for _rel in (session_lock.release, sem.release, _global_sem.release):
                 try:
-                    sem.release()
+                    _rel()
                 except Exception:
                     pass
 

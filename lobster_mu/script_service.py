@@ -86,6 +86,65 @@ def _get_default_llm_adapter(model_name: Optional[str] = None):
         return None
 
 
+# Python 代码行的启发式特征：以这些前缀开头的行更可能是代码而非自然语言
+_PY_LINE_PREFIXES = (
+    'import ', 'from ', 'def ', 'class ', 'if ', 'elif ', 'else', 'for ', 'while ',
+    'try:', 'except', 'finally', 'with ', 'return ', 'print(', 'break', 'continue',
+    'pass', 'raise ', 'assert ', 'global ', 'nonlocal ', 'lambda ', 'yield',
+    '#', '"""', "'''", '@', 'async ', 'await ',
+)
+
+
+def _detect_missing_modules(stderr: str) -> list:
+    """从 stderr 中提取 ModuleNotFoundError 缺失的模块名。"""
+    if not stderr:
+        return []
+    modules = set()
+    # ModuleNotFoundError: No module named 'jieba' 或 No module named jieba
+    for m in re.finditer(r"No module named '?([a-zA-Z_][a-zA-Z0-9_.]*)'?", stderr):
+        mod = m.group(1).split('.')[0]
+        modules.add(mod)
+    return sorted(modules)
+
+
+def _looks_like_python_line(line: str) -> bool:
+    """判断一行是否像 Python 代码行（而非自然语言）。"""
+    s = line.strip()
+    if not s:
+        return True  # 空行保留
+    # 注释行
+    if s.startswith('#'):
+        return True
+    # 字符串行开头
+    if s.startswith(('"""', "'''", '"', "'")):
+        return True
+    # 以 Python 关键字/语句开头
+    if s.startswith(_PY_LINE_PREFIXES):
+        return True
+    # 包含赋值、函数调用、属性访问、比较等代码特征
+    if any(ch in s for ch in ('=', '(', ')', '[', ']', '{', '}', '.', ':', '+', '-', '*', '/', '%', '<', '>', '!', '&', '|', '^', '~', ',')):
+        # 但排除纯中文句子（含中文标点且无英文标识符）
+        if re.search(r'[，。！？；：""''（）【】]', s) and not re.search(r'[a-zA-Z_]\w*', s):
+            return False
+        return True
+    return False
+
+
+def _extract_python_from_text(content: str) -> Optional[str]:
+    """从混合文本中提取 Python 代码行；若提取结果无法通过语法检查则返回 None。"""
+    lines = content.split('\n')
+    code_lines = [ln for ln in lines if _looks_like_python_line(ln)]
+    candidate = '\n'.join(code_lines).strip()
+    if not candidate:
+        return None
+    # 用语法检查验证提取结果是否为有效 Python
+    try:
+        compile(candidate, '<string>', 'exec')
+        return candidate
+    except SyntaxError:
+        return None
+
+
 def generate_script_code(requirements: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """根据用户需求调用LLM生成Python脚本代码，返回(脚本代码, 英文名称, 中文描述)"""
     try:
@@ -169,8 +228,16 @@ print("PDF已生成: output.pdf")
             if code_match:
                 code = code_match.group(1).strip()
 
+        # 兜底：未闭合的 ```python 围栏，取到末尾
+        if not code:
+            code_match = re.search(r'```python\n(.*)', content, re.DOTALL)
+            if code_match:
+                code = code_match.group(1).strip()
+
         if not code and content.strip():
-            code = content.strip()
+            # 兜底：无代码围栏时，尝试从混合文本中提取 Python 代码行；
+            # 若整段是自然语言（无任何 Python 特征），则返回 None 而不是把自然语言当代码
+            code = _extract_python_from_text(content)
 
         if not code:
             return None, None, None
@@ -639,10 +706,21 @@ def _decode_subprocess_output(data: bytes) -> str:
         return data.decode('gbk', errors='replace')
 
 
-def execute_python_script(user_id: int, code: str, timeout: int = 60) -> Dict[str, Any]:
+def execute_python_script(user_id: int, code: str, timeout: int = 60, status_cb=None) -> Dict[str, Any]:
     """执行Python脚本（按 user_id 隔离，spec §2.3 T6）：
     脚本经沙箱执行器执行（user 角色走 Docker 沙箱，admin 直通），
-    新生成文件重命名后归档到该用户目录，归档后清理非白名单残留。"""
+    新生成文件重命名后归档到该用户目录，归档后清理非白名单残留。
+
+    status_cb: 可选回调 fn(text)，在关键里程碑（开始执行/安装依赖/重试）上报状态，
+    供 SSE 层把"后台正在运行"实时推给前端。"""
+    def _notify(text):
+        if status_cb:
+            try:
+                status_cb(text)
+            except Exception:
+                pass
+
+    _notify("⚙️ 正在执行脚本...")
     work_dir = files_dir(user_id)
     try:
         # 记录执行前目录中的文件
@@ -712,6 +790,61 @@ def execute_python_script(user_id: int, code: str, timeout: int = 60) -> Dict[st
         if sr.return_code != 0:
             result_str += f"\n(退出码: {sr.return_code})"
 
+        # 检测缺失的模块并自动安装后重试一次
+        missing = _detect_missing_modules(stderr_output)
+        if missing:
+            _notify(f"📦 检测到缺失依赖: {', '.join(missing)}，正在自动安装...")
+            install_notes = []
+            for pkg in missing:
+                _notify(f"📦 正在安装依赖 {pkg}（可能需要数十秒）...")
+                install_result = install_dependency_sync(user_id, pkg)
+                if install_result.get('success'):
+                    install_notes.append(f"✅ 已自动安装 {pkg}")
+                    _notify(f"✅ {pkg} 安装完成")
+                else:
+                    install_notes.append(f"❌ 安装 {pkg} 失败: {install_result.get('message', '未知错误')}")
+                    _notify(f"❌ {pkg} 安装失败")
+            # 如果至少一个安装成功，重试执行
+            if any('✅' in n for n in install_notes):
+                result_str += "\n\n📦 检测到缺失依赖，已自动安装：\n" + "\n".join(install_notes) + "\n\n🔄 重试执行脚本...\n"
+                _notify("🔄 依赖安装完成，重新执行脚本...")
+                # 重新执行
+                sr2 = sandbox.get_executor(user_id).exec_script(
+                    code, user_id=user_id, timeout=timeout, work_dir=work_dir
+                )
+                if sr2.success and sr2.return_code == 0:
+                    retry_str = sr2.stdout or ""
+                    if sr2.stderr:
+                        retry_str += sr2.stderr
+                    if not retry_str:
+                        retry_str = "脚本执行完成，无输出\n"
+                    result_str = retry_str
+                    # 重新检测生成文件
+                    for entry in os.listdir(work_dir):
+                        entry_path = os.path.join(work_dir, entry)
+                        if os.path.isfile(entry_path) and entry not in before_files:
+                            ext = os.path.splitext(entry)[1].lower()
+                            if ext in ALLOWED_FILE_EXTENSIONS:
+                                new_filename = gen_filename(entry)
+                                new_filepath = os.path.join(work_dir, new_filename)
+                                os.rename(entry_path, new_filepath)
+                                generated_files.append({
+                                    "name": new_filename,
+                                    "original_name": entry,
+                                    "size": os.path.getsize(new_filepath),
+                                    "summary": _file_summary(new_filepath, new_filename),
+                                    "download_url": f"/api/lobster-mu/script/files/download/{new_filename}"
+                                })
+                    return {
+                        "success": True,
+                        "result": result_str,
+                        "generated_files": generated_files
+                    }
+                else:
+                    result_str += f"\n❌ 重试仍失败:\n{sr2.stderr or sr2.stdout or '未知错误'}"
+            else:
+                result_str += "\n\n📦 检测到缺失依赖，但自动安装失败：\n" + "\n".join(install_notes)
+
         return {
             "success": sr.success,
             "result": result_str,
@@ -775,26 +908,58 @@ def _file_summary(filepath: str, filename: str) -> str:
     }.get(ext, "")
 
 
+def _file_entry(work_dir: str, filename: str) -> Optional[Dict[str, Any]]:
+    """构建单个产物文件条目；不符合白名单扩展名或不是文件时返回 None"""
+    filepath = os.path.join(work_dir, filename)
+    if not os.path.isfile(filepath):
+        return None
+    if os.path.splitext(filename)[1].lower() not in ALLOWED_FILE_EXTENSIONS:
+        return None
+    return {
+        "name": filename,
+        "size": os.path.getsize(filepath),
+        "created_at": datetime.fromtimestamp(os.path.getctime(filepath)).isoformat(),
+        "summary": _file_summary(filepath, filename),
+        "download_url": f"/api/lobster-mu/script/files/download/{filename}"
+    }
+
+
 def list_generated_files(user_id: int) -> List[Dict[str, Any]]:
     """列出该用户产物目录下的全部文件（白名单扩展名，按创建时间倒序）"""
     work_dir = files_dir(user_id)
     files = []
     if os.path.exists(work_dir):
         for filename in os.listdir(work_dir):
-            filepath = os.path.join(work_dir, filename)
-            if os.path.isfile(filepath):
-                ext = os.path.splitext(filename)[1].lower()
-                if ext in ALLOWED_FILE_EXTENSIONS:
-                    files.append({
-                        "name": filename,
-                        "size": os.path.getsize(filepath),
-                        "created_at": datetime.fromtimestamp(os.path.getctime(filepath)).isoformat(),
-                        "summary": _file_summary(filepath, filename),
-                        "download_url": f"/api/lobster-mu/script/files/download/{filename}"
-                    })
+            entry = _file_entry(work_dir, filename)
+            if entry:
+                files.append(entry)
 
     files.sort(key=lambda x: x["created_at"], reverse=True)
     return files
+
+
+def snapshot_generated_names(user_id: int) -> set:
+    """轻量快照：当前产物文件名集合（不读文件内容，用于对比"本轮新增了哪些文件"）"""
+    work_dir = files_dir(user_id)
+    if not os.path.exists(work_dir):
+        return set()
+    names = set()
+    for filename in os.listdir(work_dir):
+        if os.path.splitext(filename)[1].lower() in ALLOWED_FILE_EXTENSIONS:
+            if os.path.isfile(os.path.join(work_dir, filename)):
+                names.add(filename)
+    return names
+
+
+def build_file_entries(user_id: int, names) -> List[Dict[str, Any]]:
+    """按文件名构建产物条目（结构与 list_generated_files 一致，仅对指定文件读摘要）"""
+    work_dir = files_dir(user_id)
+    entries = []
+    for filename in names:
+        entry = _file_entry(work_dir, filename)
+        if entry:
+            entries.append(entry)
+    return entries
 
 
 def get_generated_file_path(user_id: int, file_name: str) -> str:

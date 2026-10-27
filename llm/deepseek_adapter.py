@@ -4,6 +4,9 @@ from openai import OpenAI
 from .adapter_base import LLMAdapter, LLMResponse
 
 
+from .openai_adapter import _ToolStreamIter
+
+
 class DeepSeekAdapter(LLMAdapter):
     """DeepSeek API adapter"""
 
@@ -105,6 +108,61 @@ class DeepSeekAdapter(LLMAdapter):
                 error=str(e)
             )
             yield f"Error: {str(e)}"
+
+    def supports_tools(self) -> bool:
+        return True
+
+    def chat_stream_with_tools(self, messages, tools, **kwargs):
+        """DeepSeek 兼容 OpenAI tools 协议，复用 OpenAI 实现逻辑。"""
+        import time
+        from .model_call_logger import model_call_logger
+
+        start = time.time()
+        chunks = []
+        full_content = ""
+        tool_calls_buf = []
+        final_tool_calls = []
+        try:
+            stream = self.client.chat.completions.create(
+                model=self.model_name, messages=messages, tools=tools,
+                tool_choice="auto", temperature=kwargs.get("temperature", 0.7), stream=True,
+            )
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    full_content += delta.content
+                    chunks.append({"type": "content", "content": delta.content})
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        while len(tool_calls_buf) <= idx:
+                            tool_calls_buf.append({"id": "", "name": "", "arguments": ""})
+                        if tc.id:
+                            tool_calls_buf[idx]["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            tool_calls_buf[idx]["name"] = tc.function.name
+                        if tc.function and tc.function.arguments:
+                            tool_calls_buf[idx]["arguments"] += tc.function.arguments
+            duration = time.time() - start
+            final_tool_calls = [tc for tc in tool_calls_buf if tc.get("name")]
+            pt = len(str(messages)) // 3
+            ct = len(full_content) // 3
+            stats = {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}
+            model_call_logger.log_call(
+                model_name=self.model_name, messages=messages, response=full_content,
+                total_tokens=pt + ct, prompt_tokens=pt, completion_tokens=ct, duration=duration,
+            )
+            chunks.append({"type": "stats", "stats": stats})
+        except Exception as e:
+            model_call_logger.log_call(
+                model_name=self.model_name, messages=messages, response="",
+                total_tokens=0, prompt_tokens=0, completion_tokens=0,
+                duration=time.time() - start, error=str(e),
+            )
+            chunks.append({"type": "content", "content": f"⚠️ 模型调用失败：{str(e)[:200]}"})
+        return _ToolStreamIter(chunks, final_tool_calls)
 
     def count_tokens(self, text: str) -> int:
         """Count tokens - use GPT tokenizer as approximation"""

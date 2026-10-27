@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Server, Plus, Trash2, Pencil, Play, Power, RefreshCw, X, Copy, Check,
-  KeyRound, BookOpen, Wrench, AlertTriangle, Loader2,
+  KeyRound, BookOpen, Wrench, AlertTriangle, Loader2, Zap,
 } from 'lucide-react'
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client'
 import { useAuthStore } from '../stores/authStore'
@@ -121,6 +121,7 @@ function McpServerTab() {
   const sections = [
     ...(isAdmin ? [
       { k: 'tools', label: '工具管理', icon: Wrench },
+      { k: 'native', label: '原生工具', icon: Zap },
       { k: 'tokens', label: '令牌管理', icon: KeyRound },
     ] : []),
     { k: 'guide', label: '接入指南', icon: BookOpen },
@@ -151,6 +152,7 @@ function McpServerTab() {
       </div>
 
       {section === 'tools' && isAdmin && <ToolsSection />}
+      {section === 'native' && isAdmin && <NativeToolsSection />}
       {section === 'tokens' && isAdmin && <TokensSection />}
       {section === 'guide' && <GuideSection />}
       {!isAdmin && section !== 'guide' && (
@@ -435,6 +437,135 @@ function ToolsSection() {
             <textarea
               className={inputCls + ' min-h-[90px] font-mono'}
               placeholder='{"q": "搜索词"}'
+              value={testArgs}
+              onChange={(e) => setTestArgs(e.target.value)}
+            />
+            <div className="flex items-center gap-2">
+              <button onClick={runTest} disabled={testing} className="inline-flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg t-bg-accent text-white t-hover-accent disabled:opacity-50">
+                {testing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                {testing ? '调用中...' : '执行调用'}
+              </button>
+              <button onClick={() => setTestTool(null)} className="px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-muted t-hover-card">关闭</button>
+            </div>
+            {testResult && (
+              <pre className="max-h-72 overflow-auto p-3 t-bg-app border t-border rounded-lg text-[11px] t-text-2 whitespace-pre-wrap break-all font-mono">{testResult}</pre>
+            )}
+          </div>
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+// ==================== 原生工具（方式 C：进程内 service 函数直调）====================
+function NativeToolsSection() {
+  const [tools, setTools] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [testTool, setTestTool] = useState(null)
+  const [testArgs, setTestArgs] = useState('{}')
+  const [testResult, setTestResult] = useState('')
+  const [testing, setTesting] = useState(false)
+
+  const inputCls = 'w-full px-3 py-2 t-bg-input border t-border-strong rounded-lg text-xs t-text t-placeholder t-focus'
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await apiGet('/mcp-server/native-tools')
+      if (res.success) setTools(res.tools || [])
+    } catch (e) {
+      console.error('加载原生工具失败:', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const openTest = (t) => {
+    setTestTool(t)
+    // 根据 schema 的 properties 预填空值
+    const schema = t.schema || {}
+    const props = schema.properties || {}
+    const obj = {}
+    Object.keys(props).forEach((k) => {
+      const p = props[k] || {}
+      if (p.type === 'array') obj[k] = []
+      else if (p.type === 'object') obj[k] = {}
+      else if (p.type === 'number' || p.type === 'integer') obj[k] = 0
+      else if (p.type === 'boolean') obj[k] = false
+      else obj[k] = ''
+    })
+    setTestArgs(JSON.stringify(obj, null, 2))
+    setTestResult('')
+  }
+
+  const runTest = async () => {
+    if (!testTool) return
+    let args = {}
+    try {
+      args = testArgs.trim() ? JSON.parse(testArgs) : {}
+    } catch (e) {
+      setTestResult('arguments 不是合法 JSON: ' + e.message)
+      return
+    }
+    setTesting(true)
+    setTestResult('')
+    try {
+      const res = await apiPost(`/mcp-server/native-tools/${encodeURIComponent(testTool.name)}/test`, { arguments: args })
+      setTestResult(res.success ? (res.result || '（无返回）') : '调用失败: ' + (res.error || '未知错误'))
+    } catch (e) {
+      setTestResult('调用失败: ' + e.message)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs t-text-faint">进程内原生函数工具（{tools.length}）· 不走 HTTP 回环</p>
+        <button onClick={load} className="p-1 rounded-lg border t-border-strong t-text-muted t-hover-card" title="刷新">
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+
+      {loading ? (
+        <p className="text-xs t-text-faint text-center py-6 loading-pulse">加载中...</p>
+      ) : tools.length === 0 ? (
+        <p className="text-xs t-text-fainter text-center py-6">暂无原生工具</p>
+      ) : (
+        <div className="space-y-2">
+          {tools.map((t) => (
+            <div key={t.name} className="px-3 py-2.5 t-bg-panel border t-border rounded-lg group">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs t-text-2 truncate flex-1" title={t.description}>
+                  <span className="text-[9px] px-1 py-0.5 rounded t-badge-accent mr-1.5 font-mono">NATIVE</span>
+                  <span className="truncate font-mono">{t.name}</span>
+                </p>
+                <button onClick={() => openTest(t)} className="t-text-fainter t-hover-text-accent shrink-0" title="测试调用">
+                  <Play className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {t.description && <p className="text-[10px] t-text-faint mt-1">{t.description}</p>}
+              <details className="mt-1.5">
+                <summary className="text-[10px] t-text-fainter cursor-pointer select-none hover:t-text-muted">inputSchema</summary>
+                <pre className="max-h-56 overflow-auto mt-1 p-2 t-bg-app border t-border rounded-lg text-[10px] t-text-2 font-mono whitespace-pre-wrap break-all">
+                  {JSON.stringify(t.schema, null, 2)}
+                </pre>
+              </details>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {testTool && (
+        <Modal title={`测试原生工具: ${testTool.name}`} wide onClose={() => setTestTool(null)}>
+          <div className="space-y-2.5">
+            <p className="text-[11px] t-text-muted">输入 arguments（JSON 对象），将按 schema 进程内直调 service 函数（当前用户身份执行）</p>
+            <textarea
+              className={inputCls + ' min-h-[100px] font-mono'}
+              placeholder='{"key": "value"}'
               value={testArgs}
               onChange={(e) => setTestArgs(e.target.value)}
             />

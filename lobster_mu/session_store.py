@@ -22,6 +22,19 @@ def _parse_token_stats(raw):
     except Exception:
         return None
 
+
+def _parse_files(raw):
+    """数据库中 files_json 为 JSON 字符串，需解析为 list（本轮产物文件）"""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return raw
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
 # {user_id: OrderedDict[session_id -> deque[messages]]}
 _msg_cache = {}
 
@@ -43,7 +56,7 @@ def _cache_get(user_id: int, session_id: str) -> list:
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT role, content, model_name, token_stats, created_at FROM mu_chat_messages"
+            "SELECT role, content, model_name, token_stats, files_json, created_at FROM mu_chat_messages"
             " WHERE session_id = ? AND user_id = ? ORDER BY id DESC LIMIT ?",
             (session_id, user_id, _CACHE_MSGS),
         ).fetchall()
@@ -51,7 +64,8 @@ def _cache_get(user_id: int, session_id: str) -> list:
         conn.close()
     msgs = deque(
         [{"role": r["role"], "content": r["content"], "model_name": r["model_name"],
-          "token_stats": _parse_token_stats(r["token_stats"]), "timestamp": r["created_at"]}
+          "token_stats": _parse_token_stats(r["token_stats"]), "files": _parse_files(r["files_json"]),
+          "timestamp": r["created_at"]}
          for r in reversed(rows)],
         maxlen=_CACHE_MSGS,
     )
@@ -162,6 +176,41 @@ def append_message(user_id: int, session_id: str, role: str, content: str,
         "role": role, "content": content, "model_name": model_name,
         "token_stats": token_stats, "timestamp": now,
     })
+
+
+def attach_files_to_last_message(user_id: int, session_id: str, files: list) -> bool:
+    """把本轮生成的产物文件挂到该会话最近一条助手消息上（落库 + 更新缓存）。
+
+    供流式对话结束时调用，使生成的文件在对话里可直接下载，重开历史会话仍可见。
+    最近一条不是助手消息时不做任何事（避免误挂到上一轮）。"""
+    if not files:
+        return False
+    payload = json.dumps(files, ensure_ascii=False)
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, role FROM mu_chat_messages WHERE session_id = ? AND user_id = ?"
+            " ORDER BY id DESC LIMIT 1",
+            (session_id, user_id),
+        ).fetchone()
+        if not row or row["role"] != "assistant":
+            return False
+        conn.execute("UPDATE mu_chat_messages SET files_json = ? WHERE id = ?", (payload, row["id"]))
+        conn.commit()
+    except Exception:
+        return False
+    finally:
+        conn.close()
+    # 同步缓存中对应的最后一条消息
+    try:
+        msgs = _cache_get(user_id, session_id)
+        for msg in reversed(list(msgs)):
+            if msg.get("role") == "assistant":
+                msg["files"] = files
+                break
+    except Exception:
+        _invalidate(user_id, session_id)
+    return True
 
 
 def get_messages(user_id: int, session_id: str) -> list:

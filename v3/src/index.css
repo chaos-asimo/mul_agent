@@ -27,6 +27,7 @@
   --accent-soft-border: #312e81;
 
   --danger: #f87171;
+  --danger-hover: #ef4444;
   --danger-soft: rgba(69, 10, 10, 0.6);
   --danger-border: #7f1d1d;
 
@@ -85,6 +86,7 @@
   --accent-soft-border: #1d4ed8;
 
   --danger: #f87171;
+  --danger-hover: #ef4444;
   --danger-soft: rgba(69, 10, 10, 0.55);
   --danger-border: #991b1b;
 
@@ -143,6 +145,7 @@
   --accent-soft-border: #c7d2fe;
 
   --danger: #dc2626;
+  --danger-hover: #b91c1c;
   --danger-soft: #fee2e2;
   --danger-border: #fecaca;
 
@@ -223,6 +226,7 @@ body {
   .t-bg-accent { background-color: var(--accent); }
   .t-bg-accent-soft { background-color: var(--accent-soft); }
   .t-bg-danger-soft { background-color: var(--danger-soft); }
+  .t-bg-danger { background-color: var(--danger); }
   .t-bg-login { background: var(--login-grad); }
 
   .t-text { color: var(--text); }
@@ -244,6 +248,7 @@ body {
   .t-hover-bg:hover { background-color: var(--bg-hover); }
   .t-hover-card:hover { background-color: var(--bg-card); }
   .t-hover-accent:hover { background-color: var(--accent-hover); }
+  .t-hover-danger:hover { background-color: var(--danger-hover); }
   .t-hover-border-accent:hover { border-color: var(--accent); }
   .t-hover-text:hover { color: var(--text-2); }
   .t-hover-text-danger:hover { color: var(--danger); }
@@ -383,6 +388,50 @@ body {
   border-radius: 0.5rem;
   overflow-x: auto;
   margin: 0.6em 0;
+  position: relative;
+}
+
+/* 长代码块收起状态：限制高度 + 底部渐变遮罩 */
+.markdown-body pre.code-collapsed {
+  max-height: 7rem;
+  overflow-y: hidden;
+}
+.markdown-body pre.code-collapsed .code-block-gradient {
+  display: block;
+}
+.code-block-gradient {
+  display: none;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3.5rem;
+  background: linear-gradient(transparent, var(--md-pre-bg));
+  pointer-events: none;
+}
+/* 收起/展开按钮 */
+.code-block-toggle {
+  position: absolute;
+  bottom: 0.4rem;
+  right: 0.6rem;
+  z-index: 5;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.7rem;
+  font-family: inherit;
+  color: var(--md-code-text, #e2e8f0);
+  background: rgba(148, 163, 184, 0.15);
+  border: 1px solid var(--md-pre-border, #1e293b);
+  border-radius: 0.3rem;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  opacity: 0;
+}
+.markdown-body pre:hover .code-block-toggle,
+.markdown-body pre.code-collapsed .code-block-toggle {
+  opacity: 1;
+}
+.code-block-toggle:hover {
+  background: rgba(148, 163, 184, 0.3);
 }
 
 .markdown-body pre code {
@@ -536,6 +585,32 @@ body {
   max-width: 100%;
   border-radius: 0.5rem;
   margin: 0.4rem 0;
+}
+
+/* KaTeX 数学公式 */
+.markdown-body .katex {
+  font-size: 1.05em;
+  color: var(--md-text, inherit);
+}
+.markdown-body .katex-display {
+  margin: 0.8rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.3rem 0;
+}
+.markdown-body .katex-display > .katex {
+  white-space: pre-wrap;
+}
+.math-fallback {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-faint);
+  background: var(--bg-soft, rgba(128,128,128,0.12));
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.35rem;
+}
+.markdown-body div.math-fallback {
+  display: block;
+  margin: 0.5rem 0;
 }
 
 /* 打字指示器 */

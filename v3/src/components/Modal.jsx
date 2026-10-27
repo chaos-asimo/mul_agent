@@ -1,12 +1,14 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { X, Maximize2, Minimize2 } from 'lucide-react'
 
 /**
  * 通用模态窗：wide 加宽、max 接近全屏；标题栏可最大化切换。用于放大查看执行结果等。
+ * 通过 portal 挂到 body：避免被消息列表等深层祖先的溢出裁剪/包含块影响 fixed 定位。
  */
 export default function Modal({ title, onClose, children, wide = false, max = false, maximizable = true }) {
   const [isMax, setIsMax] = useState(max)
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={onClose}>
       <div
         className={`t-bg-panel border t-border-strong rounded-2xl shadow-2xl flex flex-col ${
@@ -37,6 +39,7 @@ export default function Modal({ title, onClose, children, wide = false, max = fa
         </div>
         <div className={`p-5 ${isMax ? 'flex-1 overflow-hidden flex flex-col' : 'overflow-y-auto'}`}>{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

@@ -45,6 +45,7 @@ DDL = [
         content     TEXT NOT NULL,
         model_name  TEXT,
         token_stats TEXT,
+        files_json  TEXT,
         created_at  TEXT NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_mu_msg_session ON mu_chat_messages(session_id, id)",
@@ -322,6 +323,21 @@ DDL = [
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
     )""",
+    # Agent 执行轨迹表（ReAct 每一步：思考/工具调用/观察，供管理员追溯）
+    """CREATE TABLE IF NOT EXISTS mu_agent_traces (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL,
+        session_id  TEXT NOT NULL DEFAULT '',
+        step        INTEGER NOT NULL DEFAULT 0,
+        role        TEXT NOT NULL DEFAULT '',
+        tool_name   TEXT NOT NULL DEFAULT '',
+        arguments   TEXT NOT NULL DEFAULT '',
+        content     TEXT NOT NULL DEFAULT '',
+        status      TEXT NOT NULL DEFAULT 'ok',
+        created_at  TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_mu_traces_user ON mu_agent_traces(user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_mu_traces_session ON mu_agent_traces(session_id, step)",
 ]
 
 # 已有库的列迁移：mu_agents 新增人格化字段（avatar/tone），mu_agent_memories 新增来源
@@ -350,6 +366,12 @@ _KB_DOCS_MIGRATION_COLUMNS = [
 
 _SESSION_MIGRATION_COLUMNS = [
     ("starred", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+# 助手消息关联的本轮产物文件（[{name,size,summary,download_url}]），
+# 让生成的文件在对话里可直接下载，且重开历史会话仍可见
+_MSG_MIGRATION_COLUMNS = [
+    ("files_json", "TEXT"),
 ]
 
 _MCP_SERVERS_MIGRATION_COLUMNS = [
@@ -423,6 +445,7 @@ def init_db():
                             ("mu_agent_memories", _MEMO_MIGRATION_COLUMNS),
                             ("mu_knowledge_docs", _KB_DOCS_MIGRATION_COLUMNS),
                             ("mu_chat_sessions", _SESSION_MIGRATION_COLUMNS),
+                            ("mu_chat_messages", _MSG_MIGRATION_COLUMNS),
                             ("mu_mcp_servers", _MCP_SERVERS_MIGRATION_COLUMNS),
                             ("mu_mcp_tools", _MCP_TOOLS_MIGRATION_COLUMNS)):
             existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}

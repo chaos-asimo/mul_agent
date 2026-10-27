@@ -403,14 +403,23 @@ def _tool_generate_pdf(content: str, user_id: int) -> str:
 
 # ============ 脚本类工具（委托 script_service，传 user_id） ============
 
-def _tool_script_create(code: str, user_id: int) -> str:
+def _tool_script_create(code: str, user_id: int, status_cb=None) -> str:
+    def _notify(text):
+        if status_cb:
+            try:
+                status_cb(text)
+            except Exception:
+                pass
+
     # 调用LLM生成脚本代码、英文名称和中文描述
+    _notify("📝 正在生成脚本代码...")
     script_code, script_name, script_desc = script_service.generate_script_code(code)
 
     if not script_code:
         return "❌ 脚本生成失败，请重试"
 
     # 检查语法
+    _notify("✅ 脚本生成完成，正在检查语法...")
     syntax_result = script_service.check_script_syntax(script_code)
 
     if syntax_result["success"]:
@@ -420,22 +429,26 @@ def _tool_script_create(code: str, user_id: int) -> str:
                                      description=script_desc, is_approved=True)
 
         # 执行并返回结果
-        exec_result = script_service.execute_python_script(user_id, script_code)
+        exec_result = script_service.execute_python_script(user_id, script_code, status_cb=status_cb)
         return exec_result.get("result", "") if isinstance(exec_result, dict) else str(exec_result)
     else:
         return f"❌ 脚本语法错误:\n\n{syntax_result['error']}\n\n请修改需求后重新尝试。"
 
 
-def _tool_script_execute(script_id, code: str, user_id: int) -> str:
+def _tool_script_execute(script_id, code: str, user_id: int, status_cb=None) -> str:
     if script_id:
         script = script_service.get_script(user_id, script_id)
         if script:
-            exec_result = script_service.execute_python_script(user_id, script["code"])
+            exec_result = script_service.execute_python_script(user_id, script["code"], status_cb=status_cb)
             return exec_result.get("result", "") if isinstance(exec_result, dict) else str(exec_result)
         else:
             return f"❌ 脚本不存在，ID: {script_id}"
     elif code:
-        exec_result = script_service.execute_python_script(user_id, code)
+        # 直接传入代码时也必须做语法检查，避免自然语言被当成代码执行
+        syntax_result = script_service.check_script_syntax(code)
+        if not syntax_result["success"]:
+            return f"❌ 脚本语法错误:\n\n{syntax_result['error']}\n\n请修改代码后重新尝试。"
+        exec_result = script_service.execute_python_script(user_id, code, status_cb=status_cb)
         return exec_result.get("result", "") if isinstance(exec_result, dict) else str(exec_result)
     else:
         return "❌ 请提供脚本ID或脚本代码"
@@ -476,8 +489,11 @@ def _op_detail(tool: str, tool_call: dict) -> str:
         return ""
 
 
-def execute_tool_call(tool_call: dict, user_id: int) -> str:
-    """执行工具调用，返回结果字符串（所有路径/脚本/文件操作均按 user_id 隔离）"""
+def execute_tool_call(tool_call: dict, user_id: int, status_cb=None) -> str:
+    """执行工具调用，返回结果字符串（所有路径/脚本/文件操作均按 user_id 隔离）
+
+    status_cb: 可选回调 fn(text)，脚本类工具执行期间上报实时状态（生成/执行/装依赖），
+    供 SSE 层推送给前端，避免长操作期间前端无反馈。"""
     tool = tool_call.get("tool")
 
     if tool == "generate_pdf":
@@ -506,9 +522,9 @@ def execute_tool_call(tool_call: dict, user_id: int) -> str:
     elif tool in ("search", "web_search"):
         result = web_search(tool_call.get("query", ""), int(tool_call.get("num", 5)))
     elif tool == "script_create":
-        result = _tool_script_create(tool_call.get("code", ""), user_id)
+        result = _tool_script_create(tool_call.get("code", ""), user_id, status_cb=status_cb)
     elif tool == "script_execute":
-        result = _tool_script_execute(tool_call.get("script_id"), tool_call.get("code", ""), user_id)
+        result = _tool_script_execute(tool_call.get("script_id"), tool_call.get("code", ""), user_id, status_cb=status_cb)
     elif tool == "script_list":
         result = _tool_script_list(user_id)
     elif tool == "use_skill":

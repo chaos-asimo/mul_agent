@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, Smartphone, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search, ArrowLeftRight, Lightbulb, Send, X, BookOpen, Zap, BarChart3, Database } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, Smartphone, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search, ArrowLeftRight, Lightbulb, Send, X, BookOpen, Zap, BarChart3, Database, Activity, Settings, GitBranch } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client'
 import ThemeSwitcher from '../components/ThemeSwitcher'
@@ -657,6 +657,18 @@ function AdminUsers() {
             <Link to="/admin/model-speed" className={btnGhost}>
               <Zap className="w-3.5 h-3.5" />
               模型速度
+            </Link>
+            <Link to="/admin/heartbeat" className={btnGhost}>
+              <Activity className="w-3.5 h-3.5" />
+              链路心跳
+            </Link>
+            <Link to="/admin/config" className={btnGhost}>
+              <Settings className="w-3.5 h-3.5" />
+              系统配置
+            </Link>
+            <Link to="/admin/traces" className={btnGhost}>
+              <GitBranch className="w-3.5 h-3.5" />
+              执行轨迹
             </Link>
             <button onClick={() => { setRankingMaximized(true); setShowRanking(true) }} className={btnGhost}>
               <BarChart3 className="w-3.5 h-3.5" />

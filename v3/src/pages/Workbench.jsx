@@ -4,7 +4,7 @@ import {
   Shell, Shield, ShieldCheck, Plus, Trash2, MessageSquare, Star,
   FolderOpen, FileCode, Brain, Clock, BookOpen, Wrench, Bot, Wand2,
   PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen, Lightbulb, Send, X,
-  Server,
+  Server, Activity,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { apiGet, apiPost, apiDelete, readFileContent } from '../api/client'
@@ -231,15 +231,6 @@ function Workbench() {
           >
             {user?.role === 'admin' ? '管理员' : '用户'}
           </span>
-          {user?.role === 'admin' && (
-            <Link
-              to="/admin/users"
-              className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors whitespace-nowrap"
-            >
-              <Shield className="w-3.5 h-3.5 shrink-0" />
-              <span className="hidden sm:inline">用户管理</span>
-            </Link>
-          )}
           <button
             onClick={() => setShowSecurity(true)}
             className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card transition-colors whitespace-nowrap"

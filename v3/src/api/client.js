@@ -110,12 +110,14 @@ export async function apiUpload(path, formData) {
 
 /**
  * SSE 流式聊天：返回原始 Response，由调用方读取 body 流
+ * 支持 signal（AbortSignal）用于前端主动中断流式请求
  */
-export async function apiStream(path, body) {
+export async function apiStream(path, body, signal) {
   return request(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
 }
 

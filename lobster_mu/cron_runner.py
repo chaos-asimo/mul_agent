@@ -164,21 +164,49 @@ class MuCronScheduler:
     async def _execute_ai_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         try:
             # 以任务归属用户的身份获取 LLM 适配器
-            from lobster_mu.chat_service import get_default_llm_adapter
+            from lobster_mu.chat_service import (
+                get_default_llm_adapter, _web_search_available,
+                _build_web_search_prompt_block, _parse_web_search,
+                _run_web_search_sync,
+            )
 
             adapter = get_default_llm_adapter()
             if not adapter:
                 return {"success": False, "output": "", "error": "No LLM adapter configured"}
 
+            # 联网搜索能力：有启用的搜索引擎时注入搜索提示块，
+            # 模型输出 [WEB_SEARCH]关键词[/WEB_SEARCH] 标记后自动搜索回填（最多3轮）
+            can_search = _web_search_available()
             system_prompt = "你是龙虾Claw，一个强大的AI智能体助手。请完成以下定时任务："
-            messages = adapter.create_prompt(system_prompt, task["content"], [])
+            system_prompt += _build_web_search_prompt_block(can_search)
 
             # adapter.chat 是同步调用，在后台线程中执行避免阻塞事件循环
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, functools.partial(adapter.chat, messages)
-            )
-            output = response.content if hasattr(response, "content") else str(response)
+
+            messages = adapter.create_prompt(system_prompt, task["content"], [])
+            output = ""
+            for _round in range(3):
+                response = await loop.run_in_executor(
+                    None, functools.partial(adapter.chat, messages)
+                )
+                output = response.content if hasattr(response, "content") else str(response)
+                if not can_search:
+                    break
+                query = _parse_web_search(output)
+                if not query:
+                    break
+                logger.info(f"Mu AI task {task['id']} web search: {query}")
+                res_text = _run_web_search_sync(query)
+                tool_block = "联网搜索结果：\n" + (res_text or "（未获取到有效结果，请基于已有知识回答）")
+                # 追加搜索请求与结果到对话，继续下一轮生成
+                messages.append({"role": "assistant", "content": output})
+                messages.append({"role": "user", "content": tool_block})
+                output = ""  # 清空等待下一轮
+            if not output:
+                output = "（任务执行未产出有效内容）"
+            # 清理残留的搜索标记
+            import re as _re
+            output = _re.sub(r"\[WEB_SEARCH\][\s\S]*?\[/WEB_SEARCH\]|\[WEB_SEARCH\][\s\S]*", "", output).strip()
             return {"success": True, "output": output, "error": ""}
         except Exception as e:
             logger.exception("Mu AI task execution failed")

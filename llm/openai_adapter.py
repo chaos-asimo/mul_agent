@@ -7,6 +7,76 @@ from .adapter_base import LLMAdapter, LLMResponse
 from .model_call_logger import model_call_logger
 
 
+class _ToolStreamIter:
+    """懒加载流式迭代器：__iter__ 时实时从 OpenAI stream 读取并逐 chunk yield，
+    实现真正的流式输出。消费完后在对象上设置 .tool_calls 属性，
+    供 ReActLoop 提取工具调用结果。"""
+
+    def __init__(self, adapter, messages, tools, kwargs):
+        self._adapter = adapter
+        self._messages = messages
+        self._tools = tools
+        self._kwargs = kwargs
+        self.tool_calls = None  # 流消费完后设置
+        self._full_content = ""
+        self._tool_calls_buf = []
+
+    def __iter__(self):
+        start = time.time()
+        try:
+            stream = self._adapter.client.chat.completions.create(
+                model=self._adapter.model_name,
+                messages=self._messages,
+                tools=self._tools,
+                tool_choice="auto",
+                temperature=self._kwargs.get("temperature", 0.7),
+                stream=True,
+            )
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    self._full_content += delta.content
+                    yield {"type": "content", "content": delta.content}
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        while len(self._tool_calls_buf) <= idx:
+                            self._tool_calls_buf.append({"id": "", "name": "", "arguments": ""})
+                        if tc.id:
+                            self._tool_calls_buf[idx]["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            self._tool_calls_buf[idx]["name"] = tc.function.name
+                        if tc.function and tc.function.arguments:
+                            self._tool_calls_buf[idx]["arguments"] += tc.function.arguments
+            # 流正常结束
+            self.tool_calls = [tc for tc in self._tool_calls_buf if tc.get("name")]
+            duration = time.time() - start
+            pt = len(str(self._messages)) // 3
+            ct = len(self._full_content) // 3
+            model_call_logger.log_call(
+                model_name=self._adapter.model_name,
+                messages=self._messages,
+                response=self._full_content,
+                total_tokens=pt + ct, prompt_tokens=pt, completion_tokens=ct,
+                duration=duration,
+            )
+            yield {"type": "stats", "stats": {
+                "prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct,
+            }}
+        except Exception as e:
+            self.tool_calls = []
+            duration = time.time() - start
+            model_call_logger.log_call(
+                model_name=self._adapter.model_name,
+                messages=self._messages, response="",
+                total_tokens=0, prompt_tokens=0, completion_tokens=0,
+                duration=duration, error=str(e),
+            )
+            yield {"type": "content", "content": f"⚠️ 模型调用失败：{str(e)[:200]}"}
+
+
 class OpenAIAdapter(LLMAdapter):
     """OpenAI API adapter"""
 
@@ -149,6 +219,16 @@ class OpenAIAdapter(LLMAdapter):
                 error=str(e)
             )
             yield f"Error: {str(e)}"
+
+    def supports_tools(self) -> bool:
+        return True
+
+    def chat_stream_with_tools(self, messages, tools, **kwargs):
+        """OpenAI function calling：真正的流式输出 + 工具调用收集。
+        返回 _ToolStreamIter 对象，其 __iter__ 是懒加载生成器——
+        调用方 for chunk in resp 时实时从 OpenAI stream 读取并逐 chunk yield，
+        流结束后对象上设置 .tool_calls 属性供 ReActLoop 提取。"""
+        return _ToolStreamIter(self, messages, tools, kwargs)
 
     def count_tokens(self, text: str) -> int:
         """Count tokens using tiktoken"""

@@ -1,7 +1,62 @@
 """独立的搜索工具模块，提供可随时调用的搜索功能"""
 import asyncio
+import re
 from typing import List, Dict, Any, Optional
 import aiohttp
+
+
+# ---- 搜索红线：政治敏感内容拦截 ----
+# 命中以下关键词（不区分大小写）的搜索查询直接拒绝，不返回任何结果。
+# 用户可在此处维护敏感词列表。
+POLITICAL_SENSITIVE_KEYWORDS = [
+    # 中文政治敏感词
+    "政治", "政府", "总统", "主席", "总理", "首相", "议员", "议会",
+    "共产党", "国民党", "民进党", "台独", "港独", "藏独", "疆独",
+    "台湾", "独立", "分裂", "颠覆", "叛乱", "暴动", "政变", "革命",
+    "国家主席", "国务院", "中央军委", "中央政治局", "人大", "政协",
+    "选举", "投票", "竞选", "政党", "左派", "右派", "极左", "极右",
+    "民主运动", "自由运动", "维权", "上访", "抗议", "游行", "示威",
+    "恐怖主义", "基地组织", "ISIS", "塔利班", "极端组织",
+    "战争", "军事", "核武器", "导弹", "战斗机", "航母", "军火",
+    "间谍", "情报机构", "CIA", "FBI", "中情局", "克格勃",
+    "外交部", "国防部", "安全局", "国安", "纪委", "监委",
+    "领土", "主权", "边界", "国界", "争端", "冲突",
+    "敏感", "违禁", "审查", "禁令", "封锁",
+    # 英文政治敏感词（多词组需空格匹配，单词需词边界匹配）
+    "politics", "political", "government", "president",
+    "prime minister", "congress", "parliament", "senate",
+    "house of representatives", "election", "voting",
+    "leftist", "rightist", "terror", "terrorism", "military",
+    "nuclear", "missile", "spy", "intelligence agency",
+    "NSA", "sovereignty", "territory", "border dispute",
+    "coup", "insurrection", "rebellion", "revolution",
+    "communist", "nationalist", "separatist",
+    "protest", "demonstration", "riot", "uprising",
+]
+
+# 英文单词需词边界匹配（避免 "war" 匹配到 "warcraft"），
+# 中文关键词用子串匹配（Python \b 对中文无效），
+# 多词短语按空格字面匹配。
+def _build_pattern(keywords):
+    parts = []
+    for kw in keywords:
+        escaped = re.escape(kw)
+        if " " in escaped:
+            parts.append(escaped)
+        elif re.search(r"[a-zA-Z]", kw):
+            parts.append(rf"\b{escaped}\b")
+        else:
+            parts.append(escaped)
+    return re.compile("|".join(parts), re.IGNORECASE)
+
+_POLITICAL_PATTERN = _build_pattern(POLITICAL_SENSITIVE_KEYWORDS)
+
+
+def is_political_sensitive(query: str) -> bool:
+    """检查搜索查询是否涉及政治敏感内容。命中则返回 True。"""
+    if not query:
+        return False
+    return bool(_POLITICAL_PATTERN.search(query))
 
 
 class SearchResult:
@@ -99,12 +154,19 @@ class SearchTool:
             self.searcher = TavilySearcher(api_key)  # 默认使用Tavily
     
     async def search(self, query: str, num_results: int = 5) -> List[SearchResult]:
-        """执行搜索"""
-        return await self.searcher.search(query, num_results)
-    
+        """执行搜索（含政治敏感拦截）"""
+        if is_political_sensitive(query):
+            return [SearchResult("搜索被拦截", "", "查询涉及政治敏感内容，已被系统红线拦截")]
+        results = await self.searcher.search(query, num_results)
+        # 过滤结果中涉及政治敏感的新闻
+        filtered = [r for r in results if not is_political_sensitive(f"{r.title} {r.content}")]
+        if not filtered:
+            return [SearchResult("无相关结果", "", "搜索结果涉及政治敏感内容，已按红线过滤")]
+        return filtered
+
     async def search_for_context(self, query: str, num_results: int = 3) -> str:
         """
-        搜索并返回格式化的上下文字符串
+        搜索并返回格式化的上下文字符串（含政治敏感拦截）
         
         Args:
             query: 搜索关键词
@@ -113,6 +175,8 @@ class SearchTool:
         Returns:
             格式化的搜索结果字符串
         """
+        if is_political_sensitive(query):
+            return "[搜索被拦截] 查询涉及政治敏感内容，已被系统红线拦截"
         results = await self.search(query, num_results)
         
         if not results:
@@ -152,10 +216,28 @@ async def quick_search(query: str, api_key: str = "", num_results: int = 5) -> L
         
     Returns:
         搜索结果列表，每条结果包含 title, url, content
+        若查询涉及政治敏感内容，返回一条拦截提示。
     """
+    if is_political_sensitive(query):
+        return [{
+            "title": "搜索被拦截",
+            "url": "",
+            "content": "查询涉及政治敏感内容，已被系统红线拦截，无法提供搜索结果。",
+        }]
     tool = get_search_tool(api_key)
     results = await tool.search(query, num_results)
-    return [r.to_dict() for r in results]
+    # 过滤结果中涉及政治敏感的新闻
+    filtered = [
+        r for r in results
+        if not is_political_sensitive(f"{r.title} {r.content}")
+    ]
+    if not filtered:
+        return [{
+            "title": "无相关结果",
+            "url": "",
+            "content": "搜索结果涉及政治敏感内容，已按红线过滤，无其他可展示内容。",
+        }]
+    return [r.to_dict() for r in filtered]
 
 
 async def quick_search_context(query: str, api_key: str = "", num_results: int = 3) -> str:
@@ -169,6 +251,24 @@ async def quick_search_context(query: str, api_key: str = "", num_results: int =
         
     Returns:
         格式化后的搜索结果字符串
+        若查询涉及政治敏感内容，返回拦截提示。
     """
+    if is_political_sensitive(query):
+        return "[搜索被拦截] 查询涉及政治敏感内容，已被系统红线拦截，无法提供搜索结果。"
     tool = get_search_tool(api_key)
-    return await tool.search_for_context(query, num_results)
+    results = await tool.search(query, num_results)
+    # 过滤结果中涉及政治敏感的新闻
+    filtered = [
+        r for r in results
+        if not is_political_sensitive(f"{r.title} {r.content}")
+    ]
+    if not filtered:
+        return "[无相关结果] 搜索结果涉及政治敏感内容，已按红线过滤，无其他可展示内容。"
+    context_parts = []
+    for i, result in enumerate(filtered, 1):
+        if result.title and result.content:
+            context_parts.append(f"{i}. {result.title}")
+            context_parts.append(f"   来源: {result.url}")
+            context_parts.append(f"   摘要: {result.content[:300]}...")
+            context_parts.append("")
+    return "\n".join(context_parts)

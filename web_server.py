@@ -111,15 +111,26 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Feishu long connection client...")
     await feishu_router.start_feishu_ws_client()
 
-    logger.info("Warming up knowledge embedding model in background...")
+    logger.info("Warming up knowledge embedding model in background (with retries)...")
     import threading as _threading
     def _kb_warmup():
-        try:
-            from lobster_mu import knowledge_store
-            knowledge_store.warmup()
-            logger.info("Knowledge embedding model warmup done")
-        except Exception as e:
-            logger.warning(f"Knowledge embedding model warmup failed: {e}")
+        import time as _time
+        from lobster_mu import knowledge_store
+        for attempt in range(1, 4):  # 3 次重试
+            if knowledge_store.is_model_ready():
+                logger.info("Knowledge embedding model already ready (warmup skipped)")
+                return
+            try:
+                ok = knowledge_store.warmup()
+                if ok and knowledge_store.is_model_ready():
+                    logger.info("Knowledge embedding model warmup done (attempt %d)", attempt)
+                    return
+                logger.warning("Knowledge warmup attempt %d not ready yet", attempt)
+            except Exception as e:
+                logger.warning("Knowledge warmup attempt %d failed: %s", attempt, e)
+            if attempt < 3:
+                _time.sleep(5 * attempt)  # 退避 5s / 10s
+        logger.warning("Knowledge embedding model warmup gave up after 3 attempts (will auto-load on first chat)")
     _threading.Thread(target=_kb_warmup, daemon=True).start()
 
     # Chroma 向量索引增量同步：把存量「文档引用 × 分块」补齐到 HNSW 索引（幂等，只依赖 SQLite）
@@ -220,6 +231,42 @@ async def lifespan(app: FastAPI):
                 logger.debug(f"[db-keepwarm] 保活失败: {e}")
     _threading.Thread(target=_db_keepwarm_loop, daemon=True).start()
 
+    # 反代链路心跳：管理员可开启。每分钟从后端主动发一次 HTTP 请求到
+    # backend_heartbeat_url（应指向反代公网域名的 /api/lobster-mu/health），
+    # 让反代→后端的 keepalive 连接池持续有流量，中间设备不会丢弃状态。
+    # 这是「空闲后首请求卡 30s」的兜底方案——直接消灭中间层僵尸连接。
+    def _network_heartbeat_loop():
+        import time as _time
+        from lobster_mu import db as _mu_db
+        import urllib.request as _ur
+        import urllib.error as _ue
+        import socket as _socket
+        while True:
+            try:
+                _enabled = _mu_db.get_config("backend_heartbeat_enabled", "false").lower() == "true"
+                if not _enabled:
+                    _time.sleep(30)
+                    continue
+                _url = _mu_db.get_config("backend_heartbeat_url", "").strip()
+                if not _url:
+                    _time.sleep(30)
+                    continue
+                _interval = max(10, int(_mu_db.get_config("backend_heartbeat_interval", "60")))
+                # 发请求（标准库，零依赖）
+                try:
+                    _req = _ur.Request(_url, method="GET")
+                    _req.add_header("User-Agent", "mul-agent-heartbeat/1.0")
+                    with _ur.urlopen(_req, timeout=5) as _resp:
+                        _body = _resp.read().decode("utf-8", errors="replace")[:100]
+                        logger.debug("[heartbeat] %s -> %d %s", _url, _resp.status, _body)
+                except (_ue.URLError, _socket.TimeoutError) as _e:
+                    logger.debug("[heartbeat] %s failed: %s", _url, _e)
+                _time.sleep(_interval)
+            except Exception as _e:
+                logger.debug("[heartbeat] loop error: %s", _e)
+                _time.sleep(60)
+    _threading.Thread(target=_network_heartbeat_loop, daemon=True).start()
+
     # 日志自动清理：每日执行一次，仅当管理员在界面开启「日志保留策略」时生效。
     def _log_retention_loop():
         import time as _time
@@ -279,12 +326,17 @@ async def fix_session_cookie(request, call_next):
     response = await call_next(request)
     set_cookie = response.headers.get("set-cookie", "")
     if set_cookie and "session=" in set_cookie:
-        # 替换 samesite=lax → samesite=none; secure
-        new_cookie = set_cookie.replace("; samesite=lax", "; samesite=none; secure")
-        if new_cookie == set_cookie:
-            # 如果原头没有 samesite，追加
-            new_cookie = set_cookie + "; samesite=none; secure"
-        response.headers["set-cookie"] = new_cookie
+        # 仅当客户端走 HTTPS（X-Forwarded-Proto=https，通常由反代注入）时，
+        # 才把 samesite=lax 改成 samesite=none; secure —— 这样 file:// 的
+        # direct-login.html 等跨域页面在 HTTPS 环境下仍可设置 cookie。
+        # HTTP 环境保持 Starlette 默认的 samesite=lax（无 secure），
+        # 避免浏览器拒收带 Secure 的 cookie 导致登录后 session 丢失、反复 307。
+        xfp = (request.headers.get("x-forwarded-proto") or "").lower()
+        if xfp == "https":
+            new_cookie = set_cookie.replace("; samesite=lax", "; samesite=none; secure")
+            if new_cookie == set_cookie:
+                new_cookie = set_cookie + "; samesite=none; secure"
+            response.headers["set-cookie"] = new_cookie
     return response
 
 # 方法覆盖：部分浏览器/代理会对 DELETE 方法直接重置连接（ERR_CONNECTION_RESET）。
@@ -296,6 +348,22 @@ async def method_override(request, call_next):
         if override in ("DELETE", "PUT"):
             request.scope["method"] = override
     return await call_next(request)
+
+# ---- 请求耗时计时中间件：记录每个请求从进入到返回的 wall time ----
+# 用于定位「空闲后首请求卡 30s」这类问题：看是 handler 慢还是请求到达前就慢。
+@app.middleware("http")
+async def request_timing(request, call_next):
+    import time as _tm
+    _start = _tm.perf_counter()
+    response = await call_next(request)
+    _elapsed_ms = (_tm.perf_counter() - _start) * 1000
+    _path = request.url.path
+    # 只 WARN 慢请求（> 500ms），INFO 其余。生产服务器可 grep "slow" 快速定位。
+    if _elapsed_ms > 500:
+        logger.warning("SLOW_REQUEST %s %s -> %d (%.0fms)", request.method, _path, response.status_code, _elapsed_ms)
+    elif _path.startswith("/api/"):
+        logger.info("REQ %s %s -> %d (%.0fms)", request.method, _path, response.status_code, _elapsed_ms)
+    return response
 
 # ---- 接口访问日志中间件（记录 /api/lobster-mu 请求，仅管理员可查） ----
 import asyncio as _asyncio
@@ -543,8 +611,10 @@ async def get_current_user(request: Request):
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    # 已登录非 admin → 跳 v3；已登录 admin → 跳 v1
-    user = request.session.get("user") if hasattr(request, "session") else None
+    # 已登录：优先 v1 session(user)，其次 v3 session(mu_user)
+    # admin → v1(/)；非 admin → v3
+    sess = request.session if hasattr(request, "session") else {}
+    user = sess.get("user") or sess.get("mu_user")
     if user:
         if user.get("role") == "admin":
             return RedirectResponse(url="/")
@@ -587,8 +657,12 @@ async def logout(request: Request):
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request, user=Depends(get_current_user)):
-    """主页面（v1）"""
+@app.get("/v1", response_class=HTMLResponse)
+async def index(request: Request):
+    """主页面（v1，仅管理员）；/ 与 /v1 均指向此入口"""
+    # 认证：v1 session(user) 或 v3 session(mu_user) 任一即可
+    sess = request.session if hasattr(request, "session") else {}
+    user = sess.get("user") or sess.get("mu_user")
     if not user:
         return RedirectResponse(url="/login")
     # v1 仅允许管理员访问

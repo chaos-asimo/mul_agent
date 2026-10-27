@@ -5,6 +5,7 @@ import asyncio
 from typing import List, Optional, Dict
 from .search_config import SearchEngineConfig
 from .search_adapters import SearchAdapter, create_adapter, SearchResult
+from .search_tool import is_political_sensitive
 
 
 class SearchManager:
@@ -117,22 +118,45 @@ class SearchManager:
 
     async def search(self, query: str, search_engine_id: str = None, num_results: int = 5) -> List[SearchResult]:
         """Perform search using specified or first available engine"""
+        # 搜索红线：拦截政治敏感查询
+        if is_political_sensitive(query):
+            return [SearchResult(
+                title="搜索被拦截",
+                url="",
+                snippet="查询涉及政治敏感内容，已被系统红线拦截，无法提供搜索结果。"
+            )]
+        raw_results = None
         if search_engine_id:
             adapter = self.adapters.get(search_engine_id)
             if adapter:
-                return await adapter.search(query, num_results)
+                raw_results = await adapter.search(query, num_results)
         else:
             # Use first enabled search engine
             for config in self.get_enabled():
                 adapter = self.adapters.get(config.id)
                 if adapter:
-                    return await adapter.search(query, num_results)
-
-        return [SearchResult(
-            title="无可用搜索引擎",
-            url="",
-            snippet="请在设置中配置至少一个搜索引擎API"
-        )]
+                    raw_results = await adapter.search(query, num_results)
+                    break
+        if raw_results is None:
+            return [SearchResult(
+                title="无可用搜索引擎",
+                url="",
+                snippet="请在设置中配置至少一个搜索引擎API"
+            )]
+        # 搜索红线：过滤结果中涉及政治敏感的新闻
+        filtered = [
+            r for r in raw_results
+            if not is_political_sensitive(
+                f"{getattr(r, 'title', '')} {getattr(r, 'snippet', '')} {getattr(r, 'content', '')}"
+            )
+        ]
+        if not filtered:
+            return [SearchResult(
+                title="无相关结果",
+                url="",
+                snippet="搜索结果涉及政治敏感内容，已按红线过滤，无其他可展示内容。"
+            )]
+        return filtered
 
     def search_sync(self, query: str, search_engine_id: str = None, num_results: int = 5) -> List[SearchResult]:
         """Synchronous wrapper for search"""

@@ -7,6 +7,9 @@ import Workbench from './pages/Workbench'
 import AdminUsers from './pages/AdminUsers'
 import AdminKnowledge from './pages/AdminKnowledge'
 import AdminModelSpeed from './pages/AdminModelSpeed'
+import AdminHeartbeat from './pages/AdminHeartbeat'
+import AdminConfig from './pages/AdminConfig'
+import AdminTraces from './pages/AdminTraces'
 
 // direct 登录后处于“待二次验证”状态时：弹出本系统域的 2FA 窗口，验证通过后再放行
 function TwoFactorGate() {
@@ -122,6 +125,30 @@ function App() {
         element={
           <MuProtectedRoute adminOnly>
             <AdminModelSpeed />
+          </MuProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/heartbeat"
+        element={
+          <MuProtectedRoute adminOnly>
+            <AdminHeartbeat />
+          </MuProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/config"
+        element={
+          <MuProtectedRoute adminOnly>
+            <AdminConfig />
+          </MuProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/traces"
+        element={
+          <MuProtectedRoute adminOnly>
+            <AdminTraces />
           </MuProtectedRoute>
         }
       />

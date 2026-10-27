@@ -34,6 +34,22 @@ class LLMAdapter(ABC):
         """Send streaming chat request to LLM, yields chunks"""
         pass
 
+    def supports_tools(self) -> bool:
+        """是否支持原生 function calling。默认 False，子类按需覆盖。"""
+        return False
+
+    def chat_stream_with_tools(self, messages, tools, **kwargs):
+        """带工具的流式调用。
+
+        子类若支持需覆盖；默认抛出 NotImplementedError，上层据此回落标记路径。
+        返回可迭代对象，每个元素形如：
+          {"type": "content", "content": "..."}
+          {"type": "stats", "stats": {...}}
+          {"type": "tool_calls", "tool_calls": [{"id","name","arguments"}]}
+        并且可迭代对象需带 .tool_calls 属性（聚合后的工具调用列表）供循环读取。
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def count_tokens(self, text: str) -> int:
         """Count tokens in text"""
