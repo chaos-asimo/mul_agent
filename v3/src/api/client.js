@@ -98,8 +98,12 @@ export async function apiPut(path, body) {
   return response.json()
 }
 
-export async function apiDelete(path) {
-  const response = await request(path, { method: 'DELETE' })
+export async function apiDelete(path, body) {
+  const response = await request(path, {
+    method: 'DELETE',
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
   return response.json()
 }
 

@@ -24,20 +24,42 @@ def log_trace(user_id: int, session_id: str, step: int, role: str,
         pass
 
 
-def list_traces(user_id: Optional[int] = None, session_id: Optional[str] = None, limit: int = 100):
+def list_traces(user_id: Optional[int] = None, session_id: Optional[str] = None,
+                page: int = 1, page_size: int = 50):
+    """分页查询执行轨迹。page 从 1 开始，返回 (traces, total)。"""
+    page = max(1, int(page))
+    page_size = max(1, min(500, int(page_size)))
+    offset = (page - 1) * page_size
     conn = get_conn()
-    sql = "SELECT id, user_id, session_id, step, role, tool_name, arguments, content, status, created_at FROM mu_agent_traces"
-    where, params = [], []
+    base_where, base_params = [], []
     if user_id is not None:
-        where.append("user_id = ?")
-        params.append(user_id)
+        base_where.append("user_id = ?")
+        base_params.append(user_id)
     if session_id:
-        where.append("session_id = ?")
-        params.append(session_id)
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY id DESC LIMIT ?"
-    params.append(limit)
-    cur = conn.execute(sql, params)
+        base_where.append("session_id = ?")
+        base_params.append(session_id)
+    where_sql = (" WHERE " + " AND ".join(base_where)) if base_where else ""
+
+    cur = conn.execute(f"SELECT COUNT(*) FROM mu_agent_traces{where_sql}", base_params)
+    total = cur.fetchone()[0]
+
+    sql = ("SELECT id, user_id, session_id, step, role, tool_name, arguments, content, status, created_at "
+           f"FROM mu_agent_traces{where_sql} ORDER BY id DESC LIMIT ? OFFSET ?")
+    cur = conn.execute(sql, base_params + [page_size, offset])
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row)) for row in cur.fetchall()], total
+
+
+def delete_traces(trace_id: Optional[int] = None, session_id: Optional[str] = None) -> int:
+    """删除执行轨迹：按 trace_id 删单条，或按 session_id 删整个会话。返回删除行数。"""
+    if trace_id is not None:
+        conn = get_conn()
+        cur = conn.execute("DELETE FROM mu_agent_traces WHERE id = ?", (int(trace_id),))
+        conn.commit()
+        return cur.rowcount
+    if session_id:
+        conn = get_conn()
+        cur = conn.execute("DELETE FROM mu_agent_traces WHERE session_id = ?", (session_id,))
+        conn.commit()
+        return cur.rowcount
+    return 0

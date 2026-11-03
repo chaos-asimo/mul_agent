@@ -6,11 +6,11 @@ from .tool_registry import (
 )
 from .loop import ReActLoop, ReActResult
 from .hitl import confirm_manager
-from .trace_store import log_trace, list_traces
+from .trace_store import log_trace, list_traces, delete_traces
 
 __all__ = [
     "TOOL_REGISTRY", "ToolSpec", "get_tool_schema_list",
     "ReActLoop", "ReActResult", "confirm_manager",
     "register_sub_agent_cancel", "cancel_sub_agent",
-    "log_trace", "list_traces",
+    "log_trace", "list_traces", "delete_traces",
 ]

@@ -349,6 +349,15 @@ async def method_override(request, call_next):
             request.scope["method"] = override
     return await call_next(request)
 
+# 高频监控/健康检查接口：不写入 mu_api_access_logs，也不刷 stdout INFO 请求日志；
+# 慢请求告警和异常仍保留，便于排障。
+API_LOG_EXCLUDED_PATHS = frozenset({
+    "/api/lobster-mu/health",
+    "/api/lobster-mu/admin/monitor",
+    "/api/lobster-mu/admin/usage-ranking",
+    "/api/lobster-mu/admin/model-speed",
+})
+
 # ---- 请求耗时计时中间件：记录每个请求从进入到返回的 wall time ----
 # 用于定位「空闲后首请求卡 30s」这类问题：看是 handler 慢还是请求到达前就慢。
 @app.middleware("http")
@@ -361,7 +370,7 @@ async def request_timing(request, call_next):
     # 只 WARN 慢请求（> 500ms），INFO 其余。生产服务器可 grep "slow" 快速定位。
     if _elapsed_ms > 500:
         logger.warning("SLOW_REQUEST %s %s -> %d (%.0fms)", request.method, _path, response.status_code, _elapsed_ms)
-    elif _path.startswith("/api/"):
+    elif _path.startswith("/api/") and _path not in API_LOG_EXCLUDED_PATHS:
         logger.info("REQ %s %s -> %d (%.0fms)", request.method, _path, response.status_code, _elapsed_ms)
     return response
 
@@ -388,7 +397,8 @@ class ApiAccessLogMiddleware(BaseHTTPMiddleware):
             self._safe_log(request, path, 500, int((_time_mod.perf_counter() - start) * 1000))
             raise
         dur_ms = int((_time_mod.perf_counter() - start) * 1000)
-        self._safe_log(request, path, response.status_code, dur_ms)
+        if path not in API_LOG_EXCLUDED_PATHS:
+            self._safe_log(request, path, response.status_code, dur_ms)
         # 慢请求同时打到主日志，便于与 handler 内 [perf] 分段计时对照：
         # 若此处很大但 handler_total 很小 => 耗时在 handler 之前（事件循环阻塞/锁等待）。
         if dur_ms > 3000:

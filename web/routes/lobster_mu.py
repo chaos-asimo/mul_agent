@@ -1122,12 +1122,28 @@ async def mu_chat_cancel_sub_agent(body: dict, user: dict = Depends(get_mu_user)
 
 
 @router.get("/admin/agent-traces")
-async def mu_admin_agent_traces(session_id: str = "", limit: int = 100,
+async def mu_admin_agent_traces(session_id: str = "", page: int = 1, page_size: int = 50,
                                 admin: dict = Depends(require_admin)):
-    """管理员查看 Agent 执行轨迹。"""
+    """管理员分页查看 Agent 执行轨迹。"""
     from lobster_mu.agent import list_traces
-    traces = list_traces(session_id=session_id or None, limit=limit)
-    return {"success": True, "traces": traces}
+    traces, total = list_traces(session_id=session_id or None, page=page, page_size=page_size)
+    return {"success": True, "traces": traces, "total": total, "page": page, "page_size": page_size}
+
+
+class MuDeleteTracesRequest(BaseModel):
+    trace_id: Optional[int] = None
+    session_id: Optional[str] = None
+
+
+@router.delete("/admin/agent-traces")
+async def mu_admin_delete_traces(body: MuDeleteTracesRequest,
+                                 admin: dict = Depends(require_admin)):
+    """管理员删除 Agent 执行轨迹：按 trace_id 删单条，或按 session_id 删整个会话。"""
+    from lobster_mu.agent import delete_traces
+    if body.trace_id is None and not body.session_id:
+        raise HTTPException(status_code=400, detail="需提供 trace_id 或 session_id")
+    n = delete_traces(trace_id=body.trace_id, session_id=body.session_id)
+    return {"success": True, "deleted": n}
 
 
 @router.get("/chat/sessions")
@@ -2459,6 +2475,255 @@ async def health_check():
     """零开销健康检查，供后端心跳探针和外部监控使用。
     返回 {"ok": true, "ts": <unix秒>}，不访问 DB、不做任何 I/O。"""
     return {"ok": True, "ts": int(_health_t.time())}
+
+
+# ---- 运行监控（管理员）----
+import psutil as _psutil
+import os as _os
+import asyncio as _asyncio
+import time as _mtime
+from datetime import datetime as _mdate, timedelta as _mtime_delta
+
+# 模块级 psutil priming（CPU% 需要两次调用才有差值）
+_psutil.cpu_percent(None)
+_net_counters_prev = _psutil.net_io_counters()
+_net_ts_prev = _mtime.time()
+
+# 事件循环看门狗
+_loop_probe = {"latency_ms": 0.0, "started": _mtime.time(), "_task": None}
+
+async def _loop_watchdog():
+    global _loop_probe
+    while True:
+        t0 = _mtime.perf_counter()
+        await _asyncio.sleep(1)
+        drift = (_mtime.perf_counter() - t0) - 1.0
+        _loop_probe["latency_ms"] = max(0.0, drift * 1000)
+
+@router.get("/admin/monitor")
+async def admin_monitor(admin: dict = Depends(require_admin)):
+    """运行监控聚合端点：硬件 + 服务 + 流量 + 模型统计，一次返回。"""
+    global _net_counters_prev, _net_ts_prev
+    ensure_db()
+
+    # 懒启动事件循环看门狗
+    if _loop_probe["_task"] is None or _loop_probe["_task"].done():
+        _loop_probe["_task"] = _asyncio.ensure_future(_loop_watchdog())
+
+    # ---------- 硬件 ----------
+    cpu = _psutil.cpu_percent(None)
+    cpu_count = _psutil.cpu_count() or 1
+    mem = _psutil.virtual_memory()
+    disk = _psutil.disk_usage('/')
+    net = _psutil.net_io_counters()
+    now = _mtime.time()
+    net_dt = max(0.001, now - _net_ts_prev)
+    net_sent_mb = max(0, net.bytes_sent - _net_counters_prev.bytes_sent) / net_dt / 1024 / 1024
+    net_recv_mb = max(0, net.bytes_recv - _net_counters_prev.bytes_recv) / net_dt / 1024 / 1024
+    # 更新模块级快照
+    _net_counters_prev = net
+    _net_ts_prev = now
+
+    hardware = {
+        "cpu_percent": cpu,
+        "cpu_count": cpu_count,
+        "mem_percent": mem.percent,
+        "mem_total_mb": round(mem.total / 1024 / 1024),
+        "mem_used_mb": round(mem.used / 1024 / 1024),
+        "disk_percent": disk.percent,
+        "disk_total_gb": round(disk.total / 1024 / 1024 / 1024),
+        "disk_used_gb": round(disk.used / 1024 / 1024 / 1024),
+        "net_sent_mb": round(net_sent_mb, 2),
+        "net_recv_mb": round(net_recv_mb, 2),
+    }
+
+    # ---------- 服务健康 ----------
+    services = {}
+    # database
+    try:
+        jm = db.check_wal()
+        services["database"] = {"ok": jm == "wal", "journal_mode": jm}
+    except Exception:
+        services["database"] = {"ok": False, "journal_mode": "unknown"}
+    # vector_index
+    try:
+        from lobster_mu import vector_index
+        vi_ok = vector_index.available()
+        services["vector_index"] = {"ok": vi_ok, "indexed": vector_index.index_count() if vi_ok else 0, "expected": 0}
+    except Exception:
+        services["vector_index"] = {"ok": False}
+    # cron
+    try:
+        from lobster_mu.cron_runner import mu_scheduler
+        cron_ok = mu_scheduler.running
+        services["cron"] = {"ok": cron_ok, "running": cron_ok}
+    except Exception:
+        services["cron"] = {"ok": False, "running": False}
+    # knowledge
+    try:
+        kr = knowledge_store.is_model_ready()
+        services["knowledge"] = {"ok": kr}
+    except Exception:
+        services["knowledge"] = {"ok": False}
+
+    # ---------- 事件循环 ----------
+    loop_data = {
+        "latency_ms": round(_loop_probe["latency_ms"], 1),
+        "blocked": _loop_probe["latency_ms"] > 250,
+        "uptime_min": round((now - _loop_probe["started"]) / 60),
+    }
+
+    # ---------- DB 查询（单连接）----------
+    conn = db.get_conn()
+    try:
+        # 用户数 + 会话数
+        users_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        total_sessions = conn.execute("SELECT COUNT(*) FROM mu_chat_sessions").fetchone()[0]
+        today_start = _mdate.now().replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        active_sessions_today = conn.execute(
+            "SELECT COUNT(*) FROM mu_chat_sessions WHERE updated_at >= ?", (today_start,)
+        ).fetchone()[0]
+
+        # DB 文件大小
+        db_file = db.DB_PATH
+        db_mb = round(_os.path.getsize(db_file) / 1024 / 1024) if _os.path.exists(db_file) else 0
+        wal_file = db_file + "-wal"
+        wal_mb = round(_os.path.getsize(wal_file) / 1024 / 1024) if _os.path.exists(wal_file) else 0
+
+        # 核心表行数
+        table_rows = {}
+        for tname in ("mu_chat_messages", "mu_api_access_logs", "mu_cron_runs"):
+            try:
+                table_rows[tname] = conn.execute(f"SELECT COUNT(*) FROM {tname}").fetchone()[0]
+            except Exception:
+                table_rows[tname] = 0
+
+        # 接口流量：今日统计
+        api_stats = conn.execute(
+            "SELECT COUNT(*) as total, "
+            "SUM(CASE WHEN status >= 500 THEN 1 ELSE 0 END) as errors, "
+            "AVG(duration_ms) as avg_ms "
+            "FROM mu_api_access_logs WHERE created_at >= ?",
+            (today_start,)
+        ).fetchone()
+        api_today_total = api_stats["total"] or 0
+        api_today_errors = api_stats["errors"] or 0
+        api_avg_ms = round(api_stats["avg_ms"]) if api_stats["avg_ms"] else 0
+
+        # 最近 8 条 API 请求
+        recent_rows = conn.execute(
+            "SELECT method, path, status, duration_ms, username, created_at "
+            "FROM mu_api_access_logs ORDER BY id DESC LIMIT 8"
+        ).fetchall()
+        recent_api = []
+        for rr in recent_rows:
+            ts_str = rr["created_at"]
+            ts_short = ts_str[11:19] if ts_str and len(ts_str) >= 19 else (ts_str or "")
+            recent_api.append({
+                "method": rr["method"] or "",
+                "path": (rr["path"] or "")[:60],
+                "status": rr["status"] or 0,
+                "ms": rr["duration_ms"] or 0,
+                "user": rr["username"] or "",
+                "time": ts_short,
+            })
+
+        # 定时任务 24h 统计
+        since_24h = (_mdate.now() - _mtime_delta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        cron_stats = conn.execute(
+            "SELECT COUNT(*) as total, "
+            "SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) as ok, "
+            "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) as failed, "
+            "AVG(duration) as avg_dur "
+            "FROM mu_cron_runs WHERE started_at >= ?",
+            (since_24h,)
+        ).fetchone()
+        cron_24h = {
+            "runs": cron_stats["total"] or 0,
+            "ok": cron_stats["ok"] or 0,
+            "failed": cron_stats["failed"] or 0,
+            "avg_duration": round(cron_stats["avg_dur"], 2) if cron_stats["avg_dur"] else 0,
+        }
+
+        # 模型调用统计（7 日）
+        since_7d = (_mdate.now() - _mtime_delta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+        model_rows = conn.execute(
+            "SELECT created_at, model_name, token_stats FROM mu_chat_messages "
+            "WHERE role = 'assistant' AND created_at >= ?",
+            (since_7d,)
+        ).fetchall()
+
+        total_calls = 0
+        total_tokens = 0
+        model_agg = {}  # model -> {calls, tokens}
+        daily_agg = {}  # date -> {calls, tokens, durations}
+        import json as _j2
+        for mr in model_rows:
+            total_calls += 1
+            date_key = (mr["created_at"] or "")[:10]
+            d = daily_agg.setdefault(date_key, {"calls": 0, "tokens": 0})
+            d["calls"] += 1
+            model = mr["model_name"] or "未知"
+            ma = model_agg.setdefault(model, {"calls": 0, "tokens": 0})
+            ma["calls"] += 1
+            raw = mr["token_stats"]
+            if raw:
+                try:
+                    ts = _j2.loads(raw)
+                    tt = ts.get("total_tokens", 0) or (ts.get("prompt_tokens", 0) + ts.get("completion_tokens", 0))
+                    total_tokens += tt
+                    d["tokens"] += tt
+                    ma["tokens"] += tt
+                except Exception:
+                    pass
+
+        # 7 日趋势
+        daily_stats = []
+        for i in range(7, -1, -1):
+            dk = (_mdate.now() - _mtime_delta(days=i)).strftime("%Y-%m-%d")
+            d = daily_agg.get(dk, {"calls": 0, "tokens": 0})
+            daily_stats.append({"date": dk, "calls": d["calls"], "tokens": d["tokens"]})
+
+        # 模型 Top
+        top_models = sorted(
+            [{"model": m, "calls": v["calls"], "tokens": v["tokens"]} for m, v in model_agg.items()],
+            key=lambda x: -x["calls"]
+        )[:5]
+
+    finally:
+        conn.close()
+
+    models_data = {
+        "total_calls": total_calls,
+        "total_tokens": total_tokens,
+        "daily_stats": daily_stats,
+        "top_models": top_models,
+    }
+
+    return {"success": True, "data": {
+        "ts": int(now),
+        "hardware": hardware,
+        "services": services,
+        "loop": loop_data,
+        "counts": {
+            "users": users_count,
+            "active_sessions_today": active_sessions_today,
+            "total_sessions": total_sessions,
+        },
+        "db": {
+            "db_mb": db_mb,
+            "wal_mb": wal_mb,
+            "table_rows": table_rows,
+        },
+        "traffic": {
+            "api_today_total": api_today_total,
+            "api_today_errors": api_today_errors,
+            "api_avg_ms": api_avg_ms,
+            "cron_24h": cron_24h,
+            "recent_api": recent_api,
+        },
+        "models": models_data,
+    }}
 
 
 # ---- 系统配置管理（管理员）----

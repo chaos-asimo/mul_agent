@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, Smartphone, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search, ArrowLeftRight, Lightbulb, Send, X, BookOpen, Zap, BarChart3, Database, Activity, Settings, GitBranch } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, Smartphone, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search, ArrowLeftRight, Lightbulb, Send, X, BookOpen, Zap, BarChart3, Database, Activity, Settings, GitBranch, Gauge } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client'
 import ThemeSwitcher from '../components/ThemeSwitcher'
@@ -669,6 +669,10 @@ function AdminUsers() {
             <Link to="/admin/traces" className={btnGhost}>
               <GitBranch className="w-3.5 h-3.5" />
               执行轨迹
+            </Link>
+            <Link to="/admin/monitor" className={btnGhost}>
+              <Gauge className="w-3.5 h-3.5" />
+              运行监控
             </Link>
             <button onClick={() => { setRankingMaximized(true); setShowRanking(true) }} className={btnGhost}>
               <BarChart3 className="w-3.5 h-3.5" />

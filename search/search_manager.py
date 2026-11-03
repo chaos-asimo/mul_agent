@@ -5,7 +5,7 @@ import asyncio
 from typing import List, Optional, Dict
 from .search_config import SearchEngineConfig
 from .search_adapters import SearchAdapter, create_adapter, SearchResult
-from .search_tool import is_political_sensitive
+from .search_tool import is_political_sensitive, is_content_violation
 
 
 class SearchManager:
@@ -118,12 +118,12 @@ class SearchManager:
 
     async def search(self, query: str, search_engine_id: str = None, num_results: int = 5) -> List[SearchResult]:
         """Perform search using specified or first available engine"""
-        # 搜索红线：拦截政治敏感查询
-        if is_political_sensitive(query):
+        # 搜索红线：拦截政治敏感 / 涉黄 / 涉恐 查询
+        if is_content_violation(query):
             return [SearchResult(
                 title="搜索被拦截",
                 url="",
-                snippet="查询涉及政治敏感内容，已被系统红线拦截，无法提供搜索结果。"
+                snippet="查询涉及违规内容（政治敏感/涉黄/涉恐），已被系统红线拦截，无法提供搜索结果。"
             )]
         raw_results = None
         if search_engine_id:
@@ -143,10 +143,10 @@ class SearchManager:
                 url="",
                 snippet="请在设置中配置至少一个搜索引擎API"
             )]
-        # 搜索红线：过滤结果中涉及政治敏感的新闻
+        # 搜索红线：过滤结果中涉及政治敏感 / 涉黄 / 涉恐 的新闻
         filtered = [
             r for r in raw_results
-            if not is_political_sensitive(
+            if not is_content_violation(
                 f"{getattr(r, 'title', '')} {getattr(r, 'snippet', '')} {getattr(r, 'content', '')}"
             )
         ]
@@ -154,7 +154,7 @@ class SearchManager:
             return [SearchResult(
                 title="无相关结果",
                 url="",
-                snippet="搜索结果涉及政治敏感内容，已按红线过滤，无其他可展示内容。"
+                snippet="搜索结果涉及违规内容（政治敏感/涉黄/涉恐），已按红线过滤，无其他可展示内容。"
             )]
         return filtered
 

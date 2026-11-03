@@ -49,7 +49,44 @@ def _build_pattern(keywords):
             parts.append(escaped)
     return re.compile("|".join(parts), re.IGNORECASE)
 
+# ---- 搜索红线：涉黄（色情）内容拦截 ----
+PORNOGRAPHY_KEYWORDS = [
+    # 中文涉黄词
+    "色情", "淫秽", "淫荡", "卖淫", "嫖娼", "性交易", "性服务", "性爱", "性交",
+    "肛交", "口交", "自慰", "手淫", "裸露", "裸照", "裸体", "情色", "黄片",
+    "成人片", "成人视频", "成人直播", "援交", "约炮", "一夜情", "炮友",
+    "性癖", "乱伦", "强暴", "强奸", "性侵", "性骚扰", "性虐",
+    "av女优", "三级片", "情色片", "黄色网站", "情色网站",
+    # 英文涉黄词（多词短语空格匹配，单词词边界匹配）
+    "porn", "pornography", "pornographic", "xxx", "hentai",
+    "nude", "naked", "nudity", "erotic", "eroticism",
+    "adult video", "adult content", "explicit content",
+    "sexual intercourse", "sex act", "sex trade", "prostitution",
+    "rape", "sexual assault", "sex harassment", "fetish", "incest",
+    "onlyfans", "camgirl", "cam girl", "slut",
+]
+
+# ---- 搜索红线：涉恐（恐怖主义）内容拦截 ----
+TERRORISM_KEYWORDS = [
+    # 中文涉恐词
+    "恐怖袭击", "恐怖分子", "恐怖活动", "恐怖主义", "极端恐怖",
+    "自杀式袭击", "自杀爆炸", "人质", "绑架人质", "劫持", "劫机",
+    "爆炸装置", "自制炸弹", "炸弹制作", "炸药配方", "制造炸药",
+    "血祭", "斩首", "公开处决", "断头", "虐杀", "屠杀",
+    "极端武装", "圣战", "伊斯兰国", "恐怖组织", "分裂恐怖",
+    "持刀伤人", "驾车冲撞", "踩踏事件",
+    # 英文涉恐词
+    "terrorist", "terrorism", "terror attack", "terrorist attack",
+    "jihad", "suicide bomber", "suicide attack",
+    "bomb making", "explosive device", "improvised explosive",
+    "beheading", "decapitation", "mass killing", "massacre",
+    "hostage", "hijacking", "hijack", "kidnap",
+    "bloodbath", "slaughter", "lone wolf attack",
+]
+
 _POLITICAL_PATTERN = _build_pattern(POLITICAL_SENSITIVE_KEYWORDS)
+_PORNOGRAPHY_PATTERN = _build_pattern(PORNOGRAPHY_KEYWORDS)
+_TERRORISM_PATTERN = _build_pattern(TERRORISM_KEYWORDS)
 
 
 def is_political_sensitive(query: str) -> bool:
@@ -57,6 +94,27 @@ def is_political_sensitive(query: str) -> bool:
     if not query:
         return False
     return bool(_POLITICAL_PATTERN.search(query))
+
+
+def is_pornography(query: str) -> bool:
+    """检查搜索查询是否涉及色情内容。命中则返回 True。"""
+    if not query:
+        return False
+    return bool(_PORNOGRAPHY_PATTERN.search(query))
+
+
+def is_terrorism(query: str) -> bool:
+    """检查搜索查询是否涉及恐怖主义内容。命中则返回 True。"""
+    if not query:
+        return False
+    return bool(_TERRORISM_PATTERN.search(query))
+
+
+def is_content_violation(query: str) -> bool:
+    """统一内容红线检测：政治敏感 / 涉黄 / 涉恐 任一命中即返回 True。"""
+    if not query:
+        return False
+    return is_political_sensitive(query) or is_pornography(query) or is_terrorism(query)
 
 
 class SearchResult:
@@ -154,19 +212,19 @@ class SearchTool:
             self.searcher = TavilySearcher(api_key)  # 默认使用Tavily
     
     async def search(self, query: str, num_results: int = 5) -> List[SearchResult]:
-        """执行搜索（含政治敏感拦截）"""
-        if is_political_sensitive(query):
-            return [SearchResult("搜索被拦截", "", "查询涉及政治敏感内容，已被系统红线拦截")]
+        """执行搜索（含政治/涉黄/涉恐内容红线拦截）"""
+        if is_content_violation(query):
+            return [SearchResult("搜索被拦截", "", "查询涉及违规内容（政治敏感/涉黄/涉恐），已被系统红线拦截")]
         results = await self.searcher.search(query, num_results)
-        # 过滤结果中涉及政治敏感的新闻
-        filtered = [r for r in results if not is_political_sensitive(f"{r.title} {r.content}")]
+        # 过滤结果中涉及违规内容（政治/涉黄/涉恐）的新闻
+        filtered = [r for r in results if not is_content_violation(f"{r.title} {r.content}")]
         if not filtered:
-            return [SearchResult("无相关结果", "", "搜索结果涉及政治敏感内容，已按红线过滤")]
+            return [SearchResult("无相关结果", "", "搜索结果涉及违规内容（政治敏感/涉黄/涉恐），已按红线过滤")]
         return filtered
 
     async def search_for_context(self, query: str, num_results: int = 3) -> str:
         """
-        搜索并返回格式化的上下文字符串（含政治敏感拦截）
+        搜索并返回格式化的上下文字符串（含政治/涉黄/涉恐内容红线拦截）
         
         Args:
             query: 搜索关键词
@@ -175,8 +233,8 @@ class SearchTool:
         Returns:
             格式化的搜索结果字符串
         """
-        if is_political_sensitive(query):
-            return "[搜索被拦截] 查询涉及政治敏感内容，已被系统红线拦截"
+        if is_content_violation(query):
+            return "[搜索被拦截] 查询涉及违规内容（政治敏感/涉黄/涉恐），已被系统红线拦截"
         results = await self.search(query, num_results)
         
         if not results:
@@ -216,26 +274,26 @@ async def quick_search(query: str, api_key: str = "", num_results: int = 5) -> L
         
     Returns:
         搜索结果列表，每条结果包含 title, url, content
-        若查询涉及政治敏感内容，返回一条拦截提示。
+        若查询涉及违规内容（政治敏感/涉黄/涉恐），返回一条拦截提示。
     """
-    if is_political_sensitive(query):
+    if is_content_violation(query):
         return [{
             "title": "搜索被拦截",
             "url": "",
-            "content": "查询涉及政治敏感内容，已被系统红线拦截，无法提供搜索结果。",
+            "content": "查询涉及违规内容（政治敏感/涉黄/涉恐），已被系统红线拦截，无法提供搜索结果。",
         }]
     tool = get_search_tool(api_key)
     results = await tool.search(query, num_results)
-    # 过滤结果中涉及政治敏感的新闻
+    # 过滤结果中涉及违规内容（政治/涉黄/涉恐）的新闻
     filtered = [
         r for r in results
-        if not is_political_sensitive(f"{r.title} {r.content}")
+        if not is_content_violation(f"{r.title} {r.content}")
     ]
     if not filtered:
         return [{
             "title": "无相关结果",
             "url": "",
-            "content": "搜索结果涉及政治敏感内容，已按红线过滤，无其他可展示内容。",
+            "content": "搜索结果涉及违规内容（政治敏感/涉黄/涉恐），已按红线过滤，无其他可展示内容。",
         }]
     return [r.to_dict() for r in filtered]
 
@@ -251,19 +309,19 @@ async def quick_search_context(query: str, api_key: str = "", num_results: int =
         
     Returns:
         格式化后的搜索结果字符串
-        若查询涉及政治敏感内容，返回拦截提示。
+        若查询涉及违规内容（政治敏感/涉黄/涉恐），返回拦截提示。
     """
-    if is_political_sensitive(query):
-        return "[搜索被拦截] 查询涉及政治敏感内容，已被系统红线拦截，无法提供搜索结果。"
+    if is_content_violation(query):
+        return "[搜索被拦截] 查询涉及违规内容（政治敏感/涉黄/涉恐），已被系统红线拦截，无法提供搜索结果。"
     tool = get_search_tool(api_key)
     results = await tool.search(query, num_results)
-    # 过滤结果中涉及政治敏感的新闻
+    # 过滤结果中涉及违规内容（政治/涉黄/涉恐）的新闻
     filtered = [
         r for r in results
-        if not is_political_sensitive(f"{r.title} {r.content}")
+        if not is_content_violation(f"{r.title} {r.content}")
     ]
     if not filtered:
-        return "[无相关结果] 搜索结果涉及政治敏感内容，已按红线过滤，无其他可展示内容。"
+        return "[无相关结果] 搜索结果涉及违规内容（政治敏感/涉黄/涉恐），已按红线过滤，无其他可展示内容。"
     context_parts = []
     for i, result in enumerate(filtered, 1):
         if result.title and result.content:
