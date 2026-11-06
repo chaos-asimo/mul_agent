@@ -427,6 +427,41 @@ def delete_document(user_id: int, doc_id: str) -> Optional[int]:
         conn.close()
 
 
+def admin_delete_user_knowledge(user_id: int) -> Optional[Dict]:
+    """管理员删除某用户的整个知识库（删除该用户全部文档引用）
+
+    仅删用户引用与对应的 Chroma 索引条目；共享内容池 kb_content / kb_content_vectors
+    保留，由 gc_orphaned_content 清理无引用孤儿，不影响其他用户的引用。
+    该用户没有文档时返回 None。
+    """
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, chunk_count FROM mu_knowledge_docs WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        if not rows:
+            return None
+        doc_ids = [r["id"] for r in rows]
+        total_chunks = sum((r["chunk_count"] or 0) for r in rows)
+        conn.execute("DELETE FROM mu_knowledge_docs WHERE user_id = ?", (user_id,))
+        # 兼容：若旧表还有该用户的向量（未迁移），一并清理
+        conn.execute("DELETE FROM mu_knowledge_vectors WHERE user_id = ?", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    # 同步删除该用户各文档在 Chroma 索引中的条目（其他用户的引用条目独立存在）
+    try:
+        from lobster_mu import vector_index
+        for doc_id in doc_ids:
+            vector_index.delete_doc(doc_id)
+    except Exception as e:
+        logger.warning(f"[mu-kb] 管理员删除用户知识库索引失败 user={user_id}: {e}")
+    logger.info(f"[mu-kb] 管理员删除用户 {user_id} 的知识库：{len(doc_ids)} 篇 / {total_chunks} 块")
+    return {"user_id": user_id, "documents": len(doc_ids), "chunks": total_chunks}
+
+
 def gc_orphaned_content() -> int:
     """清理无用户引用的孤儿共享内容（可由 cron 定期调用）
 

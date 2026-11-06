@@ -2,10 +2,10 @@ import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowLeft, RefreshCw, KeyRound, BookOpen, Users, FileText,
-  Database, Layers, Share2, ChevronDown, ChevronRight, Globe, Loader2
+  Database, Layers, Share2, ChevronDown, ChevronRight, Globe, Loader2, Trash2
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
-import { apiGet, apiPost } from '../api/client'
+import { apiGet, apiPost, apiDelete } from '../api/client'
 import ThemeSwitcher from '../components/ThemeSwitcher'
 import FileViewer from '../components/FileViewer'
 import Modal from '../components/Modal'
@@ -91,6 +91,21 @@ function AdminKnowledge() {
   }
 
   const toggle = (uid) => setExpanded((p) => ({ ...p, [uid]: !p[uid] }))
+
+  // 管理员：删除某用户的整个知识库（仅删该用户引用，共享内容池不受影响）
+  const deleteUserKb = async (u) => {
+    const name = u.display_name || u.username
+    if (!window.confirm(
+      `确定删除用户「${name}」的全部知识库？\n共 ${u.documents} 篇文档 / ${u.total_chunks} 个分块。\n共享内容池中其他用户的引用不受影响。`
+    )) return
+    try {
+      const res = await apiDelete(`/admin/knowledge/user/${u.user_id}`)
+      if (res.success) load()
+      else alert(res.error || res.detail || '删除失败')
+    } catch (e) {
+      alert(e.message)
+    }
+  }
 
   // 管理员：切换某篇文档是否公共（所有用户检索可命中）
   const togglePublic = async (d) => {
@@ -226,11 +241,12 @@ function AdminKnowledge() {
                     <th className="px-4 py-3 text-right">文档数</th>
                     <th className="px-4 py-3 text-right">分块数</th>
                     <th className="px-4 py-3 text-right">共享文档</th>
+                    <th className="px-4 py-3 text-right">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   {users.length === 0 ? (
-                    <tr><td colSpan="5" className="px-4 py-10 text-center t-text-faint">暂无知识库数据</td></tr>
+                    <tr><td colSpan="6" className="px-4 py-10 text-center t-text-faint">暂无知识库数据</td></tr>
                   ) : (
                     users.map((u) => (
                       <UserRow
@@ -241,6 +257,7 @@ function AdminKnowledge() {
                         onViewDoc={(d) => setViewing({ id: d.id, filename: d.filename })}
                         onViewChunks={(d) => setChunkViewing({ id: d.id, filename: d.filename })}
                         onTogglePublic={togglePublic}
+                        onDelete={deleteUserKb}
                       />
                     ))
                   )}
@@ -310,7 +327,7 @@ function AdminKnowledge() {
   )
 }
 
-function UserRow({ u, expanded, onToggle, onViewDoc, onViewChunks, onTogglePublic }) {
+function UserRow({ u, expanded, onToggle, onViewDoc, onViewChunks, onTogglePublic, onDelete }) {
   return (
     <>
       <tr className="border-b t-border t-hover-bg cursor-pointer" onClick={onToggle}>
@@ -337,10 +354,20 @@ function UserRow({ u, expanded, onToggle, onViewDoc, onViewChunks, onTogglePubli
         <td className="px-4 py-3 text-right">
           {u.shared_docs > 0 ? <span className="t-text-accent font-medium">{u.shared_docs}</span> : <span className="t-text-faint">0</span>}
         </td>
+        <td className="px-4 py-3 text-right">
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete && onDelete(u) }}
+            title="删除该用户的整个知识库"
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border t-border-danger t-text-danger hover:bg-red-500/10 text-xs transition-colors"
+          >
+            <Trash2 className="w-3 h-3" />
+            删除知识库
+          </button>
+        </td>
       </tr>
       {expanded && (
         <tr className="border-b t-border">
-          <td colSpan="5" className="px-4 py-3 t-bg-input/40">
+          <td colSpan="6" className="px-4 py-3 t-bg-input/40">
             {u.docs.length === 0 ? (
               <div className="text-xs t-text-faint">无文档</div>
             ) : (

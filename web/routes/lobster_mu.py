@@ -2467,6 +2467,16 @@ async def admin_knowledge_set_public(doc_id: str, body: dict, admin: dict = Depe
     return {"success": True, "doc": result}
 
 
+@router.delete("/admin/knowledge/user/{user_id}")
+async def admin_knowledge_delete_user(user_id: int, admin: dict = Depends(require_admin)):
+    """管理员删除某用户的整个知识库（仅删该用户文档引用，共享内容由 GC 回收）"""
+    ensure_db()
+    result = knowledge_store.admin_delete_user_knowledge(user_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="该用户知识库为空")
+    return {"success": True, "data": result}
+
+
 # ---- 健康检查（no-auth，供心跳探针/外部监控用）----
 import time as _health_t
 
