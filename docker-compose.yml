@@ -1,0 +1,73 @@
+services:
+  mul-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # 基础镜像源：daocloud 挂掉时，在 .env 设 REGISTRY=docker.1ms.run 等切换
+      args:
+        REGISTRY: ${REGISTRY:-docker.m.daocloud.io}
+    container_name: mul-agent
+    restart: unless-stopped
+    # 端口暴露模式：容器内应用监听 0.0.0.0:8888，映射到宿主机 8888
+    # 访问地址：http://服务器IP:8888
+    ports:
+      - "8888:8888"
+    # 把 shineyue.ai 打进容器内 /etc/hosts
+    extra_hosts:
+      - "shineyue.ai:10.0.87.165"
+    working_dir: /app
+    environment:
+      - TZ=Asia/Shanghai
+      - LOBSTER_SANDBOX_IMAGE=${LOBSTER_SANDBOX_IMAGE:-lobster-claw-sandbox:local}
+      # Docker-out-of-Docker：容器内 /app 对应的宿主机项目根绝对路径，
+      # 使沙箱 --mount source= 指向宿主机真实路径。请按实际部署目录填写（或在 .env 设 HOST_APP_DIR）。
+      - LOBSTER_SANDBOX_HOST_APP_DIR=${HOST_APP_DIR:-}
+      - API_KEYS=${API_KEYS:-}
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY:-mul_agent_secret_key_2026}
+      - MU_ADMIN_USERNAME=${MU_ADMIN_USERNAME:-shineyue}
+      - MU_ADMIN_PASSWORD=${MU_ADMIN_PASSWORD:-shineyue@2026}
+      # 直接登录允许的跨域来源（逗号分隔，支持 *.xxx 通配符）
+      # 默认放行 *.jbysoft.com；.env 配置 DIRECT_LOGIN_ALLOWED_ORIGINS 时优先生效
+      # 设为空字符串 '' 则禁止所有跨域 /login/direct（仅允许同源）
+      - DIRECT_LOGIN_ALLOWED_ORIGINS=${DIRECT_LOGIN_ALLOWED_ORIGINS:-*.jbysoft.com}
+    volumes:
+      # 持久化数据（可写）
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+      # 必须用绑定挂载（而非命名卷）：主容器 pip 装到 /app/packages，
+      # 沙箱经 Docker-out-of-Docker 以宿主机路径挂载同一目录，二者必须是同一份数据。
+      # 用命名卷会导致沙箱读到的 /packages 为空 → 用户脚本 import 不到已装的依赖。
+      - ./packages:/app/packages
+      # RAG embedding 模型缓存（持久化，避免每次重启重下；镜像已预载默认模型）
+      - hf_cache:/root/.cache/huggingface
+      # 用户文件目录
+      - ./web/static/uploads:/app/web/static/uploads
+      - ./web/static/lobster-claw-files:/app/web/static/lobster-claw-files
+      - ./web/static/mu-files:/app/web/static/mu-files
+      # 配置文件（读写挂载，容器内可直接编辑；改动即时生效无需重建镜像）
+      - ./models.json:/app/models.json
+      - ./agents.json:/app/agents.json
+      - ./skills.json:/app/skills.json
+      - ./search_engines.json:/app/search_engines.json
+      # Docker-out-of-Docker：挂载宿主机 docker.sock，使容器内 docker CLI 可操作宿主机 Docker
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # 用户命令沙箱镜像（仅构建不常驻，供 mul-agent 直跑时 docker run 调用）
+  lobster-sandbox:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+      # 中国网络无法直连 Docker Hub 时，用国内镜像源覆盖基础镜像，例如：
+      #   BASE_IMAGE=docker.xuanyuan.me/langgenius/dify-agent-local-sandbox:1.16.1 docker compose build lobster-sandbox
+      # 可用源（2026 实测）：docker.xuanyuan.me / docker.1ms.run / docker.m.daocloud.io / docker.aityp.com
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-langgenius/dify-agent-local-sandbox:1.16.1}
+    image: ${LOBSTER_SANDBOX_IMAGE:-lobster-claw-sandbox:local}
+    container_name: lobster-sandbox-builder
+    restart: "no"
+    # 无 ports / volumes：纯构建目标，docker compose build 产出镜像后即弃
+    entrypoint: ["true"]
+
+volumes:
+  hf_cache:

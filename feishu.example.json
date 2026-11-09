@@ -1,0 +1,19 @@
+{
+  "_comment": "龙虾Claw飞书接入配置示例。使用方法：复制此文件到 data/feishu_config.json 并填入实际值，或通过Web界面配置。",
+  "app_id": "cli_xxxxxxxxxxxxxx",
+  "app_secret": "your_app_secret_here",
+  "encrypt_key": "your_encrypt_key_here_optional",
+  "verification_token": "your_verification_token_here",
+  "bot_name": "Lobster Bot",
+  "domain": "feishu",
+  "event_mode": "long_connection",
+  "enabled": false,
+  "dm_policy": "open",
+  "allow_list": [
+    "ou_xxxxxxxxxxxxxxxx"
+  ],
+  "block_list": [],
+  "handle_groups": true,
+  "handle_dms": true,
+  "trigger_on_mention": true
+}

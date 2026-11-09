@@ -1,0 +1,86 @@
+[
+  {
+    "id": "default_openai",
+    "name": "shineyue",
+    "api_type": "openai",
+    "model_type": "text",
+    "api_url": "http://shineyue.ai:22008/v1",
+    "api_key": "your-api-key",
+    "model_name": "shineyue",
+    "max_tokens": 4000,
+    "context_window": 4000,
+    "enabled": true
+  },
+  {
+    "id": "default_claude",
+    "name": "ascend",
+    "api_type": "openai",
+    "model_type": "text",
+    "api_url": "http://shineyue.ai:22008/v1",
+    "api_key": "your-api-key",
+    "model_name": "ascend",
+    "max_tokens": 4000,
+    "context_window": 4000,
+    "enabled": true
+  },
+  {
+    "id": "default_deepseek",
+    "name": "Agnes",
+    "api_type": "openai",
+    "model_type": "text",
+    "api_url": "https://apihub.agnes-ai.com/v1",
+    "api_key": "your-api-key",
+    "model_name": "agnes-2.0-flash",
+    "max_tokens": 4000,
+    "context_window": 4000,
+    "enabled": true
+  },
+  {
+    "id": "da4a12cf",
+    "name": "Claude",
+    "api_type": "openai",
+    "model_type": "text",
+    "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "your-api-key",
+    "model_name": "kimi-k2.5",
+    "max_tokens": 4000,
+    "context_window": 4000,
+    "enabled": true
+  },
+  {
+    "id": "9ef6d394",
+    "name": "agnes-image",
+    "api_type": "openai",
+    "model_type": "image",
+    "api_url": "https://apihub.agnes-ai.com/v1/images/generations",
+    "api_key": "your-api-key",
+    "model_name": "agnes-image-2.1-flash",
+    "max_tokens": 4000,
+    "context_window": 4000,
+    "enabled": true
+  },
+  {
+    "id": "a38fcb6a",
+    "name": "DALL-E Test",
+    "api_type": "dall-e",
+    "model_type": "image",
+    "api_url": "https://api.openai.com/v1",
+    "api_key": "your-api-key",
+    "model_name": "dall-e-3",
+    "max_tokens": 4000,
+    "context_window": 4000,
+    "enabled": false
+  },
+  {
+    "id": "e99a1030",
+    "name": "agnes-video-v2.0",
+    "api_type": "openai",
+    "model_type": "video",
+    "api_url": "https://apihub.agnes-ai.com/v1/videos",
+    "api_key": "your-api-key",
+    "model_name": "agnes-video-v2.0",
+    "max_tokens": 4000,
+    "context_window": 4000,
+    "enabled": true
+  }
+]

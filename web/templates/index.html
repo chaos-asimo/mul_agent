@@ -1,0 +1,1738 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>多智能体协作平台</title>
+    <!-- 外链样式表改为非阻塞加载：网络不可达时不再卡住首屏渲染（避免 20s+ 超时白屏） -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" media="print" onload="this.media='all'">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" media="print" onload="this.media='all'">
+    <noscript>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    </noscript>
+    <link rel="stylesheet" href="/static/css/style-pc.css?v=20260721b">
+    <script>
+        (function() {
+            var isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
+                          (window.innerWidth <= 768);
+            if (isMobile) {
+                var link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = '/static/css/style-mobile.css?v=20260721b';
+                document.head.appendChild(link);
+            }
+        })();
+    </script>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 顶部导航栏 -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-brain"></i>
+                    <span>多智能体协作平台</span>
+                </div>
+                <div class="header-actions">
+                    <button id="save-btn" class="btn btn-secondary">
+                        <i class="fas fa-save"></i> 保存文档
+                    </button>
+                    <button id="export-log-btn" class="btn btn-secondary">
+                        <i class="fas fa-download"></i> 导出日志
+                    </button>
+                    <span id="current-user" class="current-user">
+                        <i class="fas fa-user"></i> {{ current_user.username if current_user else '' }}
+                    </span>
+                    <button id="logout-btn" class="btn btn-danger">
+                        <i class="fas fa-sign-out-alt"></i> 退出
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- 主体内容区域 -->
+        <div style="display: flex; flex: 1; overflow: hidden;">
+            <!-- 左侧图标导航 -->
+            <nav class="left-nav">
+                <button class="nav-btn active" data-tab="lobster-claw" title="龙虾Claw">
+                    <span style="font-size: 20px;">🦞</span>
+                </button>
+                <button class="nav-btn" data-tab="main" title="文档处理">
+                    <i class="fas fa-file-alt"></i>
+                </button>
+                <button class="nav-btn" data-tab="yijing" title="周易卜卦">
+                    <i class="fas fa-coins"></i>
+                </button>
+                <button class="nav-btn" data-tab="ai-chat" title="AI聊天">
+                    <i class="fas fa-comments"></i>
+                </button>
+                <button class="nav-btn" data-tab="video-models" title="视频模型">
+                    <i class="fas fa-video"></i>
+                </button>
+                <button class="nav-btn" data-tab="models" title="模型配置">
+                    <i class="fas fa-cog"></i>
+                </button>
+                <button class="nav-btn" data-tab="agents" title="Agent配置">
+                    <i class="fas fa-users"></i>
+                </button>
+                <button class="nav-btn" data-tab="search" title="搜索引擎">
+                    <i class="fas fa-search"></i>
+                </button>
+                <button class="nav-btn" data-tab="skills" title="Skills">
+                    <i class="fas fa-magic"></i>
+                </button>
+                <button class="nav-btn" data-tab="statistics" title="统计分析">
+                    <i class="fas fa-chart-bar"></i>
+                </button>
+            </nav>
+
+            <!-- 右侧工作区 -->
+            <main class="workspace">
+                
+                <!-- ========== 龙虾Claw内容 ========== -->
+                <div class="tab-panel active" id="lobster-claw-panel">
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <h3>🦞 龙虾Claw - OpenClaw AI聊天</h3>
+                        </div>
+                        <div class="toolbar-right">
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.loadClawChatSessions()">
+                                <i class="fas fa-history"></i> 会话记录
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.loadClawMemory()">
+                                <i class="fas fa-brain"></i> 记忆管理
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.loadCronTasks()">
+                                <i class="fas fa-clock"></i> 定时任务
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.showScriptModal()" title="脚本管理">
+                                <i class="fas fa-code"></i> 脚本管理
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.showKnowledgeBaseModal()" title="知识库管理">
+                                <i class="fas fa-book"></i> 知识库
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.showFeishuModal()" title="飞书接入">
+                                <i class="fas fa-paper-plane"></i> 飞书
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.showEnvSnapshotModal()" title="当前环境感知：模型/搜索/飞书/知识库/定时任务">
+                                <i class="fas fa-satellite-dish"></i> 环境
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="app.addClawTab()" title="新建会话">
+                                <i class="fas fa-plus"></i> 新建会话
+                            </button>
+                            <button id="collapse-all-btn" class="btn btn-outline-secondary btn-sm" onclick="app.toggleCollapseAll()" title="收缩所有菜单">
+                                <i class="fas fa-compress"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="claw-tabs-container" id="claw-tabs-container">
+                        <div class="claw-tabs" id="claw-tabs">
+                            <div class="claw-tab active default-tab" data-tab-id="main" onclick="app.switchClawTab('main')">
+                                <i class="fas fa-home"></i> 主会话
+                            </div>
+                            <div class="claw-tab default-tab" data-tab-id="feishu" onclick="app.switchClawTab('feishu')">
+                                <i class="fas fa-paper-plane"></i> 飞书会话
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div style="display: flex; flex-direction: column; flex: 1; padding: 8px; min-height: 0;">
+                        <div style="flex: 1; overflow-y: auto; background: #f8fafc; border-radius: 8px; padding: 10px;" id="claw-chat-messages">
+                            <div style="text-align: center; color: #94a3b8; margin-top: 30px;">
+                                <i class="fas fa-robot" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                <p>欢迎来到龙虾Claw！</p>
+                                <p style="font-size: 14px; margin-top: 5px;">我是你的AI助手，可以回答问题、执行命令、操作文件等。</p>
+                            </div>
+                        </div>
+                        
+                        <div style="flex: 0 0 auto;">
+                            <div style="display: flex; gap: 8px;">
+                                <div style="flex: 1; position: relative; display: flex; flex-direction: column; min-width: 0;">
+                                    <textarea id="claw-chat-input" 
+                                        placeholder="输入你的问题或命令..." 
+                                        style="width: 100%; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 14px; resize: vertical; min-height: 80px; max-height: 200px; font-family: inherit; flex: 1;"></textarea>
+                                    <div id="claw-chat-files" style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; margin-top: 4px;"></div>
+                                </div>
+                                <label class="btn btn-outline-secondary btn-sm" style="padding: 10px 12px;">
+                                    <i class="fas fa-paperclip"></i>
+                                    <input type="file" id="claw-chat-file" class="file-input" multiple accept=".txt,.md,.json,.py,.js,.html,.css,.xml,.csv,.doc,.docx,.pdf,.xls,.xlsx,.ppt,.pptx,.jpg,.jpeg,.png,.gif,.webp" style="display: none;">
+                                </label>
+                                <button id="claw-chat-send-btn" class="btn btn-primary" style="padding: 10px 20px;">
+                                    <i class="fas fa-send"></i> 发送
+                                </button>
+                                <select id="claw-model-select" class="form-control" style="width: 160px; padding: 0 8px;">
+                                    <option value="">默认模型</option>
+                                </select>
+                                <button id="claw-chat-clear-btn" class="btn btn-outline-secondary" style="padding: 10px 12px;">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="claw-sessions-modal" class="modal" style="display: none;">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-history"></i> 会话记录</h3>
+                            <button class="modal-close" onclick="document.getElementById('claw-sessions-modal').style.display='none'">&times;</button>
+                        </div>
+                        <div class="modal-body" style="max-height: 500px; overflow-y: auto;" id="claw-sessions-list">
+                            <div class="empty-state">
+                                <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                                <p>暂无会话记录</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="claw-memory-modal" class="modal" style="display: none;">
+                    <div id="claw-memory-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-brain"></i> 记忆管理</h3>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="modal-close" onclick="app.toggleMemoryMaximize()" title="最大化" style="font-size: 14px;">
+                                    <i class="fas fa-expand"></i>
+                                </button>
+                                <button class="modal-close" onclick="document.getElementById('claw-memory-modal').style.display='none'">&times;</button>
+                            </div>
+                        </div>
+                        <div id="claw-memory-modal-body" class="modal-body" style="max-height: calc(80vh - 80px);">
+                            <div style="margin-bottom: 15px; display: flex; gap: 10px;">
+                                <input type="text" id="claw-memory-search-input" placeholder="搜索记忆..." class="form-control" style="flex: 1;">
+                                <select id="claw-memory-type-filter" class="form-control" style="width: 120px;">
+                                    <option value="">全部类型</option>
+                                    <option value="long_term">长期记忆</option>
+                                    <option value="short_term">短期记忆</option>
+                                </select>
+                                <button class="btn btn-primary btn-sm" onclick="app.searchClawMemory()">
+                                    <i class="fas fa-search"></i> 搜索
+                                </button>
+                            </div>
+                            <div id="claw-memory-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                                    <p>暂无记忆记录</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="claw-cron-modal" class="modal" style="display: none;">
+                    <div id="claw-cron-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-clock"></i> 定时任务管理</h3>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="modal-close" onclick="app.toggleCronMaximize()" title="最大化" style="font-size: 14px;">
+                                    <i class="fas fa-expand"></i>
+                                </button>
+                                <button class="btn btn-primary btn-sm" onclick="app.showAddCronTask()">
+                                    <i class="fas fa-plus"></i> 添加任务
+                                </button>
+                                <button class="modal-close" onclick="document.getElementById('claw-cron-modal').style.display='none'">&times;</button>
+                            </div>
+                        </div>
+                        <div id="claw-cron-modal-body" class="modal-body" style="max-height: calc(80vh - 80px);">
+                            <div id="claw-cron-task-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-clock" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                                    <p>暂无定时任务</p>
+                                </div>
+                            </div>
+                            <div id="claw-cron-add-form" style="display: none; margin-top: 20px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
+                                <h4 id="cron-form-title" style="margin-bottom: 15px;">添加定时任务</h4>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                                    <div class="form-group">
+                                        <label>任务名称</label>
+                                        <input type="text" id="cron-name" class="form-control" placeholder="输入任务名称">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>任务类型</label>
+                                        <select id="cron-task-type" class="form-control">
+                                            <option value="ai">AI对话任务</option>
+                                            <option value="command">Shell命令任务</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group" style="grid-column: 1 / -1;">
+                                        <label style="margin-bottom: 6px;">调度方式</label>
+                                        <div style="display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap;">
+                                            <label style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                                                <input type="radio" name="cron-mode" value="simple" checked onchange="app.switchCronMode('simple')"> 简易模式
+                                            </label>
+                                            <label style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                                                <input type="radio" name="cron-mode" value="advanced" onchange="app.switchCronMode('advanced')"> Cron表达式
+                                            </label>
+                                            <label style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                                                <input type="radio" name="cron-mode" value="once" onchange="app.switchCronMode('once')"> 一次性执行
+                                            </label>
+                                        </div>
+
+                                        <!-- 简易模式 -->
+                                        <div id="cron-simple-panel" style="background: #f8fafc; padding: 12px 15px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; align-items: end;">
+                                                <div class="form-group" style="margin-bottom: 0;">
+                                                    <label>执行频率</label>
+                                                    <select id="cron-freq" class="form-control" onchange="app.onCronFreqChange()">
+                                                        <option value="every_minute">每分钟</option>
+                                                        <option value="every_n_minute" selected>每 N 分钟</option>
+                                                        <option value="every_hour">每小时</option>
+                                                        <option value="every_n_hour">每 N 小时</option>
+                                                        <option value="daily">每天</option>
+                                                        <option value="weekly">每周</option>
+                                                        <option value="monthly">每月</option>
+                                                    </select>
+                                                </div>
+
+                                                <div id="cron-param-n" class="form-group" style="margin-bottom: 0;">
+                                                    <label>间隔数</label>
+                                                    <input type="number" id="cron-interval" class="form-control" value="5" min="1" max="9999" onchange="app.buildCronFromSimple()">
+                                                </div>
+
+                                                <div id="cron-param-time" class="form-group" style="margin-bottom: 0; display: none;">
+                                                    <label>执行时间</label>
+                                                    <input type="time" id="cron-time" class="form-control" value="09:00" onchange="app.buildCronFromSimple()">
+                                                </div>
+
+                                                <div id="cron-param-weekday" class="form-group" style="margin-bottom: 0; display: none;">
+                                                    <label>星期</label>
+                                                    <select id="cron-weekday" class="form-control" onchange="app.buildCronFromSimple()">
+                                                        <option value="1">周一</option>
+                                                        <option value="2">周二</option>
+                                                        <option value="3">周三</option>
+                                                        <option value="4">周四</option>
+                                                        <option value="5">周五</option>
+                                                        <option value="6">周六</option>
+                                                        <option value="0">周日</option>
+                                                    </select>
+                                                </div>
+
+                                                <div id="cron-param-day" class="form-group" style="margin-bottom: 0; display: none;">
+                                                    <label>日期(日)</label>
+                                                    <input type="number" id="cron-day" class="form-control" value="1" min="1" max="31" onchange="app.buildCronFromSimple()">
+                                                </div>
+                                            </div>
+                                            <div style="margin-top: 10px; font-size: 12px; color: #475569;">
+                                                生成表达式: <code id="cron-schedule-preview" style="background: #fff; padding: 2px 6px; border-radius: 4px; border: 1px solid #cbd5e1;">*/5 * * * *</code>
+                                            </div>
+                                        </div>
+
+                                        <!-- Cron表达式（高级） -->
+                                        <div id="cron-advanced-panel" style="display: none;">
+                                            <input type="text" id="cron-schedule" class="form-control" placeholder="如: */5 * * * * (每5分钟执行)" onchange="app.parseCronToSimple()">
+                                            <div style="font-size: 12px; color: #64748b; margin-top: 4px; line-height: 1.5;">
+                                                格式: <code>分 时 日 月 周</code> &nbsp;|&nbsp;
+                                                例: <code>0 9 * * 1-5</code> 工作日早9点，<code>0 */3 * * *</code> 每3小时，<code>30 14 1 * *</code> 每月1号14:30
+                                            </div>
+                                        </div>
+
+                                        <!-- 一次性执行 -->
+                                        <div id="cron-once-panel" style="display: none;">
+                                            <input type="datetime-local" id="cron-run-at" class="form-control">
+                                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">到指定时间执行一次，执行后自动关闭</div>
+                                        </div>
+                                    </div>
+                                    <div class="form-group" style="grid-column: 1 / -1;">
+                                        <label>任务内容</label>
+                                        <textarea id="cron-content" class="form-control" rows="3" placeholder="AI任务: 输入要执行的指令&#10;命令任务: 输入要执行的命令"></textarea>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>超时时间(秒)</label>
+                                        <input type="number" id="cron-timeout" class="form-control" value="300">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>启用状态</label>
+                                        <select id="cron-enabled" class="form-control">
+                                            <option value="true">启用</option>
+                                            <option value="false">禁用</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div style="display: flex; gap: 10px; margin-top: 15px;">
+                                    <button id="cron-submit-btn" class="btn btn-primary" onclick="app.submitCronTask()">确认添加</button>
+                                    <button class="btn btn-outline-secondary" onclick="app.hideAddCronTask()">取消</button>
+                                </div>
+                            </div>
+                        </div>
+            </div>
+        </div>
+
+        <!-- 知识库管理模态框 -->
+        <div id="claw-knowledge-modal" class="modal" style="display: none;">
+            <div class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-book"></i> 知识库管理</h3>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <label class="btn btn-primary btn-sm" style="margin: 0; cursor: pointer;">
+                            <i class="fas fa-upload"></i> 上传文档
+                            <input type="file" id="knowledge-file-input" multiple style="display: none;" accept=".txt,.md,.json,.py,.js,.html,.css,.xml,.csv,.doc,.docx,.pdf,.xls,.xlsx,.ppt,.pptx">
+                        </label>
+                        <button class="modal-close" onclick="document.getElementById('claw-knowledge-modal').style.display='none'">&times;</button>
+                    </div>
+                </div>
+                <div class="modal-body" style="max-height: calc(80vh - 80px);">
+                    <div style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center;">
+                        <input type="text" id="knowledge-search-input" placeholder="语义搜索知识库..." class="form-control" style="flex: 1;" onkeypress="if(event.key==='Enter') app.searchKnowledgeBase()">
+                        <button class="btn btn-primary btn-sm" onclick="app.searchKnowledgeBase()">
+                            <i class="fas fa-search"></i> 搜索
+                        </button>
+                    </div>
+                    <div id="knowledge-stats" style="margin-bottom: 10px; padding: 8px 12px; background: #f1f5f9; border-radius: 6px; font-size: 13px; color: #64748b;"></div>
+                    <div id="knowledge-search-results" style="display: none; margin-bottom: 15px;"></div>
+                    <div id="knowledge-doc-list">
+                        <div class="empty-state">
+                            <i class="fas fa-book" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                            <p>知识库为空</p>
+                            <p style="font-size: 14px; margin-top: 5px;">点击上方按钮上传文档</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 脚本管理模态框 -->
+        <div id="claw-script-modal" class="modal" style="display: none;">
+            <div id="claw-script-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-code"></i> 脚本管理</h3>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-primary btn-sm" onclick="app.showScriptEditor()">
+                            <i class="fas fa-plus"></i> 新建脚本
+                        </button>
+                        <button class="modal-close" onclick="document.getElementById('claw-script-modal').style.display='none'">&times;</button>
+                    </div>
+                </div>
+                <div id="claw-script-modal-body" class="modal-body" style="max-height: calc(80vh - 80px);">
+                    <div id="claw-script-list">
+                        <div class="empty-state">
+                            <i class="fas fa-code" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                            <p>暂无脚本</p>
+                            <p style="font-size: 14px; margin-top: 5px;">点击上方按钮创建新脚本</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 脚本编辑器模态框（大尺寸，支持语法高亮） -->
+        <div id="claw-script-editor-modal" class="modal" style="display: none;">
+            <div id="claw-script-editor-modal-content" class="modal-content" style="width: 95%; max-width: none; max-height: 95vh; height: 95vh;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-code"></i> <span id="script-editor-title">编辑脚本</span></h3>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-primary" onclick="app.saveScriptEditor()">
+                            <i class="fas fa-save"></i> 保存脚本
+                        </button>
+                        <button class="btn btn-outline-secondary" onclick="app.closeScriptEditor()">
+                            <i class="fas fa-times"></i> 关闭
+                        </button>
+                    </div>
+                </div>
+                <div class="modal-body" style="padding: 20px; max-height: calc(95vh - 120px); height: calc(95vh - 120px); display: flex; flex-direction: column; gap: 15px;">
+                    <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 15px;">
+                        <div class="form-group">
+                            <label>脚本名称</label>
+                            <input type="text" id="script-editor-name" class="form-control" placeholder="输入脚本名称">
+                        </div>
+                        <div class="form-group">
+                            <label>脚本描述</label>
+                            <input type="text" id="script-editor-description" class="form-control" placeholder="输入脚本描述（可选）">
+                        </div>
+                    </div>
+                    <div class="form-group" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                        <label>脚本代码</label>
+                        <div style="flex: 1; position: relative; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: #1e1e1e;">
+                            <pre id="script-editor-highlight" class="python-highlight" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; margin: 0; padding: 12px; overflow: auto; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 14px; line-height: 1.6; color: #d4d4d4; white-space: pre-wrap; word-wrap: break-word;"></pre>
+                            <textarea id="script-editor-code" class="form-control" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; margin: 0; padding: 12px; border: none; background: transparent; color: transparent; caret-color: white; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 14px; line-height: 1.6; resize: none; overflow: auto; z-index: 1;"></textarea>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+                <div id="claw-env-modal" class="modal" style="display: none;">
+                    <div id="claw-env-modal-content" class="modal-content" style="width: 85%; max-width: 960px; max-height: 85vh;">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-satellite-dish" style="color:#3b82f6;"></i> 环境感知总览</h3>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <button class="modal-close" onclick="app.toggleEnvMaximize()" title="最大化/还原" style="font-size: 14px;">
+                                    <i class="fas fa-expand"></i>
+                                </button>
+                                <button class="btn btn-outline-primary btn-sm" onclick="app.loadEnvSnapshot()">
+                                    <i class="fas fa-sync"></i> 刷新
+                                </button>
+                                <span id="env-ts" style="font-size:12px; color:#94a3b8;"></span>
+                                <button class="modal-close" onclick="document.getElementById('claw-env-modal').style.display='none'">&times;</button>
+                            </div>
+                        </div>
+                        <div class="modal-body" id="claw-env-body" style="overflow-y: auto; max-height: calc(85vh - 60px); padding: 16px 20px;">
+                            <div style="text-align: center; color:#94a3b8; padding: 40px;">
+                                <i class="fas fa-spinner fa-spin" style="font-size: 28px;"></i> 正在读取环境快照…
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="claw-feishu-modal" class="modal" style="display: none;">
+                    <div id="claw-feishu-modal-content" class="modal-content" style="width: 85%; max-width: 900px; max-height: 80vh;">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-paper-plane"></i> 飞书接入管理</h3>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="modal-close" onclick="app.toggleFeishuMaximize()" title="最大化" style="font-size: 14px;">
+                                    <i class="fas fa-expand"></i>
+                                </button>
+                                <button class="modal-close" onclick="document.getElementById('claw-feishu-modal').style.display='none'">&times;</button>
+                            </div>
+                        </div>
+                        <div class="modal-body" style="overflow-y: auto; max-height: calc(80vh - 60px); padding: 20px;">
+                            <!-- 状态指示器 -->
+                            <div id="feishu-status-section" style="margin-bottom: 16px;">
+                                <!-- 由JS动态渲染 -->
+                            </div>
+
+                            <!-- Tab切换 -->
+                            <div class="feishu-tabs" style="margin-bottom: 16px; border-bottom: 1px solid #ddd;">
+                                <button class="feishu-tab-btn active" onclick="app.switchFeishuTab('config')" data-tab="config">配置</button>
+                                <button class="feishu-tab-btn" onclick="app.switchFeishuTab('sessions')" data-tab="sessions">会话</button>
+                                <button class="feishu-tab-btn" onclick="app.switchFeishuTab('messages')" data-tab="messages">消息日志</button>
+                                <button class="feishu-tab-btn" onclick="app.switchFeishuTab('help')" data-tab="help">帮助说明</button>
+                            </div>
+
+                            <!-- 配置面板 -->
+                            <div id="feishu-config-panel" class="feishu-tab-panel">
+                                <div style="display: grid; gap: 12px;">
+                                    <!-- App ID -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">App ID <span style="color: #999; font-size: 12px;">(格式: cli_xxx)</span></label>
+                                        <input type="text" id="feishu-app-id" class="form-input" placeholder="cli_xxxxxxxxxxxx" style="width: 100%;">
+                                    </div>
+                                    <!-- App Secret -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">App Secret</label>
+                                        <input type="password" id="feishu-app-secret" class="form-input" placeholder="应用密钥" style="width: 100%;">
+                                    </div>
+                                    <!-- Encrypt Key -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">Encrypt Key <span style="color: #999; font-size: 12px;">(可选)</span></label>
+                                        <input type="password" id="feishu-encrypt-key" class="form-input" placeholder="事件加密密钥" style="width: 100%;">
+                                    </div>
+                                    <!-- Verification Token -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">Verification Token</label>
+                                        <input type="password" id="feishu-verification-token" class="form-input" placeholder="事件校验令牌" style="width: 100%;">
+                                    </div>
+                                    <!-- Bot Name -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">机器人名称</label>
+                                        <input type="text" id="feishu-bot-name" class="form-input" placeholder="Lobster Bot" style="width: 100%;">
+                                    </div>
+                                    <!-- Domain -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">域名</label>
+                                        <select id="feishu-domain" class="form-input" style="width: 100%;">
+                                            <option value="feishu">飞书 (中国版)</option>
+                                            <option value="lark">Lark (国际版)</option>
+                                        </select>
+                                    </div>
+                                    <!-- Event Mode -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">事件模式</label>
+                                        <select id="feishu-event-mode" class="form-input" style="width: 100%;">
+                                            <option value="long_connection">长连接 (推荐，无需公网)</option>
+                                            <option value="webhook">Webhook (需要公网地址)</option>
+                                        </select>
+                                    </div>
+                                    <!-- 启用开关 -->
+                                    <div>
+                                        <label style="display: flex; align-items: center; gap: 8px; font-weight: 500;">
+                                            <input type="checkbox" id="feishu-enabled"> 启用飞书接入
+                                        </label>
+                                    </div>
+
+                                    <hr style="border: none; border-top: 1px solid #eee; margin: 8px 0;">
+
+                                    <h4 style="margin: 0; color: #666;">访问控制</h4>
+                                    <!-- DM Policy -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">私聊策略</label>
+                                        <select id="feishu-dm-policy" class="form-input" style="width: 100%;">
+                                            <option value="open">开放 (所有用户可用)</option>
+                                            <option value="allowlist">允许名单</option>
+                                            <option value="blocklist">阻止名单</option>
+                                        </select>
+                                    </div>
+                                    <!-- Allow List -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">允许名单 <span style="color: #999; font-size: 12px;">(每行一个 open_id)</span></label>
+                                        <textarea id="feishu-allow-list" class="form-input" rows="3" placeholder="ou_xxx&#10;ou_yyy" style="width: 100%;"></textarea>
+                                    </div>
+                                    <!-- Block List -->
+                                    <div>
+                                        <label style="display: block; margin-bottom: 4px; font-weight: 500;">阻止名单 <span style="color: #999; font-size: 12px;">(每行一个 open_id)</span></label>
+                                        <textarea id="feishu-block-list" class="form-input" rows="3" placeholder="ou_xxx&#10;ou_yyy" style="width: 100%;"></textarea>
+                                    </div>
+
+                                    <hr style="border: none; border-top: 1px solid #eee; margin: 8px 0;">
+
+                                    <h4 style="margin: 0; color: #666;">群聊配置</h4>
+                                    <label style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="checkbox" id="feishu-handle-groups" checked> 处理群聊消息
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="checkbox" id="feishu-handle-dms" checked> 处理私聊消息
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="checkbox" id="feishu-trigger-on-mention" checked> 群聊仅在@机器人时触发
+                                    </label>
+
+                                    <div style="display: flex; gap: 8px; margin-top: 16px;">
+                                        <button class="btn btn-primary" onclick="app.saveFeishuConfig()">
+                                            <i class="fas fa-save"></i> 保存配置
+                                        </button>
+                                        <button class="btn btn-secondary" onclick="app.testFeishuConnection()">
+                                            <i class="fas fa-plug"></i> 测试连接
+                                        </button>
+                                    </div>
+                                    <div id="feishu-config-message" style="margin-top: 8px;"></div>
+                                </div>
+                            </div>
+
+                            <!-- 会话面板 -->
+                            <div id="feishu-sessions-panel" class="feishu-tab-panel" style="display: none;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                    <h4 style="margin: 0;">飞书会话</h4>
+                                    <button class="btn btn-primary btn-sm" onclick="app.loadFeishuSessions()">
+                                        <i class="fas fa-sync-alt"></i> 刷新
+                                    </button>
+                                </div>
+                                <div id="feishu-sessions-list" style="margin-bottom: 16px;">
+                                    <div style="text-align: center; color: #999; padding: 40px;">暂无飞书会话</div>
+                                </div>
+                                <div id="feishu-session-detail" style="display: none; border-top: 1px solid #eee; padding-top: 16px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                        <h4 style="margin: 0;">会话详情</h4>
+                                        <button class="btn btn-secondary btn-sm" onclick="app.closeFeishuSessionDetail()">
+                                            <i class="fas fa-times"></i> 关闭
+                                        </button>
+                                    </div>
+                                    <div id="feishu-session-messages" style="max-height: 400px; overflow-y: auto;">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 消息日志面板 -->
+                            <div id="feishu-messages-panel" class="feishu-tab-panel" style="display: none;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                    <h4 style="margin: 0;">消息日志</h4>
+                                    <button class="btn btn-danger btn-sm" onclick="app.clearFeishuMessages()">
+                                        <i class="fas fa-trash"></i> 清空日志
+                                    </button>
+                                </div>
+                                <div style="overflow-x: auto;">
+                                    <table class="table" style="width: 100%; font-size: 13px;">
+                                        <thead>
+                                            <tr>
+                                                <th>时间</th>
+                                                <th>发送者</th>
+                                                <th>类型</th>
+                                                <th>消息内容</th>
+                                                <th>响应</th>
+                                                <th>状态</th>
+                                                <th>耗时</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="feishu-messages-tbody">
+                                            <tr><td colspan="7" style="text-align: center; color: #999;">暂无消息</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- 帮助说明面板 -->
+                            <div id="feishu-help-panel" class="feishu-tab-panel" style="display: none;">
+                                <div style="line-height: 1.8; color: #555;">
+                                    <h4>飞书接入配置步骤</h4>
+                                    <ol>
+                                        <li>访问 <a href="https://open.feishu.cn/app" target="_blank">飞书开放平台</a> 创建企业自建应用</li>
+                                        <li>在"凭证与基础信息"页面复制 <strong>App ID</strong> 和 <strong>App Secret</strong></li>
+                                        <li>在"权限管理"页面添加权限：
+                                            <ul>
+                                                <li><code>im:message</code> - 发送消息</li>
+                                                <li><code>im:message:send_as_bot</code> - 以机器人身份发送</li>
+                                                <li><code>im:message.group_at_msg:readonly</code> - 读取群@消息</li>
+                                                <li><code>im:message.p2p_msg:readonly</code> - 读取私聊消息</li>
+                                            </ul>
+                                        </li>
+                                        <li>在"应用功能 > 机器人"页面启用机器人能力</li>
+                                        <li>在"事件订阅"页面：
+                                            <ul>
+                                                <li>配置 Webhook URL 为：<code id="feishu-webhook-url-help"></code></li>
+                                                <li>添加事件：<code>im.message.receive_v1</code></li>
+                                            </ul>
+                                        </li>
+                                        <li>在"加密策略"页面复制 <strong>Encrypt Key</strong> 和 <strong>Verification Token</strong></li>
+                                        <li>创建版本并发布应用，等待管理员审核通过</li>
+                                        <li>在本页面填写配置并保存，点击"测试连接"验证</li>
+                                    </ol>
+                                    <div style="background: #fff3cd; padding: 12px; border-radius: 4px; margin-top: 16px;">
+                                        <strong>注意：</strong>Webhook URL 需要公网可访问。如本地开发，可使用 <a href="https://ngrok.com" target="_blank">ngrok</a> 等工具做内网穿透。
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== 文档处理内容 ========== -->
+                <div class="tab-panel" id="main-panel">
+                    <!-- 工具栏 -->
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <label class="btn btn-primary btn-sm file-upload-btn">
+                                <i class="fas fa-upload"></i> 上传
+                                <input type="file" id="file-upload" class="file-input" multiple accept=".doc,.docx,.pdf,.txt">
+                            </label>
+                            <button id="clear-attachments-btn" class="btn btn-outline-danger btn-sm">
+                                <i class="fas fa-trash"></i> 清空附件
+                            </button>
+                            <div id="attachments-mini" style="display: flex; flex-wrap: wrap; gap: 6px; max-width: 400px;"></div>
+                            <button id="processing-select-agents-btn" class="btn btn-primary btn-sm">
+                                <i class="fas fa-users"></i> 角色选择
+                            </button>
+                            <button id="start-btn" class="btn btn-success">
+                                <i class="fas fa-play"></i> 开始处理
+                            </button>
+                            <button id="stop-btn" class="btn btn-danger" disabled>
+                                <i class="fas fa-stop"></i> 停止处理
+                            </button>
+                            <button id="clear-btn" class="btn btn-outline-danger">
+                                <i class="fas fa-trash-alt"></i> 清空
+                            </button>
+                        </div>
+                        <div class="toolbar-right">
+                            <div class="iteration-control">
+                                <label for="iterations">迭代次数:</label>
+                                <input type="number" id="iterations" value="{{ settings.iterations }}" min="1" max="50">
+                            </div>
+                            <div class="status-indicator">
+                                <span class="status-dot" id="status-dot"></span>
+                                <span id="status-text">{{ processing_status }}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 统计信息栏 -->
+                    <div class="stats-bar">
+                        <div class="stat-item">
+                            <div class="stat-icon"><i class="fas fa-redo"></i></div>
+                            <div class="stat-info">
+                                <span class="stat-label">迭代进度</span>
+                                <span class="stat-value" id="stat-iteration">0/{{ settings.iterations }}</span>
+                                <span class="stat-sub" id="iteration-progress">步骤 0/0</span>
+                            </div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-icon"><i class="fas fa-coins"></i></div>
+                            <div class="stat-info">
+                                <span class="stat-label">总Token</span>
+                                <span class="stat-value" id="stat-tokens">0</span>
+                            </div>
+                        </div>
+                        <div class="stat-item" id="stat-search-item" style="cursor: pointer;" title="点击查看搜索日志">
+                            <div class="stat-icon"><i class="fas fa-search"></i></div>
+                            <div class="stat-info">
+                                <span class="stat-label">搜索次数</span>
+                                <span class="stat-value" id="stat-searches">0</span>
+                            </div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-icon"><i class="fas fa-clock"></i></div>
+                            <div class="stat-info">
+                                <span class="stat-label">运行时长</span>
+                                <span class="stat-value" id="stat-time">00:00:00</span>
+                            </div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-icon"><i class="fas fa-file-word"></i></div>
+                            <div class="stat-info">
+                                <span class="stat-label">字数统计</span>
+                                <span class="stat-value" id="stat-wordcount">0</span>
+                            </div>
+                        </div>
+                        <div class="progress-container">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progress-fill"></div>
+                            </div>
+                            <span class="progress-text" id="progress-text">0%</span>
+                        </div>
+                    </div>
+
+                    <!-- 工作区域 -->
+                    <div class="workspace-content">
+                        <!-- 左半部分：输入指令 -->
+                        <div class="input-section">
+                            <div class="section-header">
+                                <h3><i class="fas fa-terminal"></i> 输入指令</h3>
+                            </div>
+                            <textarea id="input-content" class="content-textarea" placeholder="请输入您的指令或需求，AI将先分析指令内容，然后各代理协作完成任务...">{% if current_document %}{{ current_document }}{% else %}生成一个公积金数据运营的完整方案，可实操，可持续盈利，并能打动投资人。{% endif %}</textarea>
+                        </div>
+
+                        <!-- 右半部分：预览区域 -->
+                        <div class="preview-section" id="preview-section">
+                            <div class="section-header">
+                                <h3><i class="fas fa-file-alt"></i> 文档预览</h3>
+                                <div class="header-actions">
+                                    <div class="view-toggle">
+                                        <button class="toggle-btn active" data-view="markdown">
+                                            <i class="fas fa-code"></i> 源码
+                                        </button>
+                                        <button class="toggle-btn" data-view="preview">
+                                            <i class="fas fa-eye"></i> 预览
+                                        </button>
+                                    </div>
+                                    <button class="maximize-btn" data-target="preview-section" title="最大化">
+                                        <i class="fas fa-expand"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="preview-content" class="preview-content">
+                                {% if current_document %}
+                                <pre class="markdown-source">{{ current_document }}</pre>
+                                {% else %}
+                                <div class="empty-state">
+                                    <i class="fas fa-file-text"></i>
+                                    <p>处理后的文档将在这里显示</p>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 底部面板 -->
+                    <div class="bottom-panel">
+                        <!-- Agent状态 -->
+                        <div class="agent-status-panel" id="agent-status-panel">
+                            <div class="section-header">
+                                <h3><i class="fas fa-chart-line"></i> Agent状态</h3>
+                                <button class="maximize-btn" data-target="agent-status-panel" title="最大化">
+                                    <i class="fas fa-expand"></i>
+                                </button>
+                            </div>
+                            <div class="status-table-wrapper">
+                                <table class="status-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Agent</th>
+                                            <th>状态</th>
+                                            <th>模型</th>
+                                            <th>迭代</th>
+                                            <th>输入Token</th>
+                                            <th>输出Token</th>
+                                            <th>耗时</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="agent-status-body">
+                                        {% for agent in flat_agents %}
+                                        <tr data-id="{{ agent.id }}">
+                                            <td>{{ agent.name }}</td>
+                                            <td><span class="status-badge badge-ready">就绪</span></td>
+                                            <td>-</td>
+                                            <td>0</td>
+                                            <td>0</td>
+                                            <td>0</td>
+                                            <td>0s</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- 日志区域 -->
+                        <div class="log-panel" id="log-panel">
+                            <div class="section-header">
+                                <h3><i class="fas fa-terminal"></i> 处理日志</h3>
+                                <div class="header-actions">
+                                    <div class="log-controls">
+                                        <select id="log-level-filter" class="form-control-sm">
+                                            <option value="ALL">全部</option>
+                                            <option value="DEBUG">DEBUG</option>
+                                            <option value="INFO" selected>INFO</option>
+                                            <option value="WARNING">WARNING</option>
+                                            <option value="ERROR">ERROR</option>
+                                        </select>
+                                        <button id="clear-log-btn" class="btn btn-secondary btn-sm" title="清空日志">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                        <button id="export-log-btn" class="btn btn-secondary btn-sm" title="导出日志">
+                                            <i class="fas fa-download"></i>
+                                        </button>
+                                        <button id="model-calls-btn" class="btn btn-info btn-sm" title="查看模型调用信息">
+                                            <i class="fas fa-brain"></i> 模型调用
+                                        </button>
+                                    </div>
+                                    <button class="maximize-btn" data-target="log-panel" title="最大化">
+                                        <i class="fas fa-expand"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="log-content" class="log-content">
+                                {% for log in logs %}
+                                <div class="log-item">{{ log }}</div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== AI聊天历史记录模态框 ========== -->
+                <div id="ai-chat-history-modal" class="modal" style="display: none;">
+                    <div id="ai-chat-history-modal-content" class="modal-content history-modal-content">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-history"></i> 聊天记录历史</h3>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="modal-close maximize-btn" onclick="window.app.toggleHistoryMaximize()" style="width: 32px; height: 32px; font-size: 16px;">&square;</button>
+                                <button class="modal-close" onclick="document.getElementById('ai-chat-history-modal').style.display='none'">&times;</button>
+                            </div>
+                        </div>
+                        <div class="modal-body history-modal-body">
+                            <!-- 历史记录列表视图 -->
+                            <div id="history-list-view">
+                                <div style="margin-bottom: 15px;">
+                                    <input type="text" id="history-search" class="form-control" placeholder="搜索主题..." oninput="window.app.loadHistoryList()">
+                                </div>
+                                <div id="history-list" style="max-height: 500px; overflow-y: auto;">
+                                    <div class="empty-state">
+                                        <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                                        <p>暂无聊天记录</p>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- 历史记录详情视图 -->
+                            <div id="history-detail-view" style="display: none;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                    <button class="btn btn-outline btn-sm" onclick="window.app.showHistoryList()">
+                                        <i class="fas fa-arrow-left"></i> 返回列表
+                                    </button>
+                                    <div>
+                                        <button class="btn btn-outline-danger btn-sm" onclick="window.app.deleteCurrentHistory()">
+                                            <i class="fas fa-trash"></i> 删除
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="history-detail-content" class="history-detail-content">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== 周易卜卦历史记录弹窗 ========== -->
+                <div id="yijing-history-modal" class="modal" style="display: none;">
+                    <div class="modal-content history-modal-content">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-history"></i> 卜卦历史记录</h3>
+                            <button class="modal-close" onclick="document.getElementById('yijing-history-modal').style.display='none'">&times;</button>
+                        </div>
+                        <div class="modal-body" style="max-height: 600px; overflow-y: auto;">
+                            <div id="yijing-history-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; color: #94a3b8;"></i>
+                                    <p>暂无卜卦记录</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== 模型配置内容 ========== -->
+                <div class="tab-panel" id="models-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-server"></i> 模型配置</h2>
+                    </div>
+                    <div class="panel-toolbar">
+                        <button id="add-model-btn" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> 添加模型
+                        </button>
+                    </div>
+                    <div id="models-list" class="config-grid">
+                        {% for model in models %}
+                        <div class="config-card" data-id="{{ model.id }}">
+                            <div class="card-header">
+                                <span class="card-title">{{ model.name }}</span>
+                                <div class="card-actions">
+                                    <button class="action-btn test-btn" title="测试连接">
+                                        <i class="fas fa-plug"></i>
+                                    </button>
+                                    <button class="action-btn edit-btn" title="编辑">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button class="action-btn delete-btn" title="删除">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="badge-row">
+                                    <span class="badge badge-info">{{ model.api_type }}</span>
+                                    <span class="badge badge-default">{{ model.model_name }}</span>
+                                    {% if model.enabled %}
+                                    <span class="badge badge-success">已启用</span>
+                                    {% else %}
+                                    <span class="badge badge-warning">已禁用</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- ========== Agent配置内容 ========== -->
+                <div class="tab-panel" id="agents-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-user-cog"></i> Agent配置</h2>
+                    </div>
+                    <div class="panel-toolbar">
+                        <button id="add-agent-btn" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> 添加Agent
+                        </button>
+                    </div>
+                    
+                    <div id="agents-list">
+                    {% for group in agents %}
+                    {% if group.agents %}
+                    <div style="margin-bottom: 25px;">
+                        <h3 class="agent-group-title {{ group.css_class }}">
+                            <i class="fas {{ group.icon }}"></i> {{ group.name }} ({{ group.agents|length }})
+                        </h3>
+                        <div class="config-grid">
+                            {% for agent in group.agents %}
+                            <div class="config-card" data-id="{{ agent.id }}">
+                                <div class="card-header">
+                                    <span class="card-title">{{ agent.name }}</span>
+                                    <div class="card-actions">
+                                        <button class="action-btn edit-btn" title="编辑">
+                                            <i class="fas fa-edit"></i>
+                                        </button>
+                                        <button class="action-btn delete-btn" title="删除">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <p class="card-desc">{{ agent.role_description[:50] if agent.role_description else '-' }}...</p>
+                                    <div class="badge-row">
+                                        <span class="badge badge-info">{{ agent.model_name }}</span>
+                                        {% if agent.enabled %}
+                                        <span class="badge badge-success">已启用</span>
+                                        {% else %}
+                                        <span class="badge badge-warning">已禁用</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% endfor %}
+                    </div>
+                </div>
+
+                <!-- ========== 搜索引擎内容 ========== -->
+                <div class="tab-panel" id="search-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-search"></i> 搜索引擎配置</h2>
+                    </div>
+                    
+                    <!-- 快速搜索区域 -->
+                    <div class="quick-search-box">
+                        <div class="section-header" style="color: white; margin-bottom: 15px;">
+                            <h3 style="color: white;"><i class="fas fa-bolt"></i> 快速搜索</h3>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="quick-search-input" placeholder="输入关键词进行搜索..." class="form-control" style="flex: 1;">
+                            <button id="quick-search-btn" class="btn" style="background: white; color: #667eea; font-weight: 600;">
+                                <i class="fas fa-search"></i> 搜索
+                            </button>
+                            <button id="quick-search-clear-btn" class="btn" style="background: rgba(255,255,255,0.2); color: white;">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                        <div id="quick-search-results" class="quick-search-results" style="margin-top: 15px;"></div>
+                    </div>
+                    
+                    <div class="panel-toolbar" style="margin-top: 20px;">
+                        <button id="add-search-btn" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> 添加搜索引擎
+                        </button>
+                    </div>
+                    <div id="search-list" class="config-grid">
+                        {% for engine in search_engines %}
+                        <div class="config-card" data-id="{{ engine.id }}">
+                            <div class="card-header">
+                                <span class="card-title">{{ engine.name }}</span>
+                                <div class="card-actions">
+                                    <button class="action-btn edit-btn" title="编辑">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button class="action-btn delete-btn" title="删除">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="badge-row">
+                                    <span class="badge badge-info">{{ engine.adapter_type }}</span>
+                                    {% if engine.enabled %}
+                                    <span class="badge badge-success">已启用</span>
+                                    {% else %}
+                                    <span class="badge badge-warning">已禁用</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    
+                    <!-- 搜索测试 -->
+                    <div class="panel-section" style="margin-top: 20px;">
+                        <div class="section-header">
+                            <h3><i class="fas fa-flask"></i> 搜索测试</h3>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="search-query" placeholder="输入搜索关键词..." class="form-control" style="flex: 1;">
+                            <button id="test-search-btn" class="btn btn-primary">
+                                <i class="fas fa-search"></i> 测试搜索
+                            </button>
+                        </div>
+                        <div id="search-results" class="search-results" style="margin-top: 15px;"></div>
+                    </div>
+                </div>
+
+                <!-- ========== Skills配置内容 ========== -->
+                <div class="tab-panel" id="skills-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-magic"></i> Skills配置</h2>
+                    </div>
+                    <div class="panel-toolbar">
+                        <button id="open-skill-config-btn" class="btn btn-primary">
+                            <i class="fas fa-cog"></i> 配置管理
+                        </button>
+                    </div>
+                    <div id="skills-list" class="config-grid"></div>
+                </div>
+
+                <!-- ========== 统计分析内容 ========== -->
+                <div class="tab-panel" id="statistics-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-chart-bar"></i> 模型调用统计</h2>
+                    </div>
+                    <div class="panel-content">
+                        <div style="display: flex; gap: 10px; margin-bottom: 20px; align-items: center;">
+                            <label style="font-size: 13px; color: #64748b;">开始日期:</label>
+                            <input type="date" id="stat-start-date" class="form-control" style="width: 150px;">
+                            <label style="font-size: 13px; color: #64748b;">结束日期:</label>
+                            <input type="date" id="stat-end-date" class="form-control" style="width: 150px;">
+                            <button class="btn btn-primary btn-sm" onclick="app.loadStatistics()">
+                                <i class="fas fa-search"></i> 查询
+                            </button>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="document.getElementById('stat-start-date').value=''; document.getElementById('stat-end-date').value=''; app.loadStatistics();">
+                                清除筛选
+                            </button>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px;">
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">总调用次数</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #1e293b;" id="stat-total-calls">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">总Token消耗</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #3b82f6;" id="stat-total-tokens">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">输入Token</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #10b981;" id="stat-prompt-tokens">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">输出Token</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #f59e0b;" id="stat-completion-tokens">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">平均耗时</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #8b5cf6;" id="stat-average-duration">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">平均Token/s</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #06b6d4;" id="stat-average-tps">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">成功率</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #22c55e;" id="stat-success-rate">0</div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">错误数</div>
+                                <div style="font-size: 24px; font-weight: 600; color: #ef4444;" id="stat-total-errors">0</div>
+                            </div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 15px;">按模型统计</h3>
+                                <div id="stat-models-list">
+                                    <div class="empty-state">暂无数据</div>
+                                </div>
+                            </div>
+                            <div style="background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 15px;">每日统计（近7天）</h3>
+                                <div id="stat-daily-list">
+                                    <div class="empty-state">暂无数据</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 20px; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                            <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 15px;">最近调用记录</h3>
+                            <div id="stat-recent-calls">
+                                <div class="empty-state">暂无数据</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="log-detail-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
+                    <div id="log-detail-modal-content" style="background: #fff; border-radius: 12px; width: 96%; max-width: 1600px; height: 88vh; max-height: 88vh; overflow: hidden; display: flex; flex-direction: column;">
+                        <div style="padding: 12px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; z-index: 10;">
+                            <h3 style="font-size: 15px; font-weight: 600; margin: 0;">调用详情</h3>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <button onclick="app.toggleLogDetailMaximize()" style="background: none; border: none; font-size: 16px; cursor: pointer; color: #64748b; padding: 4px 8px;" title="最大化"><i class="fas fa-expand"></i></button>
+                                <button onclick="document.getElementById('log-detail-modal').style.display='none'" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #64748b; padding: 4px 8px;">&times;</button>
+                            </div>
+                        </div>
+                        <div id="log-detail-body" style="padding: 12px 16px 16px; overflow: hidden; flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                            <div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px; margin-bottom: 10px; flex-shrink: 0;">
+                                <div style="display: flex; align-items: baseline; gap: 6px;">
+                                    <span style="font-size: 11px; color: #64748b;">模型</span>
+                                    <span style="font-size: 13px; font-weight: 600; color: #3b82f6;" id="detail-model-name">-</span>
+                                </div>
+                                <div style="display: flex; align-items: baseline; gap: 5px;">
+                                    <span style="font-size: 11px; color: #64748b;">总Token</span>
+                                    <span style="font-size: 12px; font-weight: 600;" id="detail-total-tokens">0</span>
+                                </div>
+                                <div style="display: flex; align-items: baseline; gap: 5px;">
+                                    <span style="font-size: 11px; color: #64748b;">输入</span>
+                                    <span style="font-size: 12px; font-weight: 600; color: #10b981;" id="detail-prompt-tokens">0</span>
+                                </div>
+                                <div style="display: flex; align-items: baseline; gap: 5px;">
+                                    <span style="font-size: 11px; color: #64748b;">输出</span>
+                                    <span style="font-size: 12px; font-weight: 600; color: #f59e0b;" id="detail-completion-tokens">0</span>
+                                </div>
+                                <div style="display: flex; align-items: baseline; gap: 5px;">
+                                    <span style="font-size: 11px; color: #64748b;">耗时</span>
+                                    <span style="font-size: 12px; font-weight: 600;" id="detail-duration">0s</span>
+                                </div>
+                                <div style="display: flex; align-items: baseline; gap: 5px;">
+                                    <span style="font-size: 11px; color: #64748b;">时间</span>
+                                    <span style="font-size: 12px;" id="detail-timestamp">-</span>
+                                </div>
+                            </div>
+                            <div style="flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;">
+                                <div style="display: flex; flex-direction: column; min-height: 0;">
+                                    <div style="font-size: 12px; color: #64748b; margin-bottom: 6px; flex-shrink: 0;">输入消息</div>
+                                    <div style="background: #f8fafc; padding: 12px 14px; border-radius: 6px; flex: 1; min-height: 0; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.7;" id="detail-messages">-</div>
+                                </div>
+                                <div style="display: flex; flex-direction: column; min-height: 0;">
+                                    <div style="font-size: 12px; color: #64748b; margin-bottom: 6px; flex-shrink: 0;">模型响应</div>
+                                    <div style="background: #f0fdf4; padding: 12px 14px; border-radius: 6px; flex: 1; min-height: 0; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.7;" id="detail-response">-</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== 视频模型内容 ========== -->
+                <div class="tab-panel" id="video-models-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-video"></i> 视频模型</h2>
+                    </div>
+                    <div class="panel-content" style="display: flex; gap: 20px;">
+                        <!-- 左侧：参数设置 -->
+                        <div style="flex: 1; min-width: 400px;">
+                            <div class="form-section">
+                                <div style="margin-bottom: 12px; padding: 8px 10px; background: #f1f5f9; border-radius: 6px; font-size: 12px; line-height: 1.6;">
+                                    <strong>推荐：</strong>标准 1152x768/121帧/24fps | 短视频 81-121帧/24fps | 长视频 241帧/24fps
+                                </div>
+
+                                <div class="form-group">
+                                    <label>视频模型</label>
+                                    <select id="video-model-select" class="form-control">
+                                        <option value="">-- 请先在模型配置中添加视频模型 --</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>视频提示词
+                                        <button type="button" id="optimize-prompt-btn" style="float: right; margin: 0; padding: 4px 12px; font-size: 12px; background: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                                            <i class="fas fa-magic"></i> 提示词优化
+                                        </button>
+                                    </label>
+                                    <textarea id="video-prompt" class="form-control" rows="3" placeholder="描述你想要生成的视频内容..."></textarea>
+                                </div>
+
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                                    <div class="form-group">
+                                        <label>宽度</label>
+                                        <input type="number" id="video-width" class="form-control" value="1152" min="480" max="1920" step="64">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>高度</label>
+                                        <input type="number" id="video-height" class="form-control" value="768" min="360" max="1080" step="64">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>帧数</label>
+                                        <input type="number" id="video-frames" class="form-control" value="121" min="1" max="441" step="8">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>帧率(fps)</label>
+                                        <input type="number" id="video-fps" class="form-control" value="24" min="1" max="60">
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>起始图片URL(可选)</label>
+                                    <input type="text" id="video-image-url" class="form-control" placeholder="图生视频URL">
+                                </div>
+
+                                <div class="form-group">
+                                    <label>反向提示词(可选)</label>
+                                    <input type="text" id="video-negative-prompt" class="form-control" placeholder="描述需要避免的内容...">
+                                </div>
+
+                                <div style="display: flex; gap: 8px; margin-top: 15px;">
+                                    <button id="generate-video-btn" class="btn btn-primary" style="flex: 1;">
+                                        <i class="fas fa-play-circle"></i> 生成视频
+                                    </button>
+                                    <button id="clear-video-btn" class="btn btn-outline-danger">
+                                        <i class="fas fa-trash"></i> 清空
+                                    </button>
+                                </div>
+
+                                <div id="video-result" style="margin-top: 15px; display: none;">
+                                    <div style="font-weight: 600; margin-bottom: 8px; font-size: 13px;"><i class="fas fa-film"></i> 生成进度</div>
+                                    <div id="video-progress" style="display: none;">
+                                        <div class="progress-bar">
+                                            <div id="video-progress-bar" class="progress-bar-fill" style="width: 0%;"></div>
+                                        </div>
+                                        <p id="video-progress-text" style="text-align: center; margin-top: 5px; color: #64748b; font-size: 12px;">等待任务创建...</p>
+                                    </div>
+                                    <div id="video-error" style="display: none; color: #ef4444; padding: 8px; background: #fef2f2; border-radius: 6px; font-size: 12px;">
+                                        <i class="fas fa-exclamation-circle"></i> <span id="video-error-text"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 右侧：视频预览 -->
+                        <div style="flex: 1; min-width: 400px; display: flex; align-items: flex-start; justify-content: center;">
+                            <div id="video-preview-area" style="width: 100%; min-height: 400px; background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #94a3b8;">
+                                <i class="fas fa-video" style="font-size: 48px; margin-bottom: 15px; opacity: 0.5;"></i>
+                                <p style="font-size: 14px;">生成的视频将在这里显示</p>
+                            </div>
+                            <div id="video-result-content" style="display: none; width: 100%;">
+                                <video id="video-result-player" controls style="width: 100%; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                                    您的浏览器不支持视频播放
+                                </video>
+                                <p id="video-result-info" style="margin-top: 8px; color: #64748b; font-size: 12px; text-align: center;"></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== 周易卜卦内容 ========== -->
+                <div class="tab-panel" id="yijing-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-coins"></i> 周易卜卦</h2>
+                        <div class="divination-input-group">
+                            <input type="text" id="divination-content" class="form-control divination-input" placeholder="请输入占卜内容..." />
+                            <button id="start-divination-btn" class="btn btn-primary divination-btn" style="background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%);">
+                                <i class="fas fa-play"></i> 开始摇卦
+                            </button>
+                            <button id="reset-divination-btn" class="btn btn-primary divination-btn" style="background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%);">
+                                <i class="fas fa-redo"></i> 重新摇卦
+                            </button>
+                            <button id="yijing-history-btn" class="btn btn-outline divination-btn">
+                                <i class="fas fa-history"></i> 历史记录
+                            </button>
+                            <button id="export-divination-btn" class="btn btn-outline divination-btn" disabled title="请先完成摇卦和AI解卦">
+                                <i class="fas fa-download"></i> 导出结果
+                            </button>
+                            <div class="divination-hint">摒除杂念，集中注意力默想自己所求之事，然后点击"开始摇卦"，即可生成卦象。</div>
+                        </div>
+                    </div>
+
+                    <div class="yijing-container">
+                        <div class="yijing-section yijing-coins">
+                            <div class="section-header">
+                                <h3><i class="fas fa-circle"></i> 摇卦过程</h3>
+                            </div>
+                            <div id="coins-container" class="coins-container">
+                                <div class="empty-state">
+                                    <i class="fas fa-coins" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                    <p>点击上方按钮开始摇卦</p>
+                                    <p style="font-size: 12px; color: #94a3b8;">将依次进行六次铜钱投掷</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="yijing-section yijing-result">
+                            <div class="section-header">
+                                <h3><i class="fas fa-book-open"></i> 卦象结果</h3>
+                            </div>
+                            <div id="hexagram-container" class="hexagram-container">
+                                <div class="empty-state">
+                                    <i class="fas fa-book-open" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                    <p>摇卦后显示卦象结果</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="yijing-section yijing-solution">
+                            <div class="section-header">
+                                <h3><i class="fas fa-scroll"></i> 解卦参考</h3>
+                                <div class="section-actions">
+                                    <button id="ai-explain-btn" class="btn btn-primary btn-sm" disabled style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                                        <i class="fas fa-robot"></i> AI 深度解卦
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="solution-row">
+                                <div class="solution-left">
+                                    <div id="solution-container" class="solution-container">
+                                        <div class="empty-state">
+                                            <i class="fas fa-scroll" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                            <p>摇卦后显示解卦内容</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="solution-right">
+                                    <div id="ai-solution-container" class="solution-container">
+                                        <div class="empty-state">
+                                            <i class="fas fa-robot" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                            <p>点击"AI深度解卦"获取AI解卦</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== AI聊天内容 ========== -->
+                <div class="tab-panel" id="ai-chat-panel">
+                    <div class="panel-header">
+                        <h2><i class="fas fa-comments"></i> AI聊天</h2>
+                    </div>
+                    <div class="ai-chat-container">
+                        <div class="ai-chat-sidebar">
+                            <div class="ai-chat-sidebar-header">
+                                <button id="ai-chat-select-agents-btn" class="btn btn-primary btn-sm">
+                                    <i class="fas fa-user-plus"></i> 角色选择
+                                </button>
+                                <button id="ai-chat-start-btn" class="btn btn-success btn-sm">
+                                    <i class="fas fa-play"></i> 启动聊天
+                                </button>
+                                <button id="ai-chat-history-btn" class="btn btn-outline btn-sm">
+                                    <i class="fas fa-history"></i> 历史记录
+                                </button>
+                            </div>
+                            <div id="ai-chat-role-list" class="ai-chat-role-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-users" style="font-size: 32px; margin-bottom: 10px;"></i>
+                                    <p>点击"角色选择"添加角色</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="ai-chat-main">
+                            <div class="ai-chat-stats">
+                                <div class="ai-chat-stats-item">
+                                    <i class="fas fa-comments"></i>
+                                    <span>消息: <strong id="ai-chat-total-messages">0</strong> 条</span>
+                                </div>
+                                <div class="ai-chat-stats-item">
+                                    <i class="fas fa-font"></i>
+                                    <span>总字数: <strong id="ai-chat-total-chars">0</strong> 字</span>
+                                </div>
+                            </div>
+                            <div id="ai-chat-messages" class="ai-chat-messages">
+                                <div class="empty-state">
+                                    <i class="fas fa-comments" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                    <p>添加角色后点击"启动聊天"开始对话</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </main>
+        </div>
+    </div>
+
+    <!-- Skill配置模态框 -->
+    <div id="skill-config-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="width: 90%; max-width: 1200px; max-height: 90vh;">
+            <div class="modal-header">
+                <h3><i class="fas fa-magic"></i> Skills配置管理</h3>
+                <button class="modal-close" onclick="closeSkillConfigModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body" style="max-height: calc(90vh - 120px); overflow-y: auto;">
+                <div style="display: flex; gap: 20px; height: 100%;">
+                    <div style="width: 300px; border-right: 1px solid #e2e8f0; padding-right: 20px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <h4>已配置Skills</h4>
+                            <button id="add-new-skill-btn" class="btn btn-primary btn-sm">
+                                <i class="fas fa-plus"></i> 新建
+                            </button>
+                        </div>
+                        <div id="skill-config-list" style="max-height: 500px; overflow-y: auto;"></div>
+                    </div>
+                    <div style="flex: 1; padding-left: 20px;">
+                        <div id="skill-editor-area">
+                            <div style="text-align: center; color: #94a3b8; padding: 50px;">
+                                <i class="fas fa-mouse-pointer" style="font-size: 48px; margin-bottom: 15px;"></i>
+                                <p>点击左侧列表中的Skill进行编辑</p>
+                                <p>或点击"新建"创建新的Skill</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模态框 -->
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">添加模型</h3>
+                <button class="modal-close" id="modal-close">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <form id="modal-form">
+                    <input type="hidden" id="form-id">
+                    
+                    <!-- 通用字段 -->
+                    <div class="form-group">
+                        <label>名称</label>
+                        <input type="text" id="form-name" class="form-control" required>
+                    </div>
+                    
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="form-enabled" checked>
+                            启用
+                        </label>
+                    </div>
+                    
+                    <!-- 模型专用字段 -->
+                    <div class="model-fields" style="display: none;">
+                        <div class="form-group">
+                            <label>模型类型</label>
+                            <select id="form-model-type" class="form-control">
+                                <option value="text">文本模型</option>
+                                <option value="image">文生图模型</option>
+                                <option value="video">文生视频模型</option>
+                                <option value="embedding">向量嵌入模型</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>API类型</label>
+                            <select id="form-api-type" class="form-control">
+                                <option value="openai">OpenAI</option>
+                                <option value="azure">Azure</option>
+                                <option value="anthropic">Anthropic</option>
+                                <option value="deepseek">DeepSeek</option>
+                                <option value="dall-e">DALL-E</option>
+                                <option value="stable-diffusion">Stable Diffusion</option>
+                                <option value="runway">Runway</option>
+                                <option value="pika">Pika</option>
+                                <option value="custom">自定义</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>API地址</label>
+                            <input type="text" id="form-api-url" class="form-control" placeholder="https://api.openai.com/v1">
+                        </div>
+                        <div class="form-group">
+                            <label>API密钥</label>
+                            <input type="password" id="form-api-key" class="form-control" placeholder="sk-...">
+                        </div>
+                        <div class="form-group">
+                            <label>模型名称</label>
+                            <input type="text" id="form-model-name" class="form-control" placeholder="gpt-4">
+                        </div>
+                    </div>
+                    
+                    <!-- Agent专用字段 -->
+                    <div class="agent-fields" style="display: none;">
+                        <div class="form-group">
+                            <label>角色描述</label>
+                            <textarea id="form-role-description" class="form-control" rows="6"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>绑定模型</label>
+                            <select id="form-model-id" class="form-control">
+                                {% for model in models %}
+                                <option value="{{ model.id }}">{{ model.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- 搜索引擎专用字段 -->
+                    <div class="search-fields" style="display: none;">
+                        <div class="form-group">
+                            <label>适配器类型</label>
+                            <select id="form-adapter-type" class="form-control">
+                                <option value="tavily">Tavily</option>
+                                <option value="serpapi">SerpAPI</option>
+                                <option value="duckduckgo">DuckDuckGo</option>
+                                <option value="custom">自定义</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>API密钥</label>
+                            <input type="password" id="form-api-key-search" class="form-control" placeholder="API密钥">
+                        </div>
+                        <div class="form-group">
+                            <label>API地址（可选）</label>
+                            <input type="text" id="form-search-api-url" class="form-control" placeholder="自定义API地址">
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="modal-cancel">取消</button>
+                <button type="button" class="btn btn-primary" id="modal-save">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Skill执行弹窗 -->
+    <div id="skill-execute-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="width: 500px; max-width: 90%;">
+            <div class="modal-header">
+                <h3 id="skill-execute-title"><i class="fas fa-play"></i> 执行Skill</h3>
+                <button class="modal-close" onclick="closeSkillExecuteModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body" id="skill-execute-form">
+                <!-- 动态生成的表单内容 -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeSkillExecuteModal()">取消</button>
+                <button type="button" class="btn btn-primary" id="skill-execute-btn" onclick="executeSkillNow()">
+                    <i class="fas fa-play"></i> 执行
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script defer src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/static/js/utils.js?v=20260706b"></script>
+    <script src="/static/js/app.js?v=20261108a"></script>
+    <script>
+        function closeSkillConfigModal() {
+            const modal = document.getElementById('skill-config-modal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        function closeSkillExecuteModal() {
+            const modal = document.getElementById('skill-execute-modal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        let currentExecuteSkillId = null;
+
+        function executeSkillNow() {
+            if (!currentExecuteSkillId) return;
+
+            const form = document.getElementById('skill-execute-form');
+            const params = {};
+
+            // 收集表单数据
+            form.querySelectorAll('input, select, textarea').forEach(input => {
+                if (input.name) {
+                    if (input.type === 'checkbox') {
+                        params[input.name] = input.checked;
+                    } else if (input.type === 'number') {
+                        params[input.name] = parseFloat(input.value) || 0;
+                    } else {
+                        params[input.name] = input.value;
+                    }
+                }
+            });
+
+            // 调用app的执行函数
+            window.app.executeSkill(currentExecuteSkillId, params);
+            closeSkillExecuteModal();
+        }
+        
+        window.onclick = function(event) {
+            const modal = document.getElementById('skill-config-modal');
+            if (event.target === modal) {
+                modal.style.display = 'none';
+            }
+            const execModal = document.getElementById('skill-execute-modal');
+            if (event.target === execModal) {
+                execModal.style.display = 'none';
+            }
+            const searchLogModal = document.getElementById('search-log-modal');
+            if (event.target === searchLogModal) {
+                searchLogModal.style.display = 'none';
+            }
+        }
+    </script>
+
+    <!-- 搜索日志弹窗 -->
+    <div id="search-log-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="width: 90%; max-width: 1000px; max-height: 80vh;">
+            <div class="modal-header">
+                <h3><i class="fas fa-search"></i> 搜索日志</h3>
+                <button class="close-btn" onclick="app.closeSearchLogModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body" style="overflow-y: auto;">
+                <div id="search-log-list">
+                    <div class="empty-state">
+                        <i class="fas fa-search"></i>
+                        <p>暂无搜索记录</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="app.closeSearchLogModal()">关闭</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 悬浮展开按钮 -->
+    <button id="expand-all-btn" class="expand-all-btn" onclick="app.toggleCollapseAll()" title="展开所有菜单">
+        <i class="fas fa-expand"></i>
+    </button>
+</body>
+</html>

@@ -1,0 +1,51 @@
+# Windows 二进制包（Linux 不可用，靠 pip install）
+packages/
+
+# 前端依赖与构建产物（Docker 内重新构建）
+node_modules/
+web/static/v2/
+web/static/v3/
+
+# Python 缓存与虚拟环境
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+ENV/
+
+# 数据与日志（运行时挂载卷）
+data/
+logs/
+uploads/
+web/static/uploads/
+web/static/lobster-claw-files/
+web/static/mu-files/
+
+# 版本控制
+.git/
+.gitignore
+
+# IDE / 工具
+.idea/
+.vscode/
+.trae/
+.pytest_cache/
+
+# 临时文件
+*.log
+*.tmp
+*.bak
+*.cache
+test_*.py
+test_memory*.py
+debug_*.py
+
+# 部署文件（不影响构建上下文，但 Dockerfile 需要 requirements-deploy.txt）
+Dockerfile
+docker-compose.yml
+.dockerignore
+.env
+.env.example
+deploy.sh
+README-deploy.md

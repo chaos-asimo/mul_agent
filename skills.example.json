@@ -1,0 +1,404 @@
+{
+  "skills": [
+    {
+      "id": "4cfad997-0d7d-453b-ba85-7ce77c6ec1c2",
+      "name": "联网搜索",
+      "description": "使用Tavily搜索引擎进行联网搜索，获取最新信息",
+      "skill_type": "search",
+      "trigger": "manual",
+      "enabled": true,
+      "executor": "search",
+      "script": "",
+      "prompt_template": "",
+      "api_endpoint": "",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "搜索关键词",
+          "options": []
+        },
+        {
+          "name": "num_results",
+          "type": "number",
+          "required": false,
+          "default": 5,
+          "description": "返回结果数量",
+          "options": []
+        }
+      ],
+      "input_type": "text",
+      "output_type": "text",
+      "dependencies": [],
+      "pre_conditions": [],
+      "version": "1.0.0",
+      "author": "",
+      "tags": [
+        "搜索",
+        "联网",
+        "信息获取"
+      ],
+      "icon": "fas fa-search",
+      "timeout": 60,
+      "retry_count": 3,
+      "priority": 0
+    },
+    {
+      "id": "c87c2285-69a7-42f1-865f-a4c1efd92624",
+      "name": "内容分析",
+      "description": "使用AI模型分析文本内容，提取关键信息",
+      "skill_type": "analysis",
+      "trigger": "manual",
+      "enabled": true,
+      "executor": "llm",
+      "script": "",
+      "prompt_template": "请分析以下内容，提取关键要点：\n{content}",
+      "api_endpoint": "",
+      "parameters": [
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "待分析内容",
+          "options": []
+        },
+        {
+          "name": "analysis_type",
+          "type": "string",
+          "required": false,
+          "default": "summary",
+          "description": "分析类型",
+          "options": [
+            "summary",
+            "keywords",
+            "sentiment",
+            "structure"
+          ]
+        }
+      ],
+      "input_type": "text",
+      "output_type": "text",
+      "dependencies": [],
+      "pre_conditions": [],
+      "version": "1.0.0",
+      "author": "",
+      "tags": [
+        "分析",
+        "AI",
+        "内容处理"
+      ],
+      "icon": "fas fa-brain",
+      "timeout": 60,
+      "retry_count": 3,
+      "priority": 0
+    },
+    {
+      "id": "f422bb31-ab11-4550-ab2e-75bb5cf5b2d2",
+      "name": "文本生成",
+      "description": "使用AI模型根据模板生成文本内容",
+      "skill_type": "generation",
+      "trigger": "manual",
+      "enabled": true,
+      "executor": "llm",
+      "script": "",
+      "prompt_template": "请根据以下要求生成内容：\n{requirements}\n\n参考信息：\n{context}",
+      "api_endpoint": "",
+      "parameters": [
+        {
+          "name": "requirements",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "生成要求",
+          "options": []
+        },
+        {
+          "name": "context",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "description": "参考上下文",
+          "options": []
+        },
+        {
+          "name": "style",
+          "type": "string",
+          "required": false,
+          "default": "professional",
+          "description": "写作风格",
+          "options": [
+            "professional",
+            "casual",
+            "academic",
+            "creative"
+          ]
+        }
+      ],
+      "input_type": "text",
+      "output_type": "text",
+      "dependencies": [],
+      "pre_conditions": [],
+      "version": "1.0.0",
+      "author": "",
+      "tags": [
+        "生成",
+        "AI",
+        "写作"
+      ],
+      "icon": "fas fa-pen-fancy",
+      "timeout": 60,
+      "retry_count": 3,
+      "priority": 0
+    },
+    {
+      "id": "7b444001-68ec-4c1f-9785-d85aa1e259e8",
+      "name": "格式转换",
+      "description": "将文本转换为指定格式（Markdown、HTML、JSON等）",
+      "skill_type": "transform",
+      "trigger": "manual",
+      "enabled": true,
+      "executor": "llm",
+      "script": "",
+      "prompt_template": "请将以下内容转换为{format}格式：\n{content}",
+      "api_endpoint": "",
+      "parameters": [
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "待转换内容",
+          "options": []
+        },
+        {
+          "name": "format",
+          "type": "string",
+          "required": false,
+          "default": "markdown",
+          "description": "目标格式",
+          "options": [
+            "markdown",
+            "html",
+            "json",
+            "plain"
+          ]
+        }
+      ],
+      "input_type": "text",
+      "output_type": "text",
+      "dependencies": [],
+      "pre_conditions": [],
+      "version": "1.0.0",
+      "author": "",
+      "tags": [
+        "转换",
+        "格式",
+        "处理"
+      ],
+      "icon": "fas fa-exchange-alt",
+      "timeout": 60,
+      "retry_count": 3,
+      "priority": 0
+    },
+    {
+      "id": "d0a4ed5d-1f06-4ec2-835b-5b77588ff0c2",
+      "name": "内容验证",
+      "description": "验证内容是否符合指定标准和规范",
+      "skill_type": "validation",
+      "trigger": "manual",
+      "enabled": true,
+      "executor": "llm",
+      "script": "",
+      "prompt_template": "请验证以下内容是否符合{standard}标准：\n{content}\n\n列出发现的问题和改进建议。",
+      "api_endpoint": "",
+      "parameters": [
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "待验证内容",
+          "options": []
+        },
+        {
+          "name": "standard",
+          "type": "string",
+          "required": false,
+          "default": "general",
+          "description": "验证标准",
+          "options": [
+            "general",
+            "academic",
+            "business",
+            "technical"
+          ]
+        }
+      ],
+      "input_type": "text",
+      "output_type": "text",
+      "dependencies": [],
+      "pre_conditions": [],
+      "version": "1.0.0",
+      "author": "",
+      "tags": [
+        "验证",
+        "检查",
+        "质量"
+      ],
+      "icon": "fas fa-check-circle",
+      "timeout": 60,
+      "retry_count": 3,
+      "priority": 0
+    },
+    {
+      "id": "9bf20b4d-8000-4291-a869-f85021d29589",
+      "name": "智能问答",
+      "description": "基于上下文的智能问答系统",
+      "skill_type": "custom",
+      "trigger": "manual",
+      "enabled": true,
+      "executor": "llm",
+      "script": "",
+      "prompt_template": "基于以下上下文回答问题：\n\n上下文：\n{context}\n\n问题：\n{question}",
+      "api_endpoint": "",
+      "parameters": [
+        {
+          "name": "context",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "上下文信息",
+          "options": []
+        },
+        {
+          "name": "question",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "问题",
+          "options": []
+        }
+      ],
+      "input_type": "text",
+      "output_type": "text",
+      "dependencies": [],
+      "pre_conditions": [],
+      "version": "1.0.0",
+      "author": "",
+      "tags": [
+        "问答",
+        "AI",
+        "智能"
+      ],
+      "icon": "fas fa-question-circle",
+      "timeout": 60,
+      "retry_count": 3,
+      "priority": 0
+    },
+    {
+      "id": "6fdff056-5b46-4f38-a769-36192e7d9729",
+      "name": "代码生成",
+      "description": "根据需求生成代码片段",
+      "skill_type": "generation",
+      "trigger": "manual",
+      "enabled": true,
+      "executor": "llm",
+      "script": "",
+      "prompt_template": "请根据以下需求生成{language}代码：\n{requirements}\n\n要求：\n- 代码清晰易读\n- 包含必要注释\n- 遵循最佳实践",
+      "api_endpoint": "",
+      "parameters": [
+        {
+          "name": "requirements",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "代码需求",
+          "options": []
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "required": false,
+          "default": "python",
+          "description": "编程语言",
+          "options": [
+            "python",
+            "javascript",
+            "java",
+            "go",
+            "typescript"
+          ]
+        }
+      ],
+      "input_type": "text",
+      "output_type": "text",
+      "dependencies": [],
+      "pre_conditions": [],
+      "version": "1.0.0",
+      "author": "",
+      "tags": [
+        "代码",
+        "生成",
+        "开发"
+      ],
+      "icon": "fas fa-code",
+      "timeout": 60,
+      "retry_count": 3,
+      "priority": 0
+    },
+    {
+      "id": "aa130c63-453e-4c00-96f5-f5f30ad58020",
+      "name": "数据提取",
+      "description": "从文本中提取结构化数据",
+      "skill_type": "analysis",
+      "trigger": "manual",
+      "enabled": true,
+      "executor": "llm",
+      "script": "",
+      "prompt_template": "请从以下文本中提取{data_type}数据，以JSON格式输出：\n{text}",
+      "api_endpoint": "",
+      "parameters": [
+        {
+          "name": "text",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "源文本",
+          "options": []
+        },
+        {
+          "name": "data_type",
+          "type": "string",
+          "required": false,
+          "default": "general",
+          "description": "数据类型",
+          "options": [
+            "general",
+            "contacts",
+            "dates",
+            "numbers",
+            "entities"
+          ]
+        }
+      ],
+      "input_type": "text",
+      "output_type": "text",
+      "dependencies": [],
+      "pre_conditions": [],
+      "version": "1.0.0",
+      "author": "",
+      "tags": [
+        "提取",
+        "数据",
+        "结构化"
+      ],
+      "icon": "fas fa-filter",
+      "timeout": 60,
+      "retry_count": 3,
+      "priority": 0
+    }
+  ]
+}

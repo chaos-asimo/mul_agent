@@ -1,0 +1,780 @@
+import { useState, useEffect, useCallback, useRef } from 'react'
+import {
+  Plus, Trash2, Pencil, Play, CheckCircle, XCircle, RefreshCw, FileCode,
+  Download, Package, Loader2, X, FileText, Image as ImageIcon,
+  FolderOpen, LayoutGrid, LayoutList, Search, FileType, Eye,
+} from 'lucide-react'
+import { apiGet, apiPost, apiPut, apiDelete, formatSize } from '../api/client'
+import { isImageFile } from '../utils/highlight'
+import CodeEditor from './CodeEditor'
+import FileViewer from './FileViewer'
+
+// 产物文件：鼠标悬停提示信息（含内容简介）
+function fileTip(f) {
+  const ext = (f.name.split('.').pop() || '').toUpperCase()
+  const lines = []
+  if (f.summary) lines.push(`内容简介：${f.summary}`)
+  lines.push(`文件名：${f.name}`)
+  lines.push(`大小：${formatSize(f.size)} · 类型：${ext || '未知'}`)
+  if (f.created_at) lines.push(`生成时间：${f.created_at}`)
+  return lines.join('\n')
+}
+// 下载用 ?download=1（默认 inline 供查看器读取）
+const dlUrl = (f) => `${f.download_url}${f.download_url.includes('?') ? '&' : '?'}download=1`
+
+function Modal({ title, onClose, children, wide = false, max = false }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={onClose}>
+      <div
+        className={`t-bg-panel border t-border-strong rounded-2xl shadow-2xl flex flex-col ${
+          max
+            ? 'w-[96vw] h-[94vh]'
+            : wide
+              ? 'w-full max-w-3xl max-h-[85vh]'
+              : 'w-full max-w-xl max-h-[85vh]'
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-3.5 border-b t-border shrink-0">
+          <h3 className="text-sm font-semibold t-text">{title}</h3>
+          <button onClick={onClose} className="t-text-faint t-hover-text">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className={`p-5 ${max ? 'flex-1 overflow-hidden flex flex-col' : 'overflow-y-auto'}`}>{children}</div>
+      </div>
+    </div>
+  )
+}
+
+// ============ 产物文件管理窗口（布局仿 Windows 文件管理器） ============
+const FILE_TYPE_NAMES = {
+  png: 'PNG 图像', jpg: 'JPG 图像', jpeg: 'JPG 图像', gif: 'GIF 图像', webp: 'WebP 图像', svg: 'SVG 图像',
+  pdf: 'PDF 文档', py: 'Python 文件', md: 'Markdown 文档', txt: '文本文档', log: '日志文件',
+  csv: 'CSV 文件', xls: 'Excel 工作簿', xlsx: 'Excel 工作簿', doc: 'Word 文档', docx: 'Word 文档',
+  ppt: 'PowerPoint 演示文稿', pptx: 'PowerPoint 演示文稿', html: 'HTML 文件', json: 'JSON 文件', zip: 'ZIP 压缩包',
+}
+const fileExt = (name) => (name.split('.').pop() || '').toLowerCase()
+const fileTypeName = (name) => {
+  const ext = fileExt(name)
+  return FILE_TYPE_NAMES[ext] || `${ext.toUpperCase() || '未知'} 文件`
+}
+function ArtifactIcon({ name, className }) {
+  const ext = fileExt(name)
+  if (isImageFile(name)) return <ImageIcon className={className} />
+  if (ext === 'pdf') return <FileType className={className} />
+  if (['py', 'js', 'ts', 'html', 'css', 'json', 'md', 'sh'].includes(ext)) return <FileCode className={className} />
+  return <FileText className={className} />
+}
+const fmtFileTime = (iso) => {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+function ArtifactsExplorer({ open, onClose, files, onRefresh, onOpenFile, onDeleteFile }) {
+  const [view, setView] = useState('list') // list=详细信息 | grid=大图标
+  const [query, setQuery] = useState('')
+  const [sortKey, setSortKey] = useState('created_at') // name | size | type | created_at
+  const [sortAsc, setSortAsc] = useState(false)
+  const [selectedName, setSelectedName] = useState(null)
+
+  // 打开窗口时刷新列表并复位视图状态
+  useEffect(() => {
+    if (open) {
+      setSelectedName(null)
+      setQuery('')
+      onRefresh()
+    }
+  }, [open, onRefresh])
+
+  if (!open) return null
+
+  const q = query.trim().toLowerCase()
+  const filtered = files.filter((f) => !q || f.name.toLowerCase().includes(q))
+  const sorted = [...filtered].sort((a, b) => {
+    let va, vb
+    if (sortKey === 'name') { va = a.name.toLowerCase(); vb = b.name.toLowerCase() }
+    else if (sortKey === 'size') { va = a.size; vb = b.size }
+    else if (sortKey === 'type') { va = fileExt(a.name); vb = fileExt(b.name) }
+    else { va = a.created_at || ''; vb = b.created_at || '' }
+    if (va < vb) return sortAsc ? -1 : 1
+    if (va > vb) return sortAsc ? 1 : -1
+    return 0
+  })
+  const selected = sorted.find((f) => f.name === selectedName) || null
+
+  const toggleSort = (k) => {
+    if (sortKey === k) setSortAsc((v) => !v)
+    else { setSortKey(k); setSortAsc(k === 'name' || k === 'type') } // 名称/类型默认升序，大小/时间默认降序
+  }
+  const sortMark = (k) => (sortKey === k ? <span className="text-[9px]">{sortAsc ? '▲' : '▼'}</span> : null)
+
+  const handleDelete = (f) => {
+    setSelectedName(null)
+    onDeleteFile(f)
+  }
+
+  const thBtn = 'flex items-center gap-0.5 hover:t-text-accent transition-colors'
+  const rowGrid = 'grid grid-cols-[minmax(0,1fr)_72px_130px_150px_92px] gap-2 items-center'
+
+  return (
+    <Modal title="产物文件" onClose={onClose} max>
+      <div className="flex-1 flex flex-col min-h-0 -mt-1">
+        {/* 地址栏 + 工具栏（仿资源管理器） */}
+        <div className="shrink-0 space-y-2">
+          <div className="flex items-center gap-2 px-3 py-1.5 t-bg-input border t-border rounded-lg text-xs t-text-muted">
+            <FolderOpen className="w-3.5 h-3.5 t-text-accent shrink-0" />
+            <span className="t-text-fainter">&gt;</span>
+            <span>产物文件</span>
+            <span className="ml-auto text-[10px] t-text-fainter">{files.length} 个项目</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 t-text-fainter" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="搜索文件名"
+                className="w-full pl-8 pr-3 py-1.5 t-bg-input border t-border-strong rounded-lg text-xs t-text t-placeholder t-focus"
+              />
+            </div>
+            <div className="flex items-center rounded-lg border t-border-strong overflow-hidden shrink-0">
+              <button
+                onClick={() => setView('list')}
+                title="详细信息"
+                className={`p-1.5 ${view === 'list' ? 't-bg-accent-soft t-text-accent' : 't-text-faint t-hover-text'}`}
+              >
+                <LayoutList className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setView('grid')}
+                title="大图标"
+                className={`p-1.5 ${view === 'grid' ? 't-bg-accent-soft t-text-accent' : 't-text-faint t-hover-text'}`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <button onClick={onRefresh} title="刷新" className="p-1.5 rounded-lg border t-border-strong t-text-faint t-hover-text shrink-0">
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* 内容区 */}
+        <div className="flex-1 min-h-0 mt-2 t-bg-input border t-border rounded-lg overflow-y-auto">
+          {sorted.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center gap-2 py-16 t-text-fainter">
+              <FolderOpen className="w-10 h-10" />
+              <p className="text-xs">{q ? '没有匹配的文件' : '此文件夹为空'}</p>
+            </div>
+          ) : view === 'list' ? (
+            <div className="min-w-[560px]">
+              <div className={`${rowGrid} px-3 py-1.5 border-b t-border text-[11px] t-text-faint sticky top-0 t-bg-input z-10`}>
+                <button className={thBtn} onClick={() => toggleSort('name')}>名称 {sortMark('name')}</button>
+                <button className={thBtn} onClick={() => toggleSort('size')}>大小 {sortMark('size')}</button>
+                <button className={thBtn} onClick={() => toggleSort('type')}>类型 {sortMark('type')}</button>
+                <button className={thBtn} onClick={() => toggleSort('created_at')}>生成日期 {sortMark('created_at')}</button>
+                <span />
+              </div>
+              {sorted.map((f) => (
+                <div
+                  key={f.name}
+                  onClick={() => setSelectedName(f.name)}
+                  onDoubleClick={() => onOpenFile(f)}
+                  title={fileTip(f)}
+                  className={`${rowGrid} px-3 py-1.5 text-xs cursor-default border-b t-border last:border-b-0 ${
+                    selectedName === f.name ? 't-bg-accent-soft' : 't-hover-card'
+                  }`}
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <ArtifactIcon name={f.name} className="w-4 h-4 t-text-accent shrink-0" />
+                    <span className="truncate t-text-2">{f.name}</span>
+                  </span>
+                  <span className="t-text-faint">{formatSize(f.size)}</span>
+                  <span className="t-text-faint truncate">{fileTypeName(f.name)}</span>
+                  <span className="t-text-faint">{fmtFileTime(f.created_at)}</span>
+                  <span className="flex items-center gap-0.5 justify-end">
+                    <button onClick={(e) => { e.stopPropagation(); onOpenFile(f) }} title="打开" className="p-1 t-text-faint hover:t-text-accent">
+                      <Eye className="w-3.5 h-3.5" />
+                    </button>
+                    <a href={dlUrl(f)} title="下载" onClick={(e) => e.stopPropagation()} className="p-1 t-text-faint hover:t-text-accent">
+                      <Download className="w-3.5 h-3.5" />
+                    </a>
+                    <button onClick={(e) => { e.stopPropagation(); handleDelete(f) }} title="删除" className="p-1 t-text-faint hover:t-text-danger">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 gap-2 p-3">
+              {sorted.map((f) => (
+                <div
+                  key={f.name}
+                  onClick={() => setSelectedName(f.name)}
+                  onDoubleClick={() => onOpenFile(f)}
+                  title={fileTip(f)}
+                  className={`group relative flex flex-col items-center gap-1.5 px-2 py-3 rounded-lg border cursor-default ${
+                    selectedName === f.name ? 't-bg-accent-soft t-border-accent' : 'border-transparent t-hover-card'
+                  }`}
+                >
+                  <ArtifactIcon name={f.name} className="w-10 h-10 t-text-accent" />
+                  <span className="text-[11px] t-text-2 text-center break-all line-clamp-2 leading-tight">{f.name}</span>
+                  <span className="text-[9px] t-text-fainter">{formatSize(f.size)}</span>
+                  <div className="absolute top-1 right-1 hidden group-hover:flex items-center gap-0.5 t-bg-panel border t-border rounded-md p-0.5">
+                    <button onClick={(e) => { e.stopPropagation(); onOpenFile(f) }} title="打开" className="p-1 t-text-faint hover:t-text-accent">
+                      <Eye className="w-3 h-3" />
+                    </button>
+                    <a href={dlUrl(f)} title="下载" onClick={(e) => e.stopPropagation()} className="p-1 t-text-faint hover:t-text-accent">
+                      <Download className="w-3 h-3" />
+                    </a>
+                    <button onClick={(e) => { e.stopPropagation(); handleDelete(f) }} title="删除" className="p-1 t-text-faint hover:t-text-danger">
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 状态栏 */}
+        <div className="shrink-0 mt-2 px-3 py-1.5 border t-border rounded-lg t-bg-panel text-[10px] t-text-faint flex items-center gap-3">
+          <span className="shrink-0">{sorted.length} 个项目{q ? `（搜索：${query.trim()}）` : ''}</span>
+          {selected && <span className="truncate">已选择：{selected.name}（{formatSize(selected.size)}）</span>}
+          <span className="ml-auto hidden sm:inline shrink-0">双击打开文件</span>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function ScriptsTab() {
+  const [scripts, setScripts] = useState([])
+  const [files, setFiles] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [message, setMessage] = useState('')
+  const [explorerOpen, setExplorerOpen] = useState(false) // 产物文件管理窗口
+
+  // 编辑器
+  const [editor, setEditor] = useState(null) // {id?, name, description, code}
+  const [saving, setSaving] = useState(false)
+  const [missingDeps, setMissingDeps] = useState(null)
+  const [checkingDeps, setCheckingDeps] = useState(false)
+
+  // 执行结果
+  const [execResult, setExecResult] = useState(null)
+  const [executing, setExecuting] = useState(null) // script_id
+  const [viewing, setViewing] = useState(null) // 正在查看的产物文件 {filename, rawUrl, downloadUrl}
+
+  // 打开产物文件查看器（复用 Office 等渲染能力）
+  const openFile = (f) => setViewing({ filename: f.name, rawUrl: f.download_url, downloadUrl: dlUrl(f) })
+
+  // 依赖安装（异步 + 轮询）
+  const [packageInput, setPackageInput] = useState('')
+  const [installStatus, setInstallStatus] = useState(null)
+  const [installing, setInstalling] = useState(false)
+  const pollRef = useRef(null)
+
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+
+  const startPolling = useCallback(() => {
+    if (pollRef.current) return
+    pollRef.current = setInterval(async () => {
+      try {
+        const st = await apiGet('/script/installation-status')
+        setInstallStatus(st)
+        if (!st.in_progress) {
+          stopPolling()
+          setInstalling(false)
+        }
+      } catch (e) {
+        console.error('查询安装状态失败:', e)
+      }
+    }, 5000)
+  }, [])
+
+  // Tab 卸载即停止轮询
+  useEffect(() => () => stopPolling(), [])
+
+  const loadScripts = useCallback(async () => {
+    setLoading(true)
+    try {
+      const result = await apiGet('/script/list')
+      if (result.success) setScripts(result.scripts || [])
+    } catch (e) {
+      console.error('加载脚本失败:', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const loadFiles = useCallback(async () => {
+    try {
+      const result = await apiGet('/script/files/list')
+      if (result.success) setFiles(result.files || [])
+    } catch (e) {
+      console.error('加载产物文件失败:', e)
+    }
+  }, [])
+
+  // 挂载时恢复安装状态（若后台仍在安装则继续轮询）
+  useEffect(() => {
+    loadScripts()
+    loadFiles()
+    apiGet('/script/installation-status')
+      .then((st) => {
+        setInstallStatus(st)
+        if (st.in_progress) {
+          setInstalling(true)
+          startPolling()
+        }
+      })
+      .catch(() => {})
+  }, [loadScripts, loadFiles, startPolling])
+
+  const openCreate = () => {
+    setMissingDeps(null)
+    setEditor({ id: null, name: '', description: '', code: '' })
+  }
+
+  const openEdit = async (s) => {
+    setMissingDeps(null)
+    try {
+      const result = await apiGet(`/script/${s.id}`)
+      if (result.success) {
+        const sc = result.script
+        setEditor({ id: sc.id, name: sc.name, description: sc.description || '', code: sc.code })
+      } else {
+        setMessage(result.error || '加载脚本失败')
+      }
+    } catch (e) {
+      setMessage(e.message)
+    }
+  }
+
+  const handleSave = async () => {
+    if (!editor) return
+    setSaving(true)
+    setMessage('')
+    try {
+      if (editor.id) {
+        const result = await apiPut(`/script/${editor.id}`, {
+          name: editor.name || undefined,
+          description: editor.description,
+          code: editor.code,
+        })
+        if (!result.success) setMessage(result.message || result.error || '更新失败')
+      } else {
+        const result = await apiPost('/script/create', {
+          name: editor.name || undefined,
+          description: editor.description,
+          code: editor.code,
+        })
+        if (result.success) {
+          if (result.syntax && !result.syntax.success) {
+            setMessage(`脚本已创建，但存在语法错误：${result.syntax.error}`)
+          }
+        } else {
+          setMessage(result.error || '创建失败')
+        }
+      }
+      setEditor(null)
+      loadScripts()
+    } catch (e) {
+      setMessage(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleCheckDeps = async () => {
+    if (!editor?.code) return
+    setCheckingDeps(true)
+    try {
+      const result = await apiPost('/script/check-dependencies', { code: editor.code })
+      setMissingDeps(result.missing || [])
+    } catch (e) {
+      setMessage(e.message)
+    } finally {
+      setCheckingDeps(false)
+    }
+  }
+
+  const handleApprove = async (s) => {
+    try {
+      const result = await apiPost(`/script/${s.id}/approve`)
+      if (!result.success) setMessage(result.message || '操作失败')
+      loadScripts()
+    } catch (e) {
+      setMessage(e.message)
+    }
+  }
+
+  const handleRevoke = async (s) => {
+    try {
+      const result = await apiPost(`/script/${s.id}/revoke`)
+      if (!result.success) setMessage(result.message || '操作失败')
+      loadScripts()
+    } catch (e) {
+      setMessage(e.message)
+    }
+  }
+
+  const handleDelete = async (s) => {
+    if (!window.confirm(`确定删除脚本 "${s.name}" 吗？`)) return
+    try {
+      await apiDelete(`/script/${s.id}`)
+      loadScripts()
+    } catch (e) {
+      setMessage(e.message)
+    }
+  }
+
+  const handleExecute = async (s) => {
+    setExecuting(s.id)
+    setMessage('')
+    try {
+      const result = await apiPost('/script/execute', { script_id: s.id, timeout: 120 })
+      setExecResult({ name: s.name, ...result })
+      loadFiles()
+      if (!result.success && result.error) setMessage(result.error)
+    } catch (e) {
+      setMessage(e.message)
+    } finally {
+      setExecuting(null)
+    }
+  }
+
+  const handleDeleteFile = async (f) => {
+    if (!window.confirm(`确定删除文件 "${f.name}" 吗？删除后不可恢复。`)) return
+    try {
+      const result = await apiDelete(`/script/files/${encodeURIComponent(f.name)}`)
+      if (result.success) {
+        loadFiles()
+      } else {
+        setMessage(result.error || '删除失败')
+      }
+    } catch (e) {
+      setMessage(e.message)
+    }
+  }
+
+  const handleInstall = async () => {
+    const pkg = packageInput.trim()
+    if (!pkg) return
+    setMessage('')
+    try {
+      const result = await apiPost('/script/install-dependency-async', { package: pkg })
+      if (result.success === false) {
+        setMessage(result.error || '启动安装失败')
+        return
+      }
+      setPackageInput('')
+      setInstalling(true)
+      setInstallStatus({ in_progress: true, package: pkg, progress: 0, output: '', success: false })
+      startPolling()
+    } catch (e) {
+      setMessage(e.message)
+    }
+  }
+
+  const inputCls =
+    'w-full px-3 py-2 t-bg-input border t-border-strong rounded-lg text-xs t-text t-placeholder t-focus'
+  const btnGhost =
+    'inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-lg border t-border-strong t-text-muted t-hover-card t-hover-text transition-colors'
+  const btnDanger =
+    'inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-lg border t-border-danger t-text-danger t-bg-danger-soft transition-colors'
+  const btnPrimary =
+    'inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded-lg t-bg-accent t-hover-accent text-white disabled:opacity-50'
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold t-text-2 flex items-center gap-1.5">
+          <FileCode className="w-4 h-4 t-text-accent" />
+          脚本管理
+        </h3>
+        <div className="flex items-center gap-1.5">
+          <button onClick={loadScripts} className={btnGhost} title="刷新">
+            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button onClick={() => setExplorerOpen(true)} className={btnGhost} title="管理生成的产物文件">
+            <FolderOpen className="w-3 h-3" />
+            产物文件{files.length > 0 ? `（${files.length}）` : ''}
+          </button>
+          <button onClick={openCreate} className={btnPrimary}>
+            <Plus className="w-3 h-3" />
+            新建
+          </button>
+        </div>
+      </div>
+
+      {message && <p className="text-xs t-text-warn break-all">{message}</p>}
+
+      {/* 依赖安装 */}
+      <div className="p-3 t-bg-panel border t-border rounded-xl space-y-2">
+        <p className="text-xs t-text-muted flex items-center gap-1.5">
+          <Package className="w-3.5 h-3.5 t-text-accent" />
+          Python 依赖安装（后台异步）
+        </p>
+        <div className="flex gap-2">
+          <input
+            className={inputCls}
+            value={packageInput}
+            onChange={(e) => setPackageInput(e.target.value)}
+            placeholder="包名，如 requests"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                handleInstall()
+              }
+            }}
+          />
+          <button
+            onClick={handleInstall}
+            disabled={!packageInput.trim() || installing}
+            className="px-3 rounded-lg t-bg-accent t-hover-accent text-white text-xs disabled:opacity-50 whitespace-nowrap"
+          >
+            安装
+          </button>
+        </div>
+        {installStatus && (installStatus.in_progress || installStatus.output) && (
+          <div className="text-xs space-y-1">
+            <p className={installStatus.in_progress ? 't-text-warn' : installStatus.success ? 't-text-ok' : 't-text-danger'}>
+              {installStatus.in_progress
+                ? `正在安装 ${installStatus.package}...（每 5 秒自动刷新）`
+                : installStatus.success
+                  ? `${installStatus.package} 安装成功`
+                  : `${installStatus.package} 安装失败`}
+            </p>
+            {installStatus.output && (
+              <pre className="max-h-28 overflow-y-auto t-bg-input rounded-lg p-2 text-[10px] t-text-faint whitespace-pre-wrap break-all">
+                {installStatus.output}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 脚本列表 */}
+      {scripts.length === 0 && !loading ? (
+        <p className="text-xs t-text-fainter text-center py-6">暂无脚本，点击「新建」创建</p>
+      ) : (
+        <div className="space-y-2">
+          {scripts.map((s) => (
+            <div key={s.id} className="px-3 py-2.5 t-bg-panel border t-border rounded-lg">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium t-text-2 truncate flex-1" title={s.name}>
+                  {s.name}
+                </span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded-full border shrink-0 ${
+                    s.is_approved ? 't-badge-ok' : 't-badge-neutral'
+                  }`}
+                >
+                  {s.is_approved ? '已批准' : '未批准'}
+                </span>
+              </div>
+              {s.description && (
+                <p className="text-[10px] t-text-faint mt-1 truncate" title={s.description}>
+                  {s.description}
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                <button onClick={() => handleExecute(s)} disabled={executing === s.id} className={btnPrimary}>
+                  {executing === s.id ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Play className="w-3 h-3" />
+                  )}
+                  执行
+                </button>
+                <button onClick={() => openEdit(s)} className={btnGhost}>
+                  <Pencil className="w-3 h-3" />
+                  编辑
+                </button>
+                {s.is_approved ? (
+                  <button onClick={() => handleRevoke(s)} className={btnGhost}>
+                    <XCircle className="w-3 h-3" />
+                    撤销
+                  </button>
+                ) : (
+                  <button onClick={() => handleApprove(s)} className={btnGhost}>
+                    <CheckCircle className="w-3 h-3" />
+                    批准
+                  </button>
+                )}
+                <button onClick={() => handleDelete(s)} className={btnDanger}>
+                  <Trash2 className="w-3 h-3" />
+                  删除
+                </button>
+              </div>
+              <p className="text-[10px] t-text-fainter mt-1.5">{s.created_at}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 产物文件管理窗口（仿 Windows 文件管理器布局） */}
+      <ArtifactsExplorer
+        open={explorerOpen}
+        onClose={() => setExplorerOpen(false)}
+        files={files}
+        onRefresh={loadFiles}
+        onOpenFile={openFile}
+        onDeleteFile={handleDeleteFile}
+      />
+
+      {/* 编辑器弹窗 */}
+      {editor && (
+        <Modal title={editor.id ? '编辑脚本' : '新建脚本'} onClose={() => setEditor(null)} max>
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="grid grid-cols-2 gap-3 mb-3 shrink-0">
+              <input
+                className={inputCls}
+                value={editor.name}
+                onChange={(e) => setEditor({ ...editor, name: e.target.value })}
+                placeholder="脚本名称（留空自动生成）"
+              />
+              <input
+                className={inputCls}
+                value={editor.description}
+                onChange={(e) => setEditor({ ...editor, description: e.target.value })}
+                placeholder="脚本描述"
+              />
+            </div>
+            <div className="flex-1 min-h-0">
+              <CodeEditor
+                value={editor.code}
+                onChange={(code) => setEditor({ ...editor, code })}
+                placeholder="在此粘贴或编写 Python 脚本代码..."
+                style={{ height: '100%' }}
+              />
+            </div>
+            <div className="flex items-center justify-between mt-3 shrink-0">
+              <button
+                onClick={handleCheckDeps}
+                disabled={checkingDeps || !editor.code}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card disabled:opacity-50"
+              >
+                {checkingDeps ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Package className="w-3.5 h-3.5" />}
+                依赖检测
+              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setEditor(null)}
+                  className="px-3 py-1.5 text-xs rounded-lg border t-border-strong t-text-2 t-hover-card"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={saving || !editor.code}
+                  className="px-3 py-1.5 text-xs rounded-lg t-bg-accent t-hover-accent text-white disabled:opacity-50"
+                >
+                  {saving ? '保存中...' : '保存'}
+                </button>
+              </div>
+            </div>
+            {missingDeps && (
+              <div className="p-3 t-bg-input border t-border rounded-lg text-xs">
+                {missingDeps.length === 0 ? (
+                  <p className="t-text-ok">✅ 未检测到缺失依赖</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    <p className="t-text-warn">缺失依赖：{missingDeps.join('、')}</p>
+                    <div className="flex flex-wrap gap-2">
+                      {missingDeps.map((dep) => (
+                        <button
+                          key={dep}
+                          onClick={async () => {
+                            try {
+                              await apiPost('/script/install-dependency-async', { package: dep })
+                              setEditor(null)
+                              setInstalling(true)
+                              setInstallStatus({ in_progress: true, package: dep, progress: 0, output: '', success: false })
+                              startPolling()
+                            } catch (e) {
+                              setMessage(e.message)
+                            }
+                          }}
+                          className="px-2 py-1 rounded-lg t-bg-accent t-hover-accent text-white"
+                        >
+                          安装 {dep}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {/* 执行结果弹窗 */}
+      {execResult && (
+        <Modal title={`执行结果：${execResult.name}`} onClose={() => setExecResult(null)} wide>
+          <div className="space-y-3">
+            <p className={`text-xs ${execResult.success ? 't-text-ok' : 't-text-danger'}`}>
+              {execResult.success ? '✅ 执行成功' : `❌ ${execResult.error || '执行失败'}`}
+            </p>
+            <pre className="max-h-72 overflow-y-auto t-bg-input rounded-lg p-3 text-xs t-text-2 whitespace-pre-wrap break-all leading-relaxed">
+              {execResult.result || '（无输出）'}
+            </pre>
+            {execResult.generated_files?.length > 0 && (
+              <div>
+                <p className="text-xs t-text-muted mb-1.5">生成的文件</p>
+                <div className="space-y-1.5">
+                  {execResult.generated_files.map((f) => (
+                    <div
+                      key={f.name}
+                      className="flex items-center gap-2 px-3 py-2 t-bg-input border t-border rounded-lg t-hover-border-accent"
+                    >
+                      {isImageFile(f.name) ? <ImageIcon className="w-3.5 h-3.5 t-text-accent shrink-0" /> : <FileText className="w-3.5 h-3.5 t-text-accent shrink-0" />}
+                      <button
+                        onClick={() => openFile(f)}
+                        title={fileTip(f)}
+                        className="text-xs t-text-2 truncate flex-1 text-left hover:underline cursor-pointer"
+                      >
+                        {f.name}
+                      </button>
+                      <span className="text-[10px] t-text-faint shrink-0">{formatSize(f.size)}</span>
+                      <a
+                        href={dlUrl(f)}
+                        title="下载文件"
+                        className="t-text-faint hover:t-text-accent shrink-0"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {viewing && (
+        <FileViewer
+          filename={viewing.filename}
+          rawUrl={viewing.rawUrl}
+          downloadUrl={viewing.downloadUrl}
+          onClose={() => setViewing(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+export default ScriptsTab

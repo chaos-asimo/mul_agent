@@ -1,0 +1,101 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv/
+TraeAI-*/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+
+# Config files with sensitive data
+models.json
+agents.json
+skills.json
+search_engines.json
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+test_*.py
+debug_*.py
+count_code.py
+code_stats_*.txt
+
+# Deploy artifacts / temp commit message
+mul_agent-linux-deploy.tar.gz
+_commit_msg.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node modules (if any)
+node_modules/
+
+# Environment variables
+.env
+.env.local
+
+# Uploaded files
+uploads/
+
+# Data files
+data/
+
+# Python 包运行时自装目录（python-pptx 等缺失时自动安装，Windows 二进制不入仓库）
+packages/
+
+# v3 前端构建产物（Docker 内重新构建）
+web/static/v3/assets/
+
+# 测试与临时产物
+test_upload.txt
+web/routes/report.pdf
+web/routes/test.txt
+web/routes/xinjiang_travel_report.pdf
+
+# 运行时生成文件（按用户隔离，属数据）
+web/static/uploads/
+web/static/lobster-claw-files/
+web/static/mu-files/
+
+# v3 构建输出（源在 v3/，构建产物由 Docker/CI 重新生成）
+web/static/v3/
+
+# 龙虾Claw 自动生成的脚本产物
+web/static/scripts/
+
+# Trae IDE
+.trae/
