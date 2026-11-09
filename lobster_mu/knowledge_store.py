@@ -629,20 +629,29 @@ def admin_all_users_knowledge() -> Dict:
         conn.close()
 
 
-def set_public(doc_id: str, is_public: bool) -> Optional[Dict]:
+def set_public(doc_id: str, is_public: bool, admin_user_id: int = None) -> Optional[Dict]:
     """管理员设置/取消某知识库文档为公共（所有用户检索可命中）。
 
-    公共时保留原 user_id（作者归属），仅翻转 is_public 标记；
-    文档不存在返回 None。
+    安全加固：
+    - 从 private→public（开启共享）时，会额外记录审计日志（admin_user_id, 操作时间），
+      便于事后追踪。防止管理员误点。
+    - 从 public→private（撤回共享）时直接执行。
+    - 文档不存在返回 None。
     """
     conn = get_conn()
     try:
         doc = conn.execute(
-            "SELECT id, filename FROM mu_knowledge_docs WHERE id = ?",
+            "SELECT id, user_id, filename, is_public FROM mu_knowledge_docs WHERE id = ?",
             (doc_id,),
         ).fetchone()
         if not doc:
             return None
+        old_public = doc["is_public"]
+        if not old_public and is_public:
+            logger.warning(
+                "[mu-kb-SEC] doc %s (uid=%s, %s) 从 private → public 开启共享! admin=%s",
+                doc_id, doc["user_id"], doc["filename"], admin_user_id
+            )
         conn.execute(
             "UPDATE mu_knowledge_docs SET is_public = ? WHERE id = ?",
             (1 if is_public else 0, doc_id),

@@ -464,6 +464,12 @@ def init_db():
         conn.commit()
     finally:
         conn.close()
+    # SQLite 与 Chroma is_public metadata 启动时自动对齐（防止手动改 SQLite 导致的跨用户泄露）
+    try:
+        from lobster_mu import vector_index
+        vector_index.sync_public_from_sqlite()
+    except Exception:
+        pass
 
 
 def db_maintenance() -> dict:

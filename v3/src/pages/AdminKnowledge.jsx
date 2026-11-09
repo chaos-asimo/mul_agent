@@ -109,8 +109,18 @@ function AdminKnowledge() {
 
   // 管理员：切换某篇文档是否公共（所有用户检索可命中）
   const togglePublic = async (d) => {
+    const next = !d.is_public
+    if (next) {
+      // 开启共享：高危操作，二次确认
+      if (!window.confirm(
+        `确定把「${d.filename}」设为公共文档？\n\n这意味着所有用户的知识库检索都能命中该文档的内容，包括其中可能包含的个人信息、敏感数据。\n\n文档所有者：uid=${d.user_id || '未知'}`
+      )) return
+    } else {
+      // 取消共享：安全操作，只提示信息
+      if (!window.confirm(`确定取消「${d.filename}」的公共标记？\n取消后仅文档所有者可检索命中。`)) return
+    }
     try {
-      const res = await apiPost(`/admin/knowledge/doc/${d.id}/public`, { is_public: !d.is_public })
+      const res = await apiPost(`/admin/knowledge/doc/${d.id}/public`, { is_public: next })
       if (res.success) load()
       else alert(res.error || res.detail || '操作失败')
     } catch (e) {

@@ -2552,7 +2552,8 @@ async def admin_knowledge_doc_raw(doc_id: str, download: int = 0, admin: dict = 
 async def admin_knowledge_set_public(doc_id: str, body: dict, admin: dict = Depends(require_admin)):
     """管理员设置/取消某知识库文档为公共（所有用户检索可命中）"""
     ensure_db()
-    result = knowledge_store.set_public(doc_id, bool((body or {}).get("is_public")))
+    result = knowledge_store.set_public(doc_id, bool((body or {}).get("is_public")),
+                                        admin_user_id=admin.get("id"))
     if result is None:
         raise HTTPException(status_code=404, detail="文档不存在")
     return {"success": True, "doc": result}
@@ -2894,6 +2895,165 @@ async def admin_knowledge_index_status(admin: dict = Depends(require_admin)):
         "available": vector_index.available(),
         "indexed": vector_index.index_count(),
         "expected": int(expected or 0),
+    }
+
+
+@router.get("/admin/isolation-audit")
+async def admin_isolation_audit(user_id: int = None, admin: dict = Depends(require_admin)):
+    """多租户隔离全面诊断。返回各用户的文件/知识库/技能/会话数量，
+    以及 SQLite 与 Chroma is_public 是否一致——用于定位跨用户泄露。
+
+    可选 ?user_id=N 只看某用户，默认返回全部。
+    """
+    ensure_db()
+    import os, glob as _glob
+
+    conn = db.get_conn()
+    try:
+        # 1. 用户列表
+        users = conn.execute("SELECT id, username FROM mu_users").fetchall()
+
+        # 2. 所有文档（检查误标 public）
+        docs = conn.execute(
+            "SELECT id, user_id, is_public, filename, chunk_count FROM mu_knowledge_docs"
+            + (" WHERE user_id=?" if user_id else "") + " ORDER BY user_id",
+            (user_id,) if user_id else ()
+        ).fetchall()
+        private_marked_public = [
+            {"id": d["id"], "uid": d["user_id"], "file": d["filename"]}
+            for d in docs if d["is_public"] and d["user_id"] != 0
+        ]
+
+        # 3. Chroma metadata 检查
+        chroma_status = {}
+        chroma_chunks = 0
+        chroma_mismatch = []
+        try:
+            from lobster_mu import vector_index
+            col = vector_index._get_collection() if vector_index.available() else None
+            chroma_status["available"] = col is not None
+            if col is not None:
+                chroma_chunks = col.count()
+                got = col.get(include=["metadatas"])
+                chroma_metadatas = got.get("metadatas") or []
+                chroma_ids = got.get("ids") or []
+                chroma_by_uid = {}
+                chroma_public_chunks = 0
+                no_uid_chunks = 0
+                for mid, m in zip(chroma_ids, chroma_metadatas):
+                    uid = m.get("user_id") if m else None
+                    is_pub = m.get("is_public", 0) if m else 0
+                    chroma_by_uid[uid] = chroma_by_uid.get(uid, 0) + 1
+                    if is_pub:
+                        chroma_public_chunks += 1
+                    if uid is None:
+                        no_uid_chunks += 1
+                chroma_status["chunks_by_user_id"] = chroma_by_uid
+                chroma_status["public_chunks"] = chroma_public_chunks
+                chroma_status["no_user_id_chunks"] = no_uid_chunks
+
+                # 逐个 doc 对比 SQLite vs Chroma is_public
+                for d in docs:
+                    chroma_got = col.get(where={"doc_id": d["id"]}, include=["metadatas"])
+                    for cm in chroma_got.get("metadatas") or []:
+                        if cm.get("is_public", 0) != (1 if d["is_public"] else 0):
+                            chroma_mismatch.append({
+                                "doc_id": d["id"],
+                                "filename": d["filename"],
+                                "sqlite_public": bool(d["is_public"]),
+                                "chroma_public": cm.get("is_public"),
+                            })
+                            break
+        except Exception as e:
+            chroma_status["error"] = str(e)
+
+        # 4. 各维度数量
+        user_stats = {}
+        for u in users:
+            uid = u["id"]
+            if user_id is not None and uid != user_id:
+                continue
+            n_docs = conn.execute("SELECT COUNT(*) FROM mu_knowledge_docs WHERE user_id=?", (uid,)).fetchone()[0]
+            n_skills = conn.execute("SELECT COUNT(*) FROM mu_skills WHERE user_id=?", (uid,)).fetchone()[0]
+            n_private_skills = conn.execute("SELECT COUNT(*) FROM mu_skills WHERE user_id=? AND is_public=0", (uid,)).fetchone()[0]
+            n_sessions = conn.execute("SELECT COUNT(*) FROM mu_chat_sessions WHERE user_id=?", (uid,)).fetchone()[0]
+            user_stats[str(uid)] = {
+                "username": u["username"],
+                "docs_in_sqlite": n_docs,
+                "skills_private": n_private_skills,
+                "sessions": n_sessions,
+            }
+
+        # 5. 文件表和物理目录对比
+        from lobster_mu.paths import get_user_dirs
+        file_store_counts = {}
+        script_store_counts = {}
+        for u in users:
+            uid = u["id"]
+            if user_id is not None and uid != user_id:
+                continue
+            fcount = conn.execute("SELECT COUNT(*) FROM mu_files WHERE user_id=?", (uid,)).fetchone()[0]
+            file_store_counts[str(uid)] = fcount
+        # 物理目录文件数（uploads/claw/{uid}, lobster-claw-files/{uid}, mu-files/{uid}）
+        static_dir = os.path.join(os.path.dirname(db.DB_PATH), "..", "web", "static")
+        static_dir = os.path.normpath(static_dir)
+        phys_counts = {}
+        for u in users:
+            uid = u["id"]
+            if user_id is not None and uid != user_id:
+                continue
+            counts = {}
+            for sub in ["uploads/claw", "lobster-claw-files", "mu-files"]:
+                p = os.path.join(static_dir, sub, str(uid))
+                if os.path.isdir(p):
+                    counts[sub] = len(os.listdir(p))
+                else:
+                    counts[sub] = 0
+            phys_counts[str(uid)] = counts
+
+        return {
+            "users": [{"id": u["id"], "username": u["username"]} for u in users],
+            "isolation_warnings": {
+                "private_docs_marked_public_sqlite": private_marked_public,
+                "sqlite_chroma_is_public_mismatch": chroma_mismatch,
+                "total_warnings": len(private_marked_public) + len(chroma_mismatch),
+            },
+            "chroma_status": chroma_status,
+            "user_stats": user_stats,
+            "file_store_db_counts": file_store_counts,
+            "physical_dir_file_counts": phys_counts,
+            "diagnosis": "OK" if not private_marked_public and not chroma_mismatch
+                else "ISOLATION_BREACH - run vector_index.sync_public_from_sqlite() and fix SQLite",
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/admin/isolation-audit/fix")
+async def admin_isolation_audit_fix(admin: dict = Depends(require_admin)):
+    """一键修复隔离问题：纠正 SQLite 中私人文档的 is_public + 同步 Chroma metadata"""
+    ensure_db()
+    from lobster_mu import knowledge_store, vector_index
+    conn = db.get_conn()
+    fixed = 0
+    try:
+        # 修复 SQLite
+        fixed = conn.execute(
+            "UPDATE mu_knowledge_docs SET is_public=0 WHERE is_public=1 AND user_id!=0"
+        ).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    # 同步 Chroma
+    chroma_fixed = 0
+    try:
+        chroma_fixed = vector_index.sync_public_from_sqlite()
+    except Exception as e:
+        chroma_fixed = -1
+    return {
+        "success": True,
+        "sqlite_fixed_docs": fixed,
+        "chroma_fixed_chunks": chroma_fixed,
     }
 
 

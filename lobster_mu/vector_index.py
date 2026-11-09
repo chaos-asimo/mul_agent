@@ -215,6 +215,55 @@ def set_doc_public(doc_id: str, is_public: bool) -> bool:
         return False
 
 
+def sync_public_from_sqlite() -> int:
+    """启动时/手动触发：从 SQLite 读取所有文档的 is_public，纠正 Chroma metadata 中
+    因绕过 set_public() 直接改 SQLite 导致的不一致。
+
+    返回修正的 chunk 数量（应该是 0）。
+    """
+    if not available():
+        return 0
+    col = _get_collection()
+    if col is None:
+        return 0
+    from lobster_mu.db import get_conn
+    conn = get_conn()
+    try:
+        docs = conn.execute(
+            "SELECT id, is_public FROM mu_knowledge_docs"
+        ).fetchall()
+    finally:
+        conn.close()
+    fixed_chunks = 0
+    for doc in docs:
+        target_public = 1 if doc["is_public"] else 0
+        got = col.get(where={"doc_id": doc["id"]}, include=["metadatas"])
+        ids = got.get("ids") or []
+        metas = got.get("metadatas") or []
+        need_update = []
+        for chunk_id, m in zip(ids, metas):
+            cur = m.get("is_public") if m else None
+            if cur != target_public:
+                need_update.append((chunk_id, m, target_public))
+        if need_update:
+            ids_to_update = []
+            new_metas = []
+            for chunk_id, m, tp in need_update:
+                m = dict(m or {})
+                m["is_public"] = tp
+                ids_to_update.append(chunk_id)
+                new_metas.append(m)
+            col.update(ids=ids_to_update, metadatas=new_metas)
+            fixed_chunks += len(ids_to_update)
+            logger.warning(
+                "[mu-kb-idx] 对齐 doc=%s 的 %d 个 chunk is_public → %d",
+                doc["id"], len(ids_to_update), target_public
+            )
+    if fixed_chunks:
+        logger.warning(f"[mu-kb-idx] SQLite/Chroma is_public 不一致，已修正 {fixed_chunks} 个 chunk")
+    return fixed_chunks
+
+
 def delete_by_content_hashes(hashes: List[str]) -> bool:
     """GC 用：按 content_hash 删除索引记录（调用时这些内容已无任何用户引用）"""
     if not hashes:
