@@ -355,6 +355,9 @@ _USER_MIGRATION_COLUMNS = [
     ("totp_secret", "TEXT DEFAULT ''"),
     ("totp_enabled", "INTEGER NOT NULL DEFAULT 0"),
     ("last_login_device", "TEXT DEFAULT ''"),
+    # 平台直登凭证（login/direct 写入；MCP 调用时按 user_id 读取，不依赖 cookie 跨请求传递）
+    ("login_token", "TEXT DEFAULT ''"),
+    ("login_token_at", "TEXT DEFAULT ''"),
 ]
 
 _KB_DOCS_MIGRATION_COLUMNS = [

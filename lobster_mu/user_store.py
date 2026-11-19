@@ -109,6 +109,28 @@ def is_disabled(user_id: int) -> bool:
     return row is None or bool(row["disabled"])
 
 
+def set_login_token(user_id: int, token: str) -> None:
+    """持久化平台直登凭证到 users 表（token 为空则清空）。
+    用于 MCP 调用时按 user_id 读取最新 login_token，不依赖 cookie 跨请求传递。"""
+    conn = get_conn()
+    try:
+        conn.execute(
+            "UPDATE users SET login_token = ?, login_token_at = ? WHERE id = ?",
+            ((token or "").strip(), _now(), user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_login_token(user_id: int) -> str:
+    """读取用户最新的平台直登凭证；无则返回空串。"""
+    row = get_by_id(user_id)
+    if row is None:
+        return ""
+    return (row["login_token"] or "").strip()
+
+
 def create_user(username: str, password: str, role: str = "user", display_name: str = ""):
     if get_by_username(username):
         raise ValueError(f"用户名已存在: {username}")

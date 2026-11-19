@@ -100,25 +100,24 @@ docker compose build --build-arg EMBEDDING_MODEL=其他/模型名 mul-agent
 ### 故障排查：Docker Hub 拉取失败（中国网络）
 
 **现象**：`docker compose up -d --build` 报
-`failed to resolve source metadata for docker.io/langgenius/dify-agent-local-sandbox:1.16.1`、
+`failed to resolve source metadata for ...: 503 Service Unavailable`、
 `dial tcp ...: i/o timeout`。
 
-**根因**：`lobster-sandbox` 服务的 `FROM langgenius/dify-agent-local-sandbox:1.16.1` 基础镜像
-来自 Docker Hub，中国网络无法直连 `registry-1.docker.io`。**注意：应用主镜像 `mul-agent` 构建
-本身不受影响**（其 `FROM python:3.11` 走的是 pip 清华源 + 本地构建，非 Docker Hub 镜像拉取），
-失败仅由 sandbox 镜像拖累。
+**根因**：`lobster-sandbox` 的基础镜像是官方 `python:3.11-slim-bookworm`，来自 Docker Hub，
+中国网络无法直连 `registry-1.docker.io`，需改用国内镜像源。
 
 **解决方案（任选其一）**：
 
 1. **用国内镜像源覆盖 sandbox 基础镜像**（推荐，最省事）：
    ```bash
    # 实测（2026-09）：DaoCloud 源稳定可用；轩辕免费节点易限流（报"免费节点当前繁忙"）
-   BASE_IMAGE=docker.m.daocloud.io/langgenius/dify-agent-local-sandbox:1.16.1 \
+   BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim-bookworm \
      docker compose build lobster-sandbox
    # 之后正常启动
    docker compose up -d
    ```
    备选源：`docker.1ms.run`、`docker.aityp.com`、`docker.xuanyuan.me`（限流时换用）。
+   注意：官方镜像带 `library/` 前缀，如 `docker.1ms.run/library/python:3.11-slim-bookworm`。
 
 2. **配置 Docker daemon 全局镜像加速**（一劳永逸，对其它镜像也生效）：
    ```bash

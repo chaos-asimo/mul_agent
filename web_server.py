@@ -1506,7 +1506,9 @@ async def websocket_ai_chat(websocket: WebSocket):
             data = await websocket.receive_json()
             if data.get("action") == "start":
                 theme = data.get("theme", "")
-                success = await ai_chat_manager.start_chat(theme)
+                file_text = data.get("file_text", "")
+                file_name = data.get("file_name", "")
+                success = await ai_chat_manager.start_chat(theme, file_text, file_name)
                 if success:
                     await safe_send_json(websocket, {"status": "started", "theme": ai_chat_manager.current_theme})
                 else:

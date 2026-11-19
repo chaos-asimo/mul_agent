@@ -125,7 +125,18 @@ function Workbench() {
     try {
       const result = await apiGet(`/chat/session/${sessionId}`)
       if (result.success && result.session) {
-        setMessages(result.session.messages || [])
+        const raw = result.session.messages || []
+        // 历史消息：助手时间戳是生成结束时间，减去上一条用户消息（提问）时间戳得到耗时，
+        // 保证刷新后底部“耗时”仍在
+        setMessages(
+          raw.map((m, i) => {
+            if (m.role !== 'assistant' || m.duration_ms) return m
+            const prev = raw[i - 1]
+            if (!prev || prev.role !== 'user' || !prev.timestamp || !m.timestamp) return m
+            const duration = new Date(m.timestamp).getTime() - new Date(prev.timestamp).getTime()
+            return duration > 0 ? { ...m, duration_ms: duration } : m
+          })
+        )
       }
     } catch (e) {
       console.error('加载会话消息失败:', e)

@@ -6575,9 +6575,20 @@ class App {
                 <div class="modal-body">
                     <div style="margin-bottom: 15px;">
                         <label style="display: block; margin-bottom: 8px; font-weight: 600;">聊天主题</label>
-                        <input type="text" id="ai-chat-theme-input" 
+                        <input type="text" id="ai-chat-theme-input"
                                placeholder="请输入聊天主题，或留空由AI自动生成"
                                style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                    </div>
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 8px; font-weight: 600;">
+                            <i class="fas fa-paperclip"></i> 上传文件（可选）
+                        </label>
+                        <input type="file" id="ai-chat-file-input"
+                               accept=".txt,.doc,.docx,.pdf,.md"
+                               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; background: #fff;">
+                        <div style="margin-top: 6px; font-size: 12px; color: #888;">
+                            支持 txt / doc / docx / pdf / md。上传后各角色将始终围绕该文件内容讨论。
+                        </div>
                     </div>
                     <div style="display: flex; gap: 10px; margin-top: 20px;">
                         <button id="ai-chat-generate-theme-btn" class="btn btn-secondary" style="flex: 1;">
@@ -6595,7 +6606,20 @@ class App {
         
         const themeInput = dialog.querySelector('#ai-chat-theme-input');
         themeInput.focus();
-        
+
+        const fileInput = dialog.querySelector('#ai-chat-file-input');
+        const fileNameLabel = document.createElement('div');
+        fileNameLabel.style.cssText = 'margin-top:6px;font-size:12px;color:#4a90d9;display:none;';
+        fileInput.parentElement.appendChild(fileNameLabel);
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files && fileInput.files[0]) {
+                fileNameLabel.textContent = '已选择: ' + fileInput.files[0].name;
+                fileNameLabel.style.display = 'block';
+            } else {
+                fileNameLabel.style.display = 'none';
+            }
+        });
+
         dialog.querySelector('#ai-chat-generate-theme-btn').addEventListener('click', async () => {
             const btn = dialog.querySelector('#ai-chat-generate-theme-btn');
             btn.disabled = true;
@@ -6632,31 +6656,69 @@ class App {
                 }
             }
             
+            // 若选择了文件，先上传解析出文本，再随 start 一起发送
+            let filePayload = { file_name: '', file_text: '' };
+            const selectedFile = fileInput.files[0];
+            if (selectedFile) {
+                const confirmBtn = dialog.querySelector('#ai-chat-confirm-start-btn');
+                confirmBtn.disabled = true;
+                confirmBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 文件上传中...';
+                try {
+                    const fd = new FormData();
+                    fd.append('file', selectedFile);
+                    const resp = await fetch(`${this.baseUrl}/api/ai-chat/upload-file`, {
+                        method: 'POST',
+                        body: fd
+                    });
+                    const res = await resp.json();
+                    if (res.status !== 'success') {
+                        alert(res.message || '文件上传失败');
+                        confirmBtn.disabled = false;
+                        confirmBtn.innerHTML = '<i class="fas fa-play"></i> 开始聊天';
+                        return;
+                    }
+                    filePayload = {
+                        file_name: res.data.file_name,
+                        file_text: res.data.file_text
+                    };
+                } catch (error) {
+                    console.error('文件上传失败:', error);
+                    alert('文件上传失败: ' + error.message);
+                    confirmBtn.disabled = false;
+                    confirmBtn.innerHTML = '<i class="fas fa-play"></i> 开始聊天';
+                    return;
+                }
+                confirmBtn.disabled = false;
+                confirmBtn.innerHTML = '<i class="fas fa-play"></i> 开始聊天';
+            }
+
             dialog.remove();
-            await this._startAIChatWithTheme(theme);
+            await this._startAIChatWithTheme(theme, filePayload);
         });
         
         dialog.querySelector('.modal-close').addEventListener('click', () => dialog.remove());
     }
     
-    async _startAIChatWithTheme(theme) {
+    async _startAIChatWithTheme(theme, filePayload = null) {
         try {
             if (this.isAIChatting) {
                 alert('聊天正在进行中，请先停止当前聊天');
                 return;
             }
-            
+
             this.isAIChatting = true;
             this.aiChatMessages = [];
             this.renderAIChatMessages();
             this.updateAIChatStats();
-            
+
             const startBtn = document.getElementById('ai-chat-start-btn');
             startBtn.innerHTML = '<i class="fas fa-stop"></i> 停止聊天';
             startBtn.classList.remove('btn-success');
             startBtn.classList.add('btn-danger');
-            
-            this.connectAIChatEvents(theme);
+
+            const payload = filePayload || { file_name: '', file_text: '' };
+            this.aiChatStartFileName = payload.file_name || '';
+            this.connectAIChatEvents(theme, payload);
         } catch (error) {
             console.error('启动聊天失败:', error);
             alert('启动聊天失败: ' + error.message);
@@ -6685,18 +6747,19 @@ class App {
         }
     }
 
-    connectAIChatEvents(theme = null) {
+    connectAIChatEvents(theme = null, startPayload = null) {
         if (this.aiChatWebSocket) {
             this.aiChatWebSocket.close();
         }
 
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         this.aiChatWebSocket = new WebSocket(`${wsProtocol}//${window.location.host}/ws/ai-chat`);
-        
+
         this.aiChatWebSocket.onopen = () => {
             console.log('AI Chat WebSocket connected');
             if (theme) {
-                this.sendAIChatAction('start', { theme: theme });
+                const payload = Object.assign({ theme: theme }, startPayload || {});
+                this.sendAIChatAction('start', payload);
             }
         };
         
@@ -6707,13 +6770,13 @@ class App {
                 if (data.status === 'connected') {
                     console.log('WebSocket connected:', data.message);
                 } else if (data.status === 'started') {
-                    this.renderAIChatTheme(data.theme);
+                    this.renderAIChatTheme(data.theme, this.aiChatStartFileName || '');
                 } else if (data.status === 'stopped') {
                     this.stopAIChat();
                 } else if (data.status === 'error') {
                     alert(data.message);
                 } else if (data.event === 'theme') {
-                    this.renderAIChatTheme(data.data.theme);
+                    this.renderAIChatTheme(data.data.theme, this.aiChatStartFileName || '');
                 } else if (data.event === 'typing') {
                     this.showTypingIndicator(data.data.role_name);
                 } else if (data.event === 'message_chunk') {
@@ -6758,14 +6821,19 @@ class App {
         }
     }
 
-    renderAIChatTheme(theme) {
+    renderAIChatTheme(theme, fileName = '') {
         const messagesContainer = document.getElementById('ai-chat-messages');
         if (!messagesContainer) return;
-        
+
+        const fileTag = fileName
+            ? `<div class="ai-chat-file-info"><i class="fas fa-paperclip"></i> 围绕文件讨论：<b>${fileName}</b></div>`
+            : '';
+
         messagesContainer.innerHTML = `
             <div class="ai-chat-theme-info">
                 <i class="fas fa-lightbulb"></i> 聊天主题：${theme}
             </div>
+            ${fileTag}
         `;
     }
 

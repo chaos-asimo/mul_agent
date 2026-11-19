@@ -2926,6 +2926,16 @@ body {
     color: #92400e;
 }
 
+.ai-chat-file-info {
+    background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+    border-left: 4px solid #3b82f6;
+    border-radius: 0 8px 8px 0;
+    padding: 8px 15px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    color: #1e40af;
+}
+
 /* ========== 视频模型样式 ========== */
 #video-models-panel .panel-content {
     padding: 20px;

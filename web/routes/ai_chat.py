@@ -1,6 +1,7 @@
 import asyncio
 import json
-from fastapi import APIRouter, Request
+import os
+from fastapi import APIRouter, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
 from utils.logger import logger
 
@@ -19,14 +20,66 @@ async def ai_chat_get_messages():
         return {"status": "error", "message": str(e)}
 
 
+@router.post("/ai-chat/upload-file")
+async def ai_chat_upload_file(file: UploadFile = File(...)):
+    """上传供AI聊天讨论的文件，解析为纯文本返回。
+
+    支持 .txt / .doc / .docx / .pdf / .md。前端拿到 file_text 后随
+    /ws/ai-chat 的 start 动作一起发送。
+    """
+    try:
+        ext = os.path.splitext(file.filename or "")[1].lower()
+        if ext not in {".txt", ".doc", ".docx", ".pdf", ".md"}:
+            return {"status": "error",
+                    "message": f"不支持的文件类型: {ext or '未知'}（仅支持 txt/doc/docx/pdf/md）"}
+
+        upload_dir = "uploads/ai_chat"
+        os.makedirs(upload_dir, exist_ok=True)
+        # 防止文件名冲突/路径穿越：加时间戳前缀，仅保留 basename
+        safe_name = os.path.basename(file.filename)
+        filepath = os.path.join(upload_dir, f"{int(asyncio.get_event_loop().time())}_{safe_name}")
+
+        content = await file.read()
+        with open(filepath, "wb") as f:
+            f.write(content)
+
+        # 用一次性附件实例解析（CPU/IO 密集，丢线程池）；
+        # 不复用全局 attachment_manager，避免把文件带入"龙虾Claw"的附件列表
+        from attachment.attachment_manager import AttachmentManager
+        manager = AttachmentManager()
+        att = await asyncio.to_thread(manager.add_attachment, filepath)
+
+        if att is None or not (att.content or "").strip():
+            # 解析失败，清理临时文件
+            try:
+                os.remove(filepath)
+            except OSError:
+                pass
+            return {"status": "error",
+                    "message": "文件内容解析失败，请确认文件可读且格式正确"}
+
+        return {
+            "status": "success",
+            "data": {
+                "file_name": att.filename,
+                "file_text": att.content,
+            },
+        }
+    except Exception as e:
+        logger.error(f"AI chat upload file error: {e}", exc_info=True)
+        return {"status": "error", "message": f"上传失败: {str(e)}"}
+
+
 @router.post("/ai-chat/start")
 async def ai_chat_start(request: Request):
     """启动聊天"""
     try:
         request_data = await request.json()
         theme = request_data.get("theme", "")
+        file_text = request_data.get("file_text", "")
+        file_name = request_data.get("file_name", "")
         from ai_chat_manager import ai_chat_manager
-        success = await ai_chat_manager.start_chat(theme)
+        success = await ai_chat_manager.start_chat(theme, file_text, file_name)
         if success:
             return {"status": "success", "data": {"theme": ai_chat_manager.current_theme}}
         else:

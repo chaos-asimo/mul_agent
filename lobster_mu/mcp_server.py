@@ -174,6 +174,28 @@ if MCP_SERVER_AVAILABLE:
     def _tool_display_name(raw: str) -> str:
         return raw[:64]
 
+    def _inject_login_token(user_id: int, value: Any) -> Any:
+        """递归替换参数里的 {{login_token}} 占位符为用户最新平台直登凭证。
+
+        token 从 users 表按 user_id 读取（登录时持久化，不依赖 cookie 跨请求传递）。
+        无 token 时原样返回（占位符保留，由平台接口报错提示）。
+        """
+        from lobster_mu import user_store
+        token = user_store.get_login_token(user_id)
+        if not token:
+            return value
+        placeholder = "{{login_token}}"
+
+        def _sub(v: Any) -> Any:
+            if isinstance(v, str):
+                return v.replace(placeholder, token) if placeholder in v else v
+            if isinstance(v, dict):
+                return {k: _sub(x) for k, x in v.items()}
+            if isinstance(v, (list, tuple)):
+                return type(v)(_sub(x) for x in v)
+            return v
+        return _sub(value)
+
     @_server.list_tools()
     async def _list_tools() -> List["types.Tool"]:
         from lobster_mu import mcp_tool_store, skill_store
@@ -230,6 +252,9 @@ if MCP_SERVER_AVAILABLE:
 
         user_id = _uid()
         args = dict(arguments or {})
+        # 注入平台直登凭证：模型在参数里填 {{login_token}} 占位符，
+        # 执行前按 user_id 从 users 表现取最新 token 替换（每次调用现查，不缓存）
+        args = _inject_login_token(user_id, args)
         if name in NATIVE_TOOLS:
             # 原生函数工具（方式 C）：进程内直调，不走 HTTP 回环
             import asyncio

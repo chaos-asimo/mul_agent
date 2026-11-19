@@ -292,6 +292,16 @@ function formatTimestamp(timestamp) {
   })
 }
 
+// 耗时展示：不足 1 分钟显示秒（保留 1 位小数），否则显示“X分Y秒”
+function formatDuration(ms) {
+  const value = Number(ms)
+  if (!isFinite(value) || value <= 0) return ''
+  const seconds = value / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  const total = Math.round(seconds)
+  return `${Math.floor(total / 60)}分${total % 60}秒`
+}
+
 // 字数：去掉空白后的内容长度
 const countChars = (content) => (content || '').replace(/\s/g, '').length
 
@@ -457,10 +467,16 @@ function MessageBubble({ msg, onOpenFile, elapsedSec, liveStatus }) {
                   {msg.token_stats && (msg.token_stats.prompt_tokens > 0 || msg.token_stats.completion_tokens > 0) && (
                     <> | 输入 {msg.token_stats.prompt_tokens} → 输出 {msg.token_stats.completion_tokens} tokens{msg.token_stats.tokens_per_second > 0 ? ` (${msg.token_stats.tokens_per_second.toFixed(1)}/s)` : ''}</>
                   )}
+                  {formatDuration(msg.duration_ms) && <> | 耗时 {formatDuration(msg.duration_ms)}</>}
                   {' | '}{formatTimestamp(msg.timestamp)}
                 </span>
               )}
-              {!msg.model_name && <span>{formatTimestamp(msg.timestamp)}</span>}
+              {!msg.model_name && (
+                <span>
+                  {formatDuration(msg.duration_ms) && <>耗时 {formatDuration(msg.duration_ms)} | </>}
+                  {formatTimestamp(msg.timestamp)}
+                </span>
+              )}
             </>
           )}
           {/* 单条消息导出按钮 */}
@@ -633,13 +649,23 @@ function ChatPane({
       entry.content = content
       entry.done = done
       if (extraMeta) entry.meta = { ...(entry.meta || {}), ...extraMeta }
+      // 完成时记录“结束时间”和总耗时（时间戳取结束时刻，而非开始接收问题的时刻）
+      if (done && !entry.finishedAt) {
+        entry.finishedAt = Date.now()
+        entry.meta = {
+          ...(entry.meta || {}),
+          duration_ms: entry.finishedAt - (entry.startTs || entry.finishedAt),
+          finished_at: new Date(entry.finishedAt).toISOString(),
+        }
+      }
+      const stamp = new Date(entry.finishedAt || Date.now()).toISOString()
       writeMessages(entry.sid, (prev) => {
         const arr = [...prev]
         const last = arr[arr.length - 1]
         if (last && last.role === 'assistant' && last.streaming) {
-          arr[arr.length - 1] = { ...last, content, streaming: !done, ...(entry.meta || {}) }
+          arr[arr.length - 1] = { ...last, content, timestamp: stamp, streaming: !done, ...(entry.meta || {}) }
         } else {
-          arr.push({ role: 'assistant', content, timestamp: new Date().toISOString(), streaming: !done, ...(entry.meta || {}) })
+          arr.push({ role: 'assistant', content, timestamp: stamp, streaming: !done, ...(entry.meta || {}) })
         }
         return arr
       })
@@ -650,10 +676,19 @@ function ChatPane({
   const finalizeEntry = useCallback(
     (entry) => {
       entry.done = true
+      if (!entry.finishedAt) {
+        entry.finishedAt = Date.now()
+        entry.meta = {
+          ...(entry.meta || {}),
+          duration_ms: entry.finishedAt - (entry.startTs || entry.finishedAt),
+          finished_at: new Date(entry.finishedAt).toISOString(),
+        }
+      }
+      const stamp = new Date(entry.finishedAt).toISOString()
       writeMessages(entry.sid, (prev) => {
         const last = prev[prev.length - 1]
         if (last && last.role === 'assistant' && last.streaming) {
-          return [...prev.slice(0, -1), { ...last, streaming: false }]
+          return [...prev.slice(0, -1), { ...last, timestamp: stamp, streaming: false, ...(entry.meta || {}) }]
         }
         return prev
       })

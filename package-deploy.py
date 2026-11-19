@@ -30,7 +30,7 @@ EX_FILES = {
 }
 # Subdir names to always skip when recursing
 # fonts: 宿主机 assets/fonts 下的 wqy-microhei.ttc (~5MB)，镜像内已通过
-#        apt 安装 fonts-noto-cjk，无需随部署包分发
+#        apt 安装中文字体，无需随部署包分发（带上会让包体积翻倍）
 SKIP_SUBDIRS = {"__pycache__", "uploads", "lobster-claw-files", "mu-files", "fonts"}
 # File extensions to always skip（日志文件不进部署包）
 SKIP_EXTS = {".pyc", ".pyo", ".tmp", ".bak", ".cache", ".log", ".err"}

@@ -99,3 +99,8 @@ web/static/scripts/
 
 # Trae IDE
 .trae/
+
+# 临时调试脚本 / 日志（会话级，不进仓库）
+_*.ps1
+_*.py
+_*.log.err

@@ -41,10 +41,22 @@ deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main 
     libglib2.0-0 \
     fonts-dejavu \
     fonts-noto-cjk \
+    fonts-wqy-zenhei \
+    fonts-wqy-microhei \
+    fonts-droid-fallback \
+    fontconfig \
     ca-certificates \
     curl \
     gnupg \
+    && fc-cache -fv \
     && rm -rf /var/lib/apt/lists/*
+
+# 中文字体安装断言：装不上任何中文字体直接构建失败，
+# 避免运行期脚本生成 PDF 时才发现“加载中文字体失败/中文变方块”。
+RUN test -n "$(fc-list :lang=zh -f '%{file}\n')" || { \
+      echo "ERROR: 未安装到任何中文字体，请检查 apt 源/网络后重新构建" >&2; \
+      exit 1; \
+    }
 
 # 安装 docker CLI（仅客户端，不装 daemon）：供用户命令沙箱以 Docker-out-of-Docker
 # 方式调用宿主机 Docker（需 compose 挂载 /var/run/docker.sock）。
@@ -66,6 +78,28 @@ COPY requirements-deploy.txt ./
 # 安装 Python 依赖
 RUN pip install --no-cache-dir -r requirements-deploy.txt \
     -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 构建期断言：fpdf2 能加载系统中文字体并成功输出含中文的 PDF。
+# Debian 的中文字体多为 .ttc 字体集，fpdf2 直接传入会报错，这里按运行期
+# 垫片同样的方式先抽取集合中的首个字体，确保“字体可用”不是假象。
+RUN python - <<'PY'
+import subprocess
+from fpdf import FPDF
+font = subprocess.check_output(["fc-list", ":lang=zh", "-f", "%{file}\n"]).decode().strip().splitlines()[0]
+assert font, "no CJK font found"
+if font.lower().endswith((".ttc", ".otc")):
+    from fontTools.ttLib import TTCollection
+    ttf = "/tmp/cjk_font.ttf"
+    TTCollection(font, lazy=True).fonts[0].save(ttf)
+    font = ttf
+pdf = FPDF()
+pdf.add_page()
+pdf.add_font("CJK", "", font)
+pdf.set_font("CJK", "", 12)
+pdf.cell(0, 10, "中文字体测试", new_x="LMARGIN", new_y="NEXT")
+pdf.output("/tmp/font_test.pdf")
+print("pdf font ok:", font)
+PY
 
 # RAG 本地向量化依赖
 # torch 2.14.0 从清华源拉取（清华源有 linux manylinux wheel，本机已验证可下载）。

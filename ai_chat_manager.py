@@ -104,6 +104,69 @@ class AIChatManager:
         self.current_theme = ""
         self.callbacks = []
         self.websockets = set()
+        # 上传文件（各角色围绕文件内容讨论）
+        self.file_name = ""
+        self.file_summary = ""
+        self.file_snippets = ""
+
+    # 文件内容注入上限（控制 system prompt 体积，避免单轮 token 爆炸）
+    FILE_DIGEST_MAX_CHARS = 12000
+    FILE_SUMMARY_CHARS = 1000
+    FILE_SNIPPET_COUNT = 12
+    FILE_SNIPPET_CHARS = 300
+
+    def build_file_digest(self, file_text: str, file_name: str = "") -> tuple:
+        """生成文件摘要+关键片段，让各角色能全面围绕文件内容讨论。
+
+        策略（不依赖 LLM，避免启动延迟）：
+        - 摘要：文件前 FILE_SUMMARY_CHARS 字
+        - 片段：在全文上均匀采样 FILE_SNIPPET_COUNT 段，每段至多 FILE_SNIPPET_CHARS 字
+        - 短文件（<= FILE_DIGEST_MAX_CHARS）：摘要=全文，片段=按段落全量列出
+        - 总注入体积控制在 FILE_DIGEST_MAX_CHARS 附近
+        返回 (summary, snippets)。
+        """
+        text = (file_text or "").strip()
+        if not text:
+            return "", ""
+
+        # 短文件：摘要即全文，片段按段落全量（不截断单段，除非单段过长）
+        if len(text) <= self.FILE_DIGEST_MAX_CHARS:
+            summary = text
+            paragraphs = [p.strip() for p in re.split(r'\n\s*\n|\r\n\s*\r\n', text) if p.strip()]
+            if paragraphs:
+                per_cap = self.FILE_SNIPPET_CHARS * 2  # 短文件段落可放宽到 600 字
+                snippets = "\n".join(
+                    f"- {p[:per_cap]}{'...' if len(p) > per_cap else ''}" for p in paragraphs
+                )
+            else:
+                snippets = text
+            return summary, snippets
+
+        # 长文件：摘要=前 N 字
+        summary = text[:self.FILE_SUMMARY_CHARS]
+
+        # 片段：把全文切成段落，均匀采样 N 段
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n|\r\n\s*\r\n', text) if p.strip()]
+        n = self.FILE_SNIPPET_COUNT
+        if len(paragraphs) <= n:
+            sampled = paragraphs
+        else:
+            step = len(paragraphs) / n
+            sampled = [paragraphs[int(i * step)] for i in range(n)]
+        snippets = "\n".join(
+            f"- {p[:self.FILE_SNIPPET_CHARS]}{'...' if len(p) > self.FILE_SNIPPET_CHARS else ''}"
+            for p in sampled
+        )
+
+        # 兜底：无段落结构时按字符均匀采样
+        if not snippets:
+            seg = max(1, len(text) // n)
+            snippets = "\n".join(
+                f"- {text[i:i + self.FILE_SNIPPET_CHARS]}{'...' if i + self.FILE_SNIPPET_CHARS < len(text) else ''}"
+                for i in range(0, len(text), seg)[:n]
+            )
+
+        return summary, snippets
     
     def add_callback(self, callback):
         self.callbacks.append(callback)
@@ -400,7 +463,8 @@ class AIChatManager:
             return
         
         system_prompt = build_role_play_system_prompt(
-            role.name, role.role_description, theme, context, search_info)
+            role.name, role.role_description, theme, context, search_info,
+            self.file_summary, self.file_snippets)
         
         user_prompt = ROLE_PLAY_USER_PROMPT
         
@@ -644,20 +708,35 @@ class AIChatManager:
                 except:
                     pass
     
-    async def start_chat(self, theme: Optional[str] = None):
-        """Start the chat session"""
+    async def start_chat(self, theme: Optional[str] = None,
+                         file_text: str = "", file_name: str = ""):
+        """Start the chat session
+
+        file_text: 上传文件的纯文本内容（为空表示无文件）
+        file_name: 上传文件名（用于日志/展示）
+        """
         if self.is_chatting:
             return False
-        
+
         if len(self.roles) < 2:
             return False
-        
+
         if not theme:
             theme = await self.generate_theme()
-        
+
+        # 生成文件摘要+片段，供 system prompt 注入（各角色围绕文件内容讨论）
+        self.file_name = (file_name or "").strip()
+        if (file_text or "").strip():
+            self.file_summary, self.file_snippets = self.build_file_digest(file_text, self.file_name)
+            logger.info(f"AI聊天已加载文件: {self.file_name or '(未知文件名)'}, "
+                        f"摘要{len(self.file_summary)}字, 片段{len(self.file_snippets)}字")
+        else:
+            self.file_summary = ""
+            self.file_snippets = ""
+
         self.is_chatting = True
         self.chat_task = asyncio.create_task(self.chat_loop(theme))
-        
+
         return True
     
     async def stop_chat(self):
@@ -679,7 +758,8 @@ class AIChatManager:
             "is_chatting": self.is_chatting,
             "theme": self.current_theme,
             "role_count": len(self.roles),
-            "message_count": len(self.messages)
+            "message_count": len(self.messages),
+            "file_name": self.file_name
         }
 
 

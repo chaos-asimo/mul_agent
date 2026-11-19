@@ -27,7 +27,8 @@ class AttachmentManager:
         '.doc': 'doc',
         '.docx': 'docx',
         '.pdf': 'pdf',
-        '.txt': 'txt'
+        '.txt': 'txt',
+        '.md': 'md'
     }
 
     def __init__(self):
@@ -57,6 +58,8 @@ class AttachmentManager:
         elif attachment.file_type == 'pdf':
             attachment.content = self._extract_pdf(filepath)
         elif attachment.file_type == 'txt':
+            attachment.content = self._read_txt(filepath)
+        elif attachment.file_type == 'md':
             attachment.content = self._read_txt(filepath)
 
         self.attachments.append(attachment)

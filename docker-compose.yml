@@ -58,11 +58,13 @@ services:
     build:
       context: ./sandbox
       dockerfile: Dockerfile
-      # 中国网络无法直连 Docker Hub 时，用国内镜像源覆盖基础镜像，例如：
-      #   BASE_IMAGE=docker.xuanyuan.me/langgenius/dify-agent-local-sandbox:1.16.1 docker compose build lobster-sandbox
-      # 可用源（2026 实测）：docker.xuanyuan.me / docker.1ms.run / docker.m.daocloud.io / docker.aityp.com
+      # 基础镜像：官方 python:3.11-slim-bookworm，与主镜像 Python 版本一致
+      # （保证 packages/ 下主容器装的 cp311 wheel 在沙箱内可 import）。
+      # 国内无法直连 Docker Hub 时用镜像源覆盖，注意官方镜像带 library/ 前缀，例如：
+      #   BASE_IMAGE=docker.xuanyuan.me/library/python:3.11-slim-bookworm docker compose build lobster-sandbox
+      # 可用源（2026 实测）：docker.xuanyuan.me / docker.m.daocloud.io / docker.1ms.run / docker.aityp.com
       args:
-        BASE_IMAGE: ${BASE_IMAGE:-langgenius/dify-agent-local-sandbox:1.16.1}
+        BASE_IMAGE: ${BASE_IMAGE:-docker.m.daocloud.io/library/python:3.11-slim-bookworm}
     image: ${LOBSTER_SANDBOX_IMAGE:-lobster-claw-sandbox:local}
     container_name: lobster-sandbox-builder
     restart: "no"

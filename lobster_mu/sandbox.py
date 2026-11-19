@@ -226,13 +226,15 @@ try:
                 except Exception:
                     pass
             _ret = _orig_add_font(self, family, style, fname, *a, **kw)
-            # 旧版 PyFPDF(1.x) 用 self.fonts[family][style] 存字体，样式变体不会自动回退。
-            # 把常规体额外注册为 B/I/BI 别名，彻底避免 set_font(family,'B') 抛 Undefined font。
+            # 旧版 PyFPDF(1.x) 用 self.fonts[family][style] 存字体，样式变体不会自动回退；
+            # fpdf2 则以 family+style（如 cjkB）为键。两种结构都补注册常规体为
+            # B/I/BI 别名，彻底避免 set_font(family,'B') 抛 Undefined font。
             try:
-                _entry = (getattr(self, "fonts", {}) or {}).get((family or "").lower())
-                if isinstance(_entry, dict) and str(style).upper() == "" and fname:
+                _fam = (family or "").lower()
+                _fonts = getattr(self, "fonts", None) or {}
+                if _fam and _fam in _fonts and str(style).upper() == "" and fname:
                     for _st in ("B", "I", "BI"):
-                        if _st not in _entry:
+                        if (_fam + _st) not in _fonts:
                             _orig_add_font(self, family, _st, fname, *a, **kw)
             except Exception:
                 pass
@@ -243,7 +245,7 @@ try:
         def _lobster_set_font(self, family=None, style="", size=0, *a, **kw):
             try:
                 return _orig_set_font(self, family, style, size, *a, **kw)
-            except RuntimeError as _err:
+            except Exception as _err:
                 try:
                     self.font_style = ""
                 except Exception:
@@ -251,7 +253,7 @@ try:
                 for _st in ("regular", ""):
                     try:
                         return _orig_set_font(self, family, _st, size, *a, **kw)
-                    except RuntimeError:
+                    except Exception:
                         continue
                 try:
                     _fam = (family or "").lower()
@@ -260,7 +262,7 @@ try:
                             for _st in list(_v.keys()):
                                 try:
                                     return _orig_set_font(self, family, _st, size, *a, **kw)
-                                except RuntimeError:
+                                except Exception:
                                     continue
                 except Exception:
                     pass
@@ -390,6 +392,7 @@ class LocalExecutor(SandboxExecutor):
                 except Exception:
                     boot = ""
                 boot += _matplotlib_fmt_shim()
+                boot += _fpdf_ttc_shim()
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(boot + code)
                 env = os.environ.copy()

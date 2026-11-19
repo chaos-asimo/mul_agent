@@ -815,8 +815,9 @@ def _strip_all_marks(text: str) -> str:
 
 
 def _execute_sub_agent(user_id: int, agent: Dict[str, Any], task: str,
-                       cancel_event=None) -> Dict[str, Any]:
-    """执行子Agent（支持取消：cancel_event 为 threading.Event，置位则返回部分结果）。"""
+                       cancel_event=None, ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """执行子Agent（支持取消：cancel_event 为 threading.Event，置位则返回部分结果）。
+    ctx 为会话上下文（如 login_token），透传给 MCP 调用做占位符替换。"""
     from lobster_mu import agent_store, plan_store
 
     adapter = None
@@ -870,7 +871,10 @@ def _execute_sub_agent(user_id: int, agent: Dict[str, Any], task: str,
             from lobster_mu import mcp_client
             mcp_tools = mcp_client.get_enabled_tools(user_id) or []
             if mcp_tools:
-                mcp_block = _build_mcp_prompt_block(mcp_tools)
+                mcp_block = _build_mcp_prompt_block(
+                    mcp_tools,
+                    has_login_token=bool(ctx and ctx.get("login_token")),
+                )
             else:
                 can_mcp = False
         except Exception:
@@ -913,7 +917,7 @@ def _execute_sub_agent(user_id: int, agent: Dict[str, Any], task: str,
                         continue
                     label = f"{call['server']}/{call['tool']}"
                     events.append(f"🔧 调用工具: {label}")
-                    ok, txt = _run_mcp_call_sync(user_id, call)
+                    ok, txt = _run_mcp_call_sync(user_id, call, ctx)
                     tool_blocks.append(f"[MCP工具 {label}] {'结果' if ok else '调用失败'}：\n{txt}")
 
             if not tool_blocks:
@@ -2045,7 +2049,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
                         continue
                     avatar = (sub.get("avatar") or "🤖").strip() or "🤖"
                     yield "data: " + json.dumps({'success': True, 'content': f"\n{avatar} 正在调用子Agent「{name}」执行任务...\n", 'session_id': session_id}) + "\n\n"
-                    sub_res = _execute_sub_agent(user_id, sub, call["task"])
+                    sub_res = _execute_sub_agent(user_id, sub, call["task"], ctx=ctx)
                     if sub_res.get("success"):
                         for ev in (sub_res.get("events") or []):
                             yield "data: " + json.dumps({'success': True, 'content': f"{avatar} {ev}\n", 'session_id': session_id}) + "\n\n"

@@ -22,6 +22,24 @@ import hmac
 
 router = APIRouter(prefix="/api/lobster-mu")
 
+_login_logger = _logging.getLogger("lobster_mu.login")
+
+
+def _log_session_snapshot(request: Request, event: str, user_id: int = 0):
+    """登录相关请求：输出 session 内容（login_token 脱敏），便于排查 token 流转。"""
+    try:
+        snap = {}
+        for k, v in request.session.items():
+            if k == "mu_login_token" and v:
+                snap[k] = f"<set len={len(v)} head={v[:6]}...>"
+            else:
+                snap[k] = v
+        _login_logger.info("SESSION_SNAPSHOT event=%s user_id=%s session=%s",
+                           event, user_id, _json.dumps(snap, ensure_ascii=False, default=str))
+    except Exception:
+        pass
+
+
 _db_ready = False
 
 
@@ -229,6 +247,11 @@ async def mu_login_2fa(request: Request, body: MuTwoFactorRequest):
     login_limiter.record_success(ip, body.username)
     request.session.pop("mu_2fa_pending", None)
     request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}
+    # 平台直登带 2FA：pending 阶段 token 已存 session，验证通过后持久化到 users 表
+    _pending_tok = request.session.get("mu_login_token")
+    if _pending_tok:
+        user_store.set_login_token(row["id"], _pending_tok)
+    _log_session_snapshot(request, "login_2fa_success", row["id"])
     user_store.update_last_login(row["id"], request.headers.get("user-agent") or None)
     tools.log_operation(row["id"], "login_2fa_success",
                         f"{row['username']} 二次验证登录成功", ip=ip)
@@ -326,6 +349,10 @@ async def mu_logout(request: Request):
         tools.log_operation(uid, "logout", f"{username} 退出登录", ip=ip)
     request.session.pop("mu_user", None)
     request.session.pop("mu_2fa_pending", None)
+    request.session.pop("mu_login_token", None)
+    if uid:
+        user_store.set_login_token(uid, "")  # 退出时清 DB 凭证，避免残留
+    _log_session_snapshot(request, "logout", uid)
     return {"status": "success", "message": "退出成功"}
 
 
@@ -474,6 +501,10 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
         request.session["mu_2fa_pending"] = pending_user
         if body.login_token:
             request.session["mu_login_token"] = body.login_token
+            user_store.set_login_token(row["id"], body.login_token)
+        else:
+            request.session.pop("mu_login_token", None)
+        _log_session_snapshot(request, "login_direct_pending_2fa", row["id"])
         user_store.update_last_login(row["id"], request.headers.get("user-agent") or None)
         return {"status": "success", "user": pending_user, "needs_2fa": True, "created": created}
 
@@ -481,6 +512,10 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
     request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}
     if body.login_token:
         request.session["mu_login_token"] = body.login_token
+        user_store.set_login_token(row["id"], body.login_token)
+    else:
+        request.session.pop("mu_login_token", None)
+    _log_session_snapshot(request, "login_direct_ok", row["id"])
     user_store.update_last_login(row["id"], request.headers.get("user-agent") or None)
     tools.log_operation(row["id"], "login", f"{row['username']} 登录成功" + ("（自动创建账号）" if created else ""), ip=ip)
     return {
@@ -1094,7 +1129,9 @@ async def mu_chat_message(body: ChatMessageRequest, request: Request, user: dict
 async def mu_chat_stream(body: ChatStreamRequest, request: Request, user: dict = Depends(check_user_rate)):
     ip = get_client_ip(request)
     tools.log_operation(user["id"], "chat", f"发送消息: {body.message[:100]}", ip=ip)
-    ctx = {"login_token": request.session.get("mu_login_token")}
+    # token 优先取 cookie（最新）；cookie 为空（平台 webview 跨上下文 cookie 丢失）时
+    # 兜底从 users 表按 user_id 读取，保证 MCP 调用总能拿到登录时持久化的最新 token
+    ctx = {"login_token": request.session.get("mu_login_token") or user_store.get_login_token(user["id"])}
     return chat_service.chat_stream_response(user["id"], body, ctx=ctx)
 
 
