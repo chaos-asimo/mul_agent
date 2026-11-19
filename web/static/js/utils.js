@@ -67,8 +67,8 @@ window.Utils = (function() {
     function formatAIChatContent(content) {
         let formatted = escapeHtml(sanitizeThinkingContent(content));
 
-        // 处理粗体强调：**文字** -> <strong>文字</strong>
-        formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        // 处理粗体强调：**文字** -> <strong>文字</strong>（[\s\S] 允许加粗内容跨行）
+        formatted = formatted.replace(/\*\*([\s\S]*?)\*\*/g, '<strong>$1</strong>');
 
         // 处理彩色强调：[[文字]] -> <span style="color: #ef4444; font-weight: bold;">文字</span>
         formatted = formatted.replace(/\[\[(.*?)\]\]/g, '<span style="color: #ef4444; font-weight: bold;">$1</span>');
@@ -76,10 +76,27 @@ window.Utils = (function() {
         return formatted;
     }
 
+    /**
+     * 修补 marked 漏渲染的加粗。
+     * marked 的强调判定不把中文标点（如“。”）当作标点，遇到
+     * “**5．业务承载与结果返回。**紧接中文” 这类“闭合 ** 紧贴非空白字符”的写法时
+     * 会认为无法闭合，原样输出 **。这里把渲染结果里残留的 **文字** 补成 <strong>，
+     * 同时跳过 <pre>/<code> 代码区域，避免误伤代码中的 ** 符号。
+     */
+    function fixLiteralBold(html) {
+        if (!html) return html;
+        const parts = String(html).split(/(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>)/g);
+        for (let i = 0; i < parts.length; i += 2) {
+            parts[i] = parts[i].replace(/\*\*([^<]*?)\*\*/g, '<strong>$1</strong>');
+        }
+        return parts.join('');
+    }
+
     return {
         escapeHtml,
         sanitizeThinkingContent,
         formatTimestamp,
-        formatAIChatContent
+        formatAIChatContent,
+        fixLiteralBold
     };
 })();

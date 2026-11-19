@@ -157,12 +157,25 @@ function renderMathInHtml(html, mathStore) {
   })
 }
 
+// 修补 marked 漏渲染的加粗。
+// marked 的强调判定不把中文标点（如“。”）当作标点，遇到
+// “**5．业务承载与结果返回。**紧接中文” 这种“闭合 ** 紧贴非空白字符”的写法
+// 会判定无法闭合而原样输出 **。这里把渲染结果中残留的 **文字** 补成 <strong>，
+// 同时跳过 <pre>/<code> 代码区域，避免误伤代码里的 ** 符号。
+function fixLiteralBold(html) {
+  const parts = String(html || '').split(/(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>)/g)
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = parts[i].replace(/\*\*([^<]*?)\*\*/g, '<strong>$1</strong>')
+  }
+  return parts.join('')
+}
+
 function MarkdownContent({ content, streaming }) {
   const html = useMemo(() => {
     try {
       const raw = content || ''
       const { out, mathStore } = extractMath(raw)
-      const rawHtml = sanitizeAnchors(marked.parse(normalizeInlineBreaks(out)))
+      const rawHtml = fixLiteralBold(sanitizeAnchors(marked.parse(normalizeInlineBreaks(out))))
       return renderMathInHtml(rawHtml, mathStore)
     } catch {
       return content || ''

@@ -4677,7 +4677,7 @@ class App {
                     }
                 }
             });
-            return marked.parse(text);
+            return window.Utils ? window.Utils.fixLiteralBold(marked.parse(text)) : marked.parse(text);
         }
         
         let html = text;
@@ -6223,7 +6223,7 @@ class App {
                                 <div style="font-weight: 600; color: #3b82f6; margin-bottom: 4px;">
                                     ${this.escapeHtml(msg.role_name)} <span style="font-weight: normal; color: #94a3b8; font-size: 12px;">${time}</span>
                                 </div>
-                                <div style="color: #334155; line-height: 1.6; word-wrap: break-word;">${this.escapeHtml(this.sanitizeThinkingContent(msg.content))}</div>
+                                <div style="color: #334155; line-height: 1.6; word-wrap: break-word;">${this.formatAIChatContent(msg.content)}</div>
                                 ${imgHtml}
                                 ${videoHtml}
                             </div>
@@ -6892,7 +6892,7 @@ class App {
                 <div class="ai-chat-message-avatar" style="background: ${color};">${avatar}</div>
                 <div class="ai-chat-message-content">
                     <div class="ai-chat-message-name">${roleName}</div>
-                    <div class="ai-chat-message-text">${this.escapeHtml(this.sanitizeThinkingContent(fullContent))}</div>
+                    <div class="ai-chat-message-text">${this.formatAIChatContent(fullContent)}</div>
                 </div>
             `;
             
@@ -6900,7 +6900,7 @@ class App {
         } else {
             const textElement = streamingMsg.querySelector('.ai-chat-message-text');
             if (textElement) {
-                textElement.innerHTML = this.escapeHtml(this.sanitizeThinkingContent(fullContent));
+                textElement.innerHTML = this.formatAIChatContent(fullContent);
             }
         }
         
