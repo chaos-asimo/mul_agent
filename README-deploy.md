@@ -197,24 +197,27 @@ Credentials: include   # 跨域时必须
 {
   "username": "3888",
   "display_name": "罗俊易",
-  "login_token": "optional-platform-token"   # 可选，存入 session
+  "login_token": "platform-token"   # 必填，平台登录令牌
 }
 ```
 
-- `login_token`：平台令牌，存入 session（`mu_login_token`），后续端点可通过 `request.session.get("mu_login_token")` 读取调用平台 API
+- `login_token`：**必填**。服务端会调用平台接口校验 token（其对应 `grbh` 必须与 `username` 一致），校验失败或缺失一律返回 `403`
+- token 加密后持久化到 `users` 表（供 MCP 调用使用），并存入 session（`mu_login_token`）
 - 自动创建的用户角色固定为 `user`（非 admin），密码 = `用户名 + "sy"`
+- direct 登录纳入 IP+用户名 维度失败计数（5 次/15 分钟锁定）
 
 ### 跨域配置
 
-服务端 CORS 中间件 `allow_origins=["*", "null"]`，允许任意来源的预检请求。实际访问控制由后端 `DIRECT_LOGIN_ALLOWED_ORIGINS` 环境变量完成：
+CORS 与直登来源校验共用 `DIRECT_LOGIN_ALLOWED_ORIGINS` 白名单（不再允许 `*` 全通配）：
 
 | 配置 | 效果 |
 |---|---|
-| 不配置（空） | 拒绝所有跨域请求，仅同源 + `file://`（Origin=null）可访问 |
-| `*.jbysoft.com` | 允许 `jbysoft.com` 所有子域名跨域调用 |
+| 不配置（空） | 拒绝所有跨域请求，仅同源可访问 |
+| `*.jbysoft.com` | 允许 `jbysoft.com` 所有子域名（http/https）跨域调用 |
 | `https://claw.jbysoft.com,https://appsy.jbysoft.com` | 精确允许列表（逗号分隔） |
 
-`file://` 打开的 HTML 页面（Origin=null）**始终放行**，无需配置。
+`file://` 打开的 HTML 页面（Origin=null）**默认拒绝**，需在白名单中显式加入 `null` 才允许。
+无 Origin 的非浏览器请求仅允许内网/回环来源（由 `MU_TRUSTED_PROXIES` 判定）。
 
 ### 示例 HTML（direct-login.html）
 

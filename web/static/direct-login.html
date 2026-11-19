@@ -103,7 +103,7 @@
   <div class="card">
     <div class="logo">🦞</div>
     <div class="title">龙虾Claw 直接登录</div>
-    <div class="subtitle">输入用户名即可自动注册并登录</div>
+    <div class="subtitle">需提供平台登录令牌完成身份校验</div>
 
     <div class="field">
       <label for="baseUrl">连接地址</label>
@@ -118,6 +118,11 @@
     <div class="field">
       <label for="displayName">显示名</label>
       <input id="displayName" type="text" placeholder="请输入显示名" autocomplete="off" />
+    </div>
+
+    <div class="field">
+      <label for="loginToken">平台登录令牌</label>
+      <input id="loginToken" type="password" placeholder="平台登录 token（必填）" autocomplete="off" />
     </div>
 
     <button id="loginBtn" class="btn">直接登录</button>
@@ -149,10 +154,12 @@
     var baseUrl = baseUrlInput.value.trim().replace(/\/+$/, '');
     var username = document.getElementById('username').value.trim();
     var displayName = document.getElementById('displayName').value.trim();
+    var loginToken = document.getElementById('loginToken').value.trim();
 
     if (!baseUrl) { showMsg('请填写连接地址'); return; }
     if (!username) { showMsg('请填写用户名'); return; }
     if (!displayName) { showMsg('请填写显示名'); return; }
+    if (!loginToken) { showMsg('请填写平台登录令牌'); return; }
 
     btn.disabled = true;
     btn.textContent = '登录中...';
@@ -162,7 +169,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ username: username, display_name: displayName })
+        body: JSON.stringify({ username: username, display_name: displayName, login_token: loginToken })
       });
       var data = await resp.json();
 
@@ -186,7 +193,7 @@
   });
 
   // 回车提交
-  ['username', 'displayName'].forEach(function (id) {
+  ['username', 'displayName', 'loginToken'].forEach(function (id) {
     document.getElementById(id).addEventListener('keydown', function (e) {
       if (e.key === 'Enter') btn.click();
     });

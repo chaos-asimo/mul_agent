@@ -1,9 +1,11 @@
 """Multi-Agent Document Enhancer Web Server"""
 import os
+import re
 import asyncio
 import sys
 import json
 import logging
+import secrets
 from datetime import datetime
 
 # 用户依赖目录 packages/ 只能“补充”系统包，绝不能“覆盖”——故用 append 而非 insert(0)。
@@ -17,15 +19,9 @@ setup_logging()
 
 
 def get_client_ip(request) -> str:
-    """获取真实客户端 IP：经 nginx 反代时优先读转发头（X-Real-IP 最可信），
-    其次 X-Forwarded-For 最左，最后回退直连 IP。"""
-    xri = request.headers.get("x-real-ip")
-    if xri:
-        return xri.strip()
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    """获取真实客户端 IP（复用路由层实现：仅当对端是可信反代时才采信转发头）。"""
+    from web.routes.lobster_mu import get_client_ip as _impl
+    return _impl(request)
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends
@@ -319,18 +315,71 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Multi-Agent Document Enhancer", version="1.0", lifespan=lifespan)
 
-# CORS：允许外部页面（如 direct-login.html）跨域调用 /api/lobster-mu 接口
-# "null" 用于 file:// 打开的 HTML（Origin 为 null）
+# ---- CORS：严格白名单，禁止 "*" 全通配（避免任意站点携带用户凭据跨域读写 API）----
+_WEAK_SESSION_SECRETS = {"", "mul_agent_secret_key_2026"}
+
+
+def _build_cors_config():
+    """从 DIRECT_LOGIN_ALLOWED_ORIGINS 构建 CORS 白名单。
+    - 精确来源 → allow_origins
+    - *.example.com 通配 → allow_origin_regex（仅允许 http/https + 该域名及其子域）
+    - "*" 直接忽略（不再全开）；"null" 仅在显式配置时生效"""
+    raw = [o.strip().lower() for o in os.environ.get("DIRECT_LOGIN_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    exact, regex_parts = [], []
+    for o in raw:
+        if o == "*":
+            logger.warning("[安全] DIRECT_LOGIN_ALLOWED_ORIGINS 含 '*' 已忽略：不允许全通配跨域")
+            continue
+        if o.startswith("*."):
+            host = o[2:]
+            regex_parts.append(r"^https?://([a-z0-9-]+\.)*" + re.escape(host) + r"(:[0-9]+)?$")
+        else:
+            exact.append(o)
+    return exact, ("|".join(regex_parts) if regex_parts else None)
+
+
+def _load_session_secret() -> str:
+    """加载会话签名密钥：不再使用代码内硬编码默认值（公钥泄露等于 session 可伪造）。
+    优先环境变量 SESSION_SECRET_KEY；缺失或仍为示例弱值时，自动生成随机密钥并
+    持久化到 data/.session_secret（保证重启与多 worker 一致）。"""
+    env_val = (os.environ.get("SESSION_SECRET_KEY") or "").strip()
+    if env_val and env_val not in _WEAK_SESSION_SECRETS:
+        return env_val
+    key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", ".session_secret")
+    try:
+        os.makedirs(os.path.dirname(key_path), exist_ok=True)
+        if os.path.exists(key_path):
+            with open(key_path, "r", encoding="utf-8") as f:
+                saved = f.read().strip()
+            if len(saved) >= 32:
+                logger.warning("[安全] SESSION_SECRET_KEY 未配置或仍为示例默认值，已使用 data/.session_secret 持久化密钥")
+                return saved
+        new_val = secrets.token_urlsafe(48)
+        try:
+            fd = os.open(key_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(new_val)
+            logger.warning("[安全] 已生成新的 SESSION_SECRET_KEY 并持久化到 %s（建议改为显式环境变量）", key_path)
+            return new_val
+        except FileExistsError:
+            with open(key_path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+    except Exception as e:
+        raise SystemExit(f"[安全] 无法初始化 SESSION_SECRET_KEY：{e}。请显式配置环境变量 SESSION_SECRET_KEY")
+
+
 from starlette.middleware.cors import CORSMiddleware
+_cors_exact, _cors_regex = _build_cors_config()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "null"],
-    allow_credentials=True,
+    allow_origins=_cors_exact,
+    allow_origin_regex=_cors_regex,
+    allow_credentials=bool(_cors_exact or _cors_regex),
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
-app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET_KEY", "mul_agent_secret_key_2026"))
+app.add_middleware(SessionMiddleware, secret_key=_load_session_secret())
 
 
 # 修改 session cookie 属性：SameSite=None + Secure，允许 file:// 跨域页面设置 cookie

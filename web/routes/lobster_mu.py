@@ -26,12 +26,12 @@ _login_logger = _logging.getLogger("lobster_mu.login")
 
 
 def _log_session_snapshot(request: Request, event: str, user_id: int = 0):
-    """登录相关请求：输出 session 内容（login_token 脱敏），便于排查 token 流转。"""
+    """登录相关请求：输出 session 内容（login_token 完全脱敏，不输出长度/片段）"""
     try:
         snap = {}
         for k, v in request.session.items():
-            if k == "mu_login_token" and v:
-                snap[k] = f"<set len={len(v)} head={v[:6]}...>"
+            if k == "mu_login_token":
+                snap[k] = "<set>" if v else ""
             else:
                 snap[k] = v
         _login_logger.info("SESSION_SNAPSHOT event=%s user_id=%s session=%s",
@@ -43,17 +43,72 @@ def _log_session_snapshot(request: Request, event: str, user_id: int = 0):
 _db_ready = False
 
 
+_trusted_proxy_networks_cache = None
+
+
+def _trusted_proxy_networks():
+    """可信反代网段（环境变量 MU_TRUSTED_PROXIES 配置，逗号分隔 CIDR）。
+    默认：回环 + 内网网段（覆盖本机 cloudflared 与 docker/nginx 反代）。
+    只有对端 IP 落在这些网段时，才采信 X-Real-IP / X-Forwarded-For，防止客户端伪造头绕过限流。"""
+    global _trusted_proxy_networks_cache
+    if _trusted_proxy_networks_cache is not None:
+        return _trusted_proxy_networks_cache
+    import ipaddress
+    raw = os.environ.get(
+        "MU_TRUSTED_PROXIES",
+        "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+    )
+    nets = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            _login_logger.warning("MU_TRUSTED_PROXIES 中的 %r 不是合法 CIDR，已忽略", item)
+    _trusted_proxy_networks_cache = nets
+    return nets
+
+
+def _is_internal_ip(ip: str) -> bool:
+    """判断是否回环/内网地址（用于放行无 Origin 的内部调用）。"""
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address((ip or "").strip())
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_private or addr.is_link_local
+
+
 def get_client_ip(request) -> str:
-    """获取真实客户端 IP：经 nginx 反代时，优先读转发头。
+    """获取真实客户端 IP：仅当直连对端属于可信反代网段时，才采信转发头。
     X-Real-IP 最可信（nginx 用 $remote_addr 覆盖，客户端无法伪造）；
     其次 X-Forwarded-For 取最左（原始客户端）；最后回退直连 IP。"""
-    xri = request.headers.get("x-real-ip")
+    peer = request.client.host if request.client else ""
+    import ipaddress
+    try:
+        peer_addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return peer
+    if not any(peer_addr in net for net in _trusted_proxy_networks()):
+        return peer  # 对端不是可信反代：忽略转发头，直接用直连 IP
+    xri = (request.headers.get("x-real-ip") or "").strip()
     if xri:
-        return xri.strip()
-    xff = request.headers.get("x-forwarded-for")
+        try:
+            ipaddress.ip_address(xri)
+            return xri
+        except ValueError:
+            pass
+    xff = (request.headers.get("x-forwarded-for") or "").strip()
     if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else ""
+        first = xff.split(",")[0].strip()
+        try:
+            ipaddress.ip_address(first)
+            return first
+        except ValueError:
+            pass
+    return peer
 
 
 def ensure_db():
@@ -363,8 +418,25 @@ PLATFORM_TOKEN_VERIFY_URL = os.environ.get(
     "PLATFORM_TOKEN_VERIFY_URL",
     "http://10.111.1.250:32516/PT/business/token/getUserInfoViaToken",
 )
-# 校验失败时是否拒绝登录（默认拒绝；仅调试时可设 false 放行）
-PLATFORM_TOKEN_VERIFY_STRICT = os.environ.get("PLATFORM_TOKEN_VERIFY_STRICT", "true").lower() != "false"
+# 校验请求方式：GET（默认，token 走 query 参数，兼容现有平台接口）
+# POST（token 放请求体，避免出现在 URL/代理日志中；需平台侧支持 JSON body）
+PLATFORM_TOKEN_VERIFY_METHOD = os.environ.get("PLATFORM_TOKEN_VERIFY_METHOD", "GET").strip().upper()
+
+
+def _direct_allowed_origins() -> List[str]:
+    """DIRECT_LOGIN_ALLOWED_ORIGINS 白名单（逗号分隔，小写，支持 *.example.com 通配）。
+    特殊值 "null" 表示显式允许 file:// / 沙箱 iframe 页面。"""
+    return [o.strip().lower() for o in os.environ.get("DIRECT_LOGIN_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
+
+def _origin_allowed(origin: str, allowed: List[str]) -> bool:
+    origin = (origin or "").lower()
+    for a in allowed:
+        if a == origin:
+            return True
+        if a.startswith("*.") and origin.endswith(a[1:]):
+            return True
+    return False
 
 
 def _verify_platform_token(token: str, username: str) -> "tuple[bool, str]":
@@ -372,7 +444,10 @@ def _verify_platform_token(token: str, username: str) -> "tuple[bool, str]":
     返回 (ok, 失败原因)。同步阻塞，调用方须用 asyncio.to_thread 包装。"""
     import requests as _requests
     try:
-        resp = _requests.get(PLATFORM_TOKEN_VERIFY_URL, params={"token": token}, timeout=8)
+        if PLATFORM_TOKEN_VERIFY_METHOD == "POST":
+            resp = _requests.post(PLATFORM_TOKEN_VERIFY_URL, json={"token": token}, timeout=8)
+        else:
+            resp = _requests.get(PLATFORM_TOKEN_VERIFY_URL, params={"token": token}, timeout=8)
     except Exception as e:
         return False, f"平台校验服务不可达: {e}"
     if resp.status_code != 200:
@@ -401,43 +476,38 @@ class MuDirectLoginRequest(BaseModel):
 async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
     """按用户名直接登录；若用户不存在则自动新建（密码固定为 用户名+sy），已存在则直接登录。
 
-    来源校验：环境变量 DIRECT_LOGIN_ALLOWED_ORIGINS 配置允许的 Origin 列表（逗号分隔）。
-    若未配置则禁止跨域调用（仅允许同源请求）。
+    安全约束：
+    - login_token 必填，且必须通过平台接口校验（token 与用户名一致），否则 403；
+    - 来源必须命中 DIRECT_LOGIN_ALLOWED_ORIGINS 白名单；Origin=null 需显式配置 "null"；
+      无 Origin 的非浏览器请求仅允许内网/回环来源；
+    - 纳入 IP+用户名 维度失败计数，防止枚举/爆破。
     """
-    # ---- 来源校验（支持 * 通配符，如 *.jbysoft.com）----
-    allowed_origins = [o.strip().lower() for o in os.environ.get("DIRECT_LOGIN_ALLOWED_ORIGINS", "").split(",") if o.strip()]
-    origin = (request.headers.get("origin") or "").lower()
-    referer = (request.headers.get("referer") or "").lower()
+    # ---- 来源校验（白名单：DIRECT_LOGIN_ALLOWED_ORIGINS，支持 *.example.com）----
+    allowed_origins = _direct_allowed_origins()
+    origin = (request.headers.get("origin") or "").strip().lower()
+    referer = (request.headers.get("referer") or "").strip().lower()
+    ip = get_client_ip(request)
 
-    def _origin_allowed(o: str) -> bool:
-        for a in allowed_origins:
-            if a == o:
-                return True
-            if a.startswith("*."):
-                if o.endswith(a[1:]):  # *.jbysoft.com → .jbysoft.com
-                    return True
-        return False
-
-    # Origin 为 null（file:// 打开 HTML）→ 放行，记录日志
     if origin == "null":
-        tools.log_operation(0, "login_direct_file", f"file:// 请求（Origin=null）", ip=get_client_ip(request))
-    elif origin:
-        # 有 Origin 且非 null → 跨域请求
-        if allowed_origins:
-            if _origin_allowed(origin):
-                pass  # 允许
-            else:
-                tools.log_operation(0, "login_direct_blocked", f"来源被拒绝: {origin}", success=False,
-                                    ip=get_client_ip(request))
-                raise HTTPException(status_code=403, detail="来源不被允许")
-        else:
-            # 未配置允许列表 → 拒绝所有跨域请求
-            tools.log_operation(0, "login_direct_blocked", f"跨域请求被拒绝(未配置允许列表): {origin}", success=False,
-                                ip=get_client_ip(request))
+        # file:// 或沙箱 iframe（Origin=null）：必须显式在白名单中配置 "null" 才允许
+        if not _origin_allowed("null", allowed_origins):
+            tools.log_operation(0, "login_direct_blocked", "来源被拒绝: null（未在白名单显式允许）",
+                                success=False, ip=ip)
             raise HTTPException(status_code=403, detail="来源不被允许")
-    # origin 为空（同源请求）→ 放行
-    if not origin and referer:
-        tools.log_operation(0, "login_direct_referer", f"Referer: {referer}", ip=get_client_ip(request))
+        tools.log_operation(0, "login_direct_file", "file:// 请求（白名单显式允许）", ip=ip)
+    elif origin:
+        if not allowed_origins or not _origin_allowed(origin, allowed_origins):
+            tools.log_operation(0, "login_direct_blocked", f"来源被拒绝: {origin}", success=False, ip=ip)
+            raise HTTPException(status_code=403, detail="来源不被允许")
+    else:
+        # 无 Origin：非浏览器客户端（curl/脚本）通常不发 Origin。
+        # 仅允许内网/回环来源，公网一律拒绝，防止外部脚本直连登录接口。
+        if not _is_internal_ip(ip):
+            tools.log_operation(0, "login_direct_blocked",
+                                f"无 Origin 且来源非内网: {ip}", success=False, ip=ip)
+            raise HTTPException(status_code=403, detail="来源不被允许")
+        if referer:
+            tools.log_operation(0, "login_direct_referer", f"Referer: {referer}", ip=ip)
 
     ensure_db()
     username = (body.username or "").strip()
@@ -447,24 +517,33 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
     if not display_name:
         raise HTTPException(status_code=400, detail="显示名不能为空")
 
-    # ---- 平台身份校验：携带 login_token 时，调用平台接口确认 token 对应用户(grbh)
-    # 与 username 一致（本人操作）。校验失败一律拒绝，防止冒用他人身份直登。----
-    if body.login_token:
-        ok, why = await asyncio.to_thread(_verify_platform_token, body.login_token, username)
-        if not ok:
-            tools.log_operation(0, "login_direct_token_denied",
-                                f"{username} 平台token校验失败: {why}",
-                                success=False, ip=get_client_ip(request))
-            if PLATFORM_TOKEN_VERIFY_STRICT:
-                raise HTTPException(status_code=403, detail=f"身份校验失败: {why}")
-        else:
-            tools.log_operation(0, "login_direct_token_ok",
-                                f"{username} 平台token校验通过", ip=get_client_ip(request))
+    # 速率限制：direct 登录同样纳入 IP+用户名 维度失败计数，防枚举/爆破
+    login_limiter.check(ip, username)
+
+    # ---- 平台身份校验（必填）：必须携带有效 login_token，且 token 对应用户(grbh)
+    # 与 username 一致（本人操作）。缺失或校验失败一律拒绝，防止冒用他人身份直登。----
+    token = (body.login_token or "").strip()
+    if not token:
+        login_limiter.record_failure(ip, username)
+        tools.log_operation(0, "login_direct_no_token",
+                            f"{username} 直登缺少平台登录凭证", success=False, ip=ip)
+        raise HTTPException(status_code=403, detail="缺少平台登录凭证 login_token")
+    ok, why = await asyncio.to_thread(_verify_platform_token, token, username)
+    if not ok:
+        login_limiter.record_failure(ip, username)
+        # 校验失败时清理该账户此前持久化的失效凭证，避免 MCP 继续使用旧 token
+        stale = user_store.get_by_username(username)
+        if stale:
+            user_store.set_login_token(stale["id"], "")
+        tools.log_operation(0, "login_direct_token_denied",
+                            f"{username} 平台token校验失败: {why}", success=False, ip=ip)
+        raise HTTPException(status_code=403, detail=f"身份校验失败: {why}")
+    tools.log_operation(0, "login_direct_token_ok", f"{username} 平台token校验通过", ip=ip)
 
     row = user_store.get_by_username(username)
     created = False
     if not row:
-        # 不存在则新建用户，密码为 用户名+sy
+        # 不存在则新建用户，密码为 用户名+sy（token 已校验通过，确认是本人）
         password = f"{username}sy"
         try:
             uid = user_store.create_user(username, password, "user", display_name)
@@ -473,8 +552,9 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
         row = user_store.get_by_id(uid)
         created = True
     else:
-        # 已存在用户，更新显示名
-        user_store.update_user(row["id"], display_name=display_name)
+        # 已存在用户：不覆盖显示名，避免他人直登时篡改；仅在该字段为空时补全
+        if not (row["display_name"] or "").strip():
+            user_store.update_user(row["id"], display_name=display_name)
 
     if row["disabled"]:
         tools.log_operation(0, "login_failed", f"已禁用用户 {username} 尝试登录", success=False,
@@ -499,22 +579,17 @@ async def mu_login_direct(request: Request, body: MuDirectLoginRequest):
         # 否则 /me 会优先返回 mu_user 而看不到 needs_2fa，导致 2FA 被绕过、直接进工作台
         request.session.pop("mu_user", None)
         request.session["mu_2fa_pending"] = pending_user
-        if body.login_token:
-            request.session["mu_login_token"] = body.login_token
-            user_store.set_login_token(row["id"], body.login_token)
-        else:
-            request.session.pop("mu_login_token", None)
+        request.session["mu_login_token"] = token
+        user_store.set_login_token(row["id"], token)
         _log_session_snapshot(request, "login_direct_pending_2fa", row["id"])
         user_store.update_last_login(row["id"], request.headers.get("user-agent") or None)
         return {"status": "success", "user": pending_user, "needs_2fa": True, "created": created}
 
     request.session.pop("mu_2fa_pending", None)
     request.session["mu_user"] = {"id": row["id"], "username": row["username"], "role": row["role"], "display_name": row["display_name"] or row["username"]}
-    if body.login_token:
-        request.session["mu_login_token"] = body.login_token
-        user_store.set_login_token(row["id"], body.login_token)
-    else:
-        request.session.pop("mu_login_token", None)
+    request.session["mu_login_token"] = token
+    user_store.set_login_token(row["id"], token)
+    login_limiter.record_success(ip, username)
     _log_session_snapshot(request, "login_direct_ok", row["id"])
     user_store.update_last_login(row["id"], request.headers.get("user-agent") or None)
     tools.log_operation(row["id"], "login", f"{row['username']} 登录成功" + ("（自动创建账号）" if created else ""), ip=ip)

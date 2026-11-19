@@ -113,7 +113,7 @@
   <input type="text" id="displayName" placeholder="例如: 罗俊易" autocomplete="off">
 
   <label>Login Token</label>
-  <input type="text" id="loginToken" placeholder="可选，留空则不需要" autocomplete="off">
+  <input type="text" id="loginToken" placeholder="平台登录 token（必填）" autocomplete="off">
 
   <button class="btn" id="loginBtn" onclick="doLogin()">登 录</button>
   </div>
@@ -167,17 +167,19 @@ async function doLogin() {
     result.textContent = '请输入显示名';
     return;
   }
+  if (!loginToken) {
+    result.className = 'result err';
+    result.textContent = '请输入平台登录令牌';
+    return;
+  }
 
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>登录中...';
   result.className = 'result';
   result.textContent = '';
 
-  // 构建请求体
-  const body = { username, display_name: displayName };
-  if (loginToken) {
-    body.login_token = loginToken;
-  }
+  // 构建请求体（login_token 必填）
+  const body = { username, display_name: displayName, login_token: loginToken };
 
   try {
     const res = await fetch(BASE + '/api/lobster-mu/login/direct', {

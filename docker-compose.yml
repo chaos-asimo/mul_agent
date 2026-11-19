@@ -23,7 +23,8 @@ services:
       # 使沙箱 --mount source= 指向宿主机真实路径。请按实际部署目录填写（或在 .env 设 HOST_APP_DIR）。
       - LOBSTER_SANDBOX_HOST_APP_DIR=${HOST_APP_DIR:-}
       - API_KEYS=${API_KEYS:-}
-      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY:-mul_agent_secret_key_2026}
+      # Session 签名密钥：强烈建议在 .env 显式设置随机值；留空则自动生成并持久化到 data/.session_secret
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY:-}
       - MU_ADMIN_USERNAME=${MU_ADMIN_USERNAME:-shineyue}
       - MU_ADMIN_PASSWORD=${MU_ADMIN_PASSWORD:-shineyue@2026}
       # 直接登录允许的跨域来源（逗号分隔，支持 *.xxx 通配符）

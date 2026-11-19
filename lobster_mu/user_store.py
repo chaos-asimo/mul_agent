@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """多用户龙虾Claw子项目 - 用户表 CRUD + bootstrap 管理员"""
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from lobster_mu.db import get_conn
+from lobster_mu.db import BASE_DIR, get_conn
 from lobster_mu.security import hash_password, new_salt
 
 # 管理员凭据：优先从环境变量读取，默认值仅用于首次 bootstrap
@@ -109,14 +109,69 @@ def is_disabled(user_id: int) -> bool:
     return row is None or bool(row["disabled"])
 
 
+# ============ 平台直登凭证：静态加密 + 有效期 ============
+_TOKEN_ENC_PREFIX = "enc:v1:"
+_fernet_cache = None
+try:
+    _TOKEN_TTL_HOURS = int(os.environ.get("MU_LOGIN_TOKEN_TTL_HOURS", "168") or 0)
+except ValueError:
+    _TOKEN_TTL_HOURS = 168
+
+
+def _get_token_fernet():
+    """获取登录凭证加密器。密钥优先取环境变量 MU_LOGIN_TOKEN_KEY；
+    否则持久化到 data/.login_token_key（首次自动生成，权限 600）。"""
+    global _fernet_cache
+    if _fernet_cache is not None:
+        return _fernet_cache
+    from cryptography.fernet import Fernet
+    env_key = (os.environ.get("MU_LOGIN_TOKEN_KEY") or "").strip()
+    if env_key:
+        _fernet_cache = Fernet(env_key.encode())
+        return _fernet_cache
+    key_path = os.path.join(BASE_DIR, "data", ".login_token_key")
+    if not os.path.exists(key_path):
+        os.makedirs(os.path.dirname(key_path), exist_ok=True)
+        key = Fernet.generate_key()
+        try:
+            fd = os.open(key_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(key)
+        except FileExistsError:
+            pass  # 并发创建：另一个 worker 已写入，直接读取
+    with open(key_path, "rb") as f:
+        key = f.read().strip()
+    _fernet_cache = Fernet(key)
+    return _fernet_cache
+
+
+def _encrypt_token(token: str) -> str:
+    if not token:
+        return ""
+    return _TOKEN_ENC_PREFIX + _get_token_fernet().encrypt(token.encode("utf-8")).decode("utf-8")
+
+
+def _decrypt_token(stored: str) -> str:
+    stored = (stored or "").strip()
+    if not stored:
+        return ""
+    if not stored.startswith(_TOKEN_ENC_PREFIX):
+        return stored  # 兼容历史明文数据
+    try:
+        return _get_token_fernet().decrypt(stored[len(_TOKEN_ENC_PREFIX):].encode("utf-8")).decode("utf-8")
+    except Exception:
+        return ""
+
+
 def set_login_token(user_id: int, token: str) -> None:
     """持久化平台直登凭证到 users 表（token 为空则清空）。
-    用于 MCP 调用时按 user_id 读取最新 login_token，不依赖 cookie 跨请求传递。"""
+    用于 MCP 调用时按 user_id 读取最新 login_token，不依赖 cookie 跨请求传递。
+    落库前用 Fernet 静态加密，避免数据库/备份泄露明文凭证。"""
     conn = get_conn()
     try:
         conn.execute(
             "UPDATE users SET login_token = ?, login_token_at = ? WHERE id = ?",
-            ((token or "").strip(), _now(), user_id),
+            (_encrypt_token((token or "").strip()), _now(), user_id),
         )
         conn.commit()
     finally:
@@ -124,11 +179,23 @@ def set_login_token(user_id: int, token: str) -> None:
 
 
 def get_login_token(user_id: int) -> str:
-    """读取用户最新的平台直登凭证；无则返回空串。"""
+    """读取用户最新且未过期的平台直登凭证；无/已过期则返回空串。"""
     row = get_by_id(user_id)
     if row is None:
         return ""
-    return (row["login_token"] or "").strip()
+    raw = (row["login_token"] or "").strip()
+    if not raw:
+        return ""
+    if _TOKEN_TTL_HOURS > 0:
+        at = (row["login_token_at"] or "").strip()
+        if at:
+            try:
+                if datetime.now() - datetime.fromisoformat(at) > timedelta(hours=_TOKEN_TTL_HOURS):
+                    set_login_token(user_id, "")  # 过期即清理，避免继续用于 MCP 调用
+                    return ""
+            except ValueError:
+                pass
+    return _decrypt_token(raw)
 
 
 def create_user(username: str, password: str, role: str = "user", display_name: str = ""):
