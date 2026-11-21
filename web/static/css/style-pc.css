@@ -2804,6 +2804,57 @@ body {
     max-width: 100%;
 }
 
+/* ASCII 框线表格：单列转为 HTML 表格（CSS 边框绘制），彻底避免字体宽度导致错位 */
+.ascii-table {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre;
+    overflow-x: auto;
+    margin: 8px 0;
+    padding: 10px 12px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+}
+
+.ascii-table-diagram {
+    margin: 8px 0;
+    overflow-x: auto;
+}
+
+.ascii-table-diagram table {
+    border-collapse: collapse;
+    border: 1px solid #94a3b8;
+    background: #f8fafc;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #334155;
+}
+
+.ascii-table-diagram td {
+    padding: 3px 10px;
+}
+
+.ascii-table-diagram .ascii-sep td {
+    padding: 0;
+    height: 0;
+    border-top: 1px solid #94a3b8;
+}
+
+.ascii-table-diagram .ascii-rule td {
+    padding: 6px 10px;
+}
+
+.ascii-table-diagram .ascii-rule i {
+    display: block;
+    border-top: 2px solid #64748b;
+}
+
+.ascii-table-diagram .ascii-center td {
+    text-align: center;
+}
+
 .ai-chat-message-text:has(:global(.emoji)) {
     font-size: 15px;
 }

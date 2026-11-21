@@ -170,13 +170,191 @@ function fixLiteralBold(html) {
   return parts.join('')
 }
 
+// ---- ASCII 框线表格对齐 ----
+// 模型输出的框线表格常按"字符个数"补齐，但中文/全角字符占 2 个显示列导致右边框错位。
+// 这里按显示宽度重算各列并补齐；未包在代码围栏内的框线块转成 ```text 围栏，
+// 由 marked 渲染为 <pre> 以保留空格。
+function displayWidth(text) {
+  let w = 0
+  for (const ch of String(text || '')) {
+    const code = ch.codePointAt(0)
+    if ((code >= 0x0300 && code <= 0x036f) || code === 0x200b) continue
+    const wide =
+      (code >= 0x1100 && code <= 0x115f) ||
+      code === 0x2329 || code === 0x232a ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe19) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x1f300 && code <= 0x1f64f) ||
+      (code >= 0x1f900 && code <= 0x1f9ff) ||
+      (code >= 0x20000 && code <= 0x3fffd)
+    w += wide ? 2 : 1
+  }
+  return w
+}
+
+const isBoxLine = (line) => /[│┌┐└┘├┤┬┴┼]/.test(line)
+
+function alignBoxBlock(lines) {
+  const cells = []
+  let colCount = 0
+  lines.forEach((line) => {
+    const t = line.trim()
+    if (/^│.*│$/.test(t)) {
+      const parts = t.slice(1, -1).split('│').map((p) => p.replace(/\s+$/, ''))
+      colCount = Math.max(colCount, parts.length)
+      cells.push(parts)
+    } else {
+      cells.push(null)
+    }
+  })
+  if (colCount === 0) return lines
+
+  const widths = new Array(colCount).fill(0)
+  cells.forEach((parts) => {
+    if (!parts) return
+    for (let c = 0; c < parts.length; c++) {
+      widths[c] = Math.max(widths[c], displayWidth(parts[c]))
+    }
+  })
+
+  const junction = { '┌': '┬', '├': '┼', '└': '┴' }
+  return lines.map((line, idx) => {
+    const t = line.trim()
+    const parts = cells[idx]
+    if (parts) {
+      const padded = []
+      for (let c = 0; c < colCount; c++) {
+        const cell = parts[c] || ''
+        const diff = widths[c] - displayWidth(cell)
+        padded.push(diff > 0 ? cell + ' '.repeat(diff) : cell)
+      }
+      return '│' + padded.join('│') + '│'
+    }
+    const border = t.match(/([┌├└])([─┬┴┼]+)([┐┤┘])/)
+    if (border && junction[border[1]]) {
+      return border[1] + widths.map((w) => '─'.repeat(w)).join(junction[border[1]]) + border[3]
+    }
+    return line
+  })
+}
+
+// 单列框线块 -> HTML 表格（CSS 边框绘制，彻底避免字体宽度导致错位）；
+// 多列/复杂图示返回空字符串，交给 <pre> 兜底。
+function boxBlockToTableHtml(lines) {
+  const rows = []
+  for (const line of lines) {
+    const t = line.trim()
+    if (!t) continue
+    if (t[0] === '┌' || t[0] === '└') continue
+    if (t[0] === '├') { rows.push({ sep: true }); continue }
+    if (t[0] === '│' && t.endsWith('│')) {
+      const inner = t.slice(1, -1)
+      if (inner.includes('│')) return ''
+      rows.push({ text: inner })
+      continue
+    }
+    return ''
+  }
+  if (!rows.some((r) => !r.sep)) return ''
+
+  let html = '<div class="ascii-table-diagram"><table class="ascii-table"><tbody>'
+  rows.forEach((r) => {
+    if (r.sep) {
+      html += '<tr class="ascii-sep"><td></td></tr>'
+      return
+    }
+    const trimmed = r.text.trim()
+    if (!trimmed) return
+    if (/^[━─═]+$/.test(trimmed) && trimmed.length >= 3) {
+      html += '<tr class="ascii-rule"><td><i></i></td></tr>'
+      return
+    }
+    const lead = r.text.length - r.text.trimStart().length
+    const trail = r.text.length - r.text.trimEnd().length
+    const center = lead >= 3 && trail >= 3 && Math.abs(lead - trail) <= 4
+    html += `<tr${center ? ' class="ascii-center"' : ''}><td>${escapeHtml(trimmed)}</td></tr>`
+  })
+  html += '</tbody></table></div>'
+  return html
+}
+
+function boxBlockToPreHtml(lines) {
+  const isDiagram = lines.some((l) => /[▶◀▲▼→←↑↓]/.test(l))
+  const content = isDiagram ? lines : alignBoxBlock(lines)
+  return '<pre class="ascii-table"><code>' + escapeHtml(content.join('\n')) + '</code></pre>'
+}
+
+// 如果代码围栏（```）内只有框线内容，去掉围栏，避免框线表格被当成代码块转义
+function stripBoxFences(lines) {
+  const out = []
+  let i = 0
+  while (i < lines.length) {
+    const t = lines[i].trim()
+    if (t.startsWith('```') || t.startsWith('~~~')) {
+      let k = i + 1
+      while (k < lines.length) {
+        const tk = lines[k].trim()
+        if (tk.startsWith('```') || tk.startsWith('~~~')) break
+        k++
+      }
+      if (k < lines.length) {
+        const inner = lines.slice(i + 1, k)
+        const nonEmpty = inner.filter((l) => l.trim())
+        if (nonEmpty.length && nonEmpty.every((l) => isBoxLine(l))) {
+          out.push(...inner)
+          i = k + 1
+          continue
+        }
+      }
+    }
+    out.push(lines[i])
+    i++
+  }
+  return out
+}
+
+// 把框线块替换为占位符 ⟦ATn⟧，marked 解析后再还原为表格/图示 HTML
+function extractAsciiTables(text) {
+  if (!text) return { text, tables: [] }
+  const lines = stripBoxFences(String(text).replace(/\r\n?/g, '\n').split('\n'))
+  const out = []
+  const tables = []
+  let i = 0
+  while (i < lines.length) {
+    if (!isBoxLine(lines[i])) {
+      out.push(lines[i])
+      i++
+      continue
+    }
+    let j = i
+    while (j < lines.length && isBoxLine(lines[j])) j++
+    const block = lines.slice(i, j)
+    const html = boxBlockToTableHtml(block) || boxBlockToPreHtml(block)
+    out.push('⟦AT' + tables.length + '⟧')
+    tables.push(html)
+    i = j
+  }
+  return { text: out.join('\n'), tables }
+}
+
+function applyAsciiTables(html, tables) {
+  if (!tables || !tables.length) return html
+  return String(html).replace(/⟦AT(\d+)⟧/g, (m, idx) => tables[parseInt(idx, 10)] || '')
+}
+
 function MarkdownContent({ content, streaming }) {
   const html = useMemo(() => {
     try {
-      const raw = content || ''
-      const { out, mathStore } = extractMath(raw)
-      const rawHtml = fixLiteralBold(sanitizeAnchors(marked.parse(normalizeInlineBreaks(out))))
-      return renderMathInHtml(rawHtml, mathStore)
+      const { text, tables } = extractAsciiTables(content || '')
+      const { out, mathStore } = extractMath(text)
+      let rawHtml = fixLiteralBold(sanitizeAnchors(marked.parse(normalizeInlineBreaks(out))))
+      rawHtml = renderMathInHtml(rawHtml, mathStore)
+      return applyAsciiTables(rawHtml, tables)
     } catch {
       return content || ''
     }

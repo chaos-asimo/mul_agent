@@ -64,16 +64,221 @@ window.Utils = (function() {
         return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
     }
 
+    // ---- ASCII 框线表格处理 ----
+    // 模型输出的框线表格在浏览器里很难保证对齐：中文/全角字符宽度、框线字符宽度、
+    // 字体回退都会破坏「字符个数 = 显示列数」的假设。
+    // 因此单列框线块直接转成 HTML 表格（用 CSS 边框绘制框线），彻底摆脱字体宽度问题；
+    // 多列/复杂图示则退回 <pre> 并按显示宽度补齐（尽力而为）。
+    function displayWidth(text) {
+        let w = 0;
+        for (const ch of String(text || '')) {
+            const code = ch.codePointAt(0);
+            if ((code >= 0x0300 && code <= 0x036F) || code === 0x200B) continue; // 组合/零宽字符
+            const wide =
+                (code >= 0x1100 && code <= 0x115F) ||
+                code === 0x2329 || code === 0x232A ||
+                (code >= 0x2E80 && code <= 0xA4CF) ||
+                (code >= 0xAC00 && code <= 0xD7A3) ||
+                (code >= 0xF900 && code <= 0xFAFF) ||
+                (code >= 0xFE10 && code <= 0xFE19) ||
+                (code >= 0xFE30 && code <= 0xFE6F) ||
+                (code >= 0xFF00 && code <= 0xFF60) ||
+                (code >= 0xFFE0 && code <= 0xFFE6) ||
+                (code >= 0x1F300 && code <= 0x1F64F) ||
+                (code >= 0x1F900 && code <= 0x1F9FF) ||
+                (code >= 0x20000 && code <= 0x3FFFD);
+            w += wide ? 2 : 1;
+        }
+        return w;
+    }
+
+    function isBoxLine(line) {
+        return /[│┌┐└┘├┤┬┴┼]/.test(line);
+    }
+
+    function padDisplayRight(text, width) {
+        const diff = width - displayWidth(text);
+        return diff > 0 ? text + ' '.repeat(diff) : text;
+    }
+
+    // 对齐一个连续的框线块，返回新的行数组
+    function alignBoxBlock(lines) {
+        const cells = [];
+        let colCount = 0;
+        lines.forEach((line) => {
+            const t = line.trim();
+            if (/^│.*│$/.test(t)) {
+                const parts = t.slice(1, -1).split('│').map((p) => p.replace(/\s+$/, ''));
+                colCount = Math.max(colCount, parts.length);
+                cells.push(parts);
+            } else {
+                cells.push(null);
+            }
+        });
+        if (colCount === 0) return lines;
+
+        const widths = new Array(colCount).fill(0);
+        cells.forEach((parts) => {
+            if (!parts) return;
+            for (let c = 0; c < parts.length; c++) {
+                widths[c] = Math.max(widths[c], displayWidth(parts[c]));
+            }
+        });
+
+        const junction = { '┌': '┬', '├': '┼', '└': '┴' };
+        return lines.map((line, idx) => {
+            const t = line.trim();
+            const parts = cells[idx];
+            if (parts) {
+                const padded = [];
+                for (let c = 0; c < colCount; c++) {
+                    padded.push(padDisplayRight(parts[c] || '', widths[c]));
+                }
+                return '│' + padded.join('│') + '│';
+            }
+            const border = t.match(/([┌├└])([─┬┴┼]+)([┐┤┘])/);
+            if (border && border[1] && border[3] && junction[border[1]]) {
+                const mid = junction[border[1]];
+                return border[1] + widths.map((w) => '─'.repeat(w)).join(mid) + border[3];
+            }
+            return line;
+        });
+    }
+
+    // 单列框线块 -> HTML 表格；无法识别（多列/复杂图示）时返回空字符串
+    function boxBlockToTableHtml(lines) {
+        const rows = [];
+        for (const line of lines) {
+            const t = line.trim();
+            if (!t) continue;
+            if (t[0] === '┌' || t[0] === '└') continue; // 上下外框由 CSS 边框代替
+            if (t[0] === '├') { rows.push({ sep: true }); continue; }
+            if (t[0] === '│' && t.endsWith('│')) {
+                const inner = t.slice(1, -1);
+                if (inner.includes('│')) return ''; // 多列，退回 pre
+                rows.push({ text: inner });
+                continue;
+            }
+            return ''; // 含箭头等复杂内容，退回 pre
+        }
+        if (!rows.some((r) => !r.sep)) return '';
+
+        let html = '<div class="ascii-table-diagram"><table class="ascii-table"><tbody>';
+        rows.forEach((r) => {
+            if (r.sep) {
+                html += '<tr class="ascii-sep"><td></td></tr>';
+                return;
+            }
+            const trimmed = r.text.trim();
+            if (!trimmed) return;
+            if (/^[━─═]+$/.test(trimmed) && trimmed.length >= 3) {
+                html += '<tr class="ascii-rule"><td><i></i></td></tr>';
+                return;
+            }
+            const lead = r.text.length - r.text.trimStart().length;
+            const trail = r.text.length - r.text.trimEnd().length;
+            // 左右留白较多且大致对称，视为居中标题
+            const center = lead >= 3 && trail >= 3 && Math.abs(lead - trail) <= 4;
+            html += `<tr${center ? ' class="ascii-center"' : ''}><td>${escapeHtml(trimmed)}</td></tr>`;
+        });
+        html += '</tbody></table></div>';
+        return html;
+    }
+
+    // 多列/复杂图示的兜底：优先原样保留（箭头类图示不重排），否则按显示宽度对齐
+    function boxBlockToPreHtml(lines) {
+        const isDiagram = lines.some((l) => /[▶◀▲▼→←↑↓]/.test(l));
+        const content = isDiagram ? lines : alignBoxBlock(lines);
+        return '<pre class="ascii-table">' + escapeHtml(content.join('\n')) + '</pre>';
+    }
+
+    // 如果代码围栏（```）内只有框线内容，去掉围栏，避免框线表格被当成代码块转义
+    function stripBoxFences(lines) {
+        const out = [];
+        let i = 0;
+        while (i < lines.length) {
+            const t = lines[i].trim();
+            if (t.startsWith('```') || t.startsWith('~~~')) {
+                let k = i + 1;
+                while (k < lines.length) {
+                    const tk = lines[k].trim();
+                    if (tk.startsWith('```') || tk.startsWith('~~~')) break;
+                    k++;
+                }
+                if (k < lines.length) {
+                    const inner = lines.slice(i + 1, k);
+                    const nonEmpty = inner.filter((l) => l.trim());
+                    if (nonEmpty.length && nonEmpty.every((l) => isBoxLine(l))) {
+                        out.push(...inner);
+                        i = k + 1;
+                        continue;
+                    }
+                }
+            }
+            out.push(lines[i]);
+            i++;
+        }
+        return out;
+    }
+
+    /**
+     * 把文本中的框线块替换为占位符 ⟦ATn⟧，返回占位符文本与 HTML 列表。
+     * 用于 Markdown 渲染（marked.parse 之后再用 applyAsciiTables 还原），
+     * 这样无论是 HTML 表格还是 <pre> 兜底，都不会被 marked 当作文本转义。
+     */
+    function extractAsciiTables(text) {
+        if (!text) return { text: text, tables: [] };
+        const lines = stripBoxFences(String(text).replace(/\r\n?/g, '\n').split('\n'));
+        const out = [];
+        const tables = [];
+        let i = 0;
+        while (i < lines.length) {
+            if (!isBoxLine(lines[i])) {
+                out.push(lines[i]);
+                i++;
+                continue;
+            }
+            let j = i;
+            while (j < lines.length && isBoxLine(lines[j])) j++;
+            const block = lines.slice(i, j);
+            const html = boxBlockToTableHtml(block) || boxBlockToPreHtml(block);
+            out.push('⟦AT' + tables.length + '⟧');
+            tables.push(html);
+            i = j;
+        }
+        return { text: out.join('\n'), tables: tables };
+    }
+
+    function applyAsciiTables(html, tables) {
+        if (!tables || !tables.length) return html;
+        return String(html).replace(/⟦AT(\d+)⟧/g, (match, idx) => tables[parseInt(idx, 10)] || '');
+    }
+
     function formatAIChatContent(content) {
-        let formatted = escapeHtml(sanitizeThinkingContent(content));
+        const cleaned = sanitizeThinkingContent(content);
+        if (!cleaned) return '';
+        const emphasize = (escaped) => escaped
+            // 处理粗体强调：**文字** -> <strong>文字</strong>
+            .replace(/\*\*([\s\S]*?)\*\*/g, '<strong>$1</strong>')
+            // 处理彩色强调：[[文字]] -> 红色加粗
+            .replace(/\[\[(.*?)\]\]/g, '<span style="color: #ef4444; font-weight: bold;">$1</span>');
 
-        // 处理粗体强调：**文字** -> <strong>文字</strong>（[\s\S] 允许加粗内容跨行）
-        formatted = formatted.replace(/\*\*([\s\S]*?)\*\*/g, '<strong>$1</strong>');
-
-        // 处理彩色强调：[[文字]] -> <span style="color: #ef4444; font-weight: bold;">文字</span>
-        formatted = formatted.replace(/\[\[(.*?)\]\]/g, '<span style="color: #ef4444; font-weight: bold;">$1</span>');
-
-        return formatted;
+        const lines = String(cleaned).replace(/\r\n?/g, '\n').split('\n');
+        const out = [];
+        let i = 0;
+        while (i < lines.length) {
+            if (!isBoxLine(lines[i])) {
+                out.push(emphasize(escapeHtml(lines[i])));
+                i++;
+                continue;
+            }
+            let j = i;
+            while (j < lines.length && isBoxLine(lines[j])) j++;
+            const block = lines.slice(i, j);
+            out.push(boxBlockToTableHtml(block) || boxBlockToPreHtml(block));
+            i = j;
+        }
+        return out.join('\n');
     }
 
     /**
@@ -97,6 +302,10 @@ window.Utils = (function() {
         sanitizeThinkingContent,
         formatTimestamp,
         formatAIChatContent,
-        fixLiteralBold
+        fixLiteralBold,
+        displayWidth,
+        alignBoxBlock,
+        extractAsciiTables,
+        applyAsciiTables
     };
 })();

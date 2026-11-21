@@ -4660,6 +4660,12 @@ class App {
     
     renderMarkdown(text) {
         if (!text) return '';
+
+        // 单列框线表格转成 HTML 表格（CSS 边框绘制，彻底避免字体宽度导致的错位），
+        // 其余内容仍交给 marked；无法解析的复杂图示保留 <pre> 兜底。
+        const asciiUtils = (window.Utils && window.Utils.extractAsciiTables) || null;
+        const extracted = asciiUtils ? asciiUtils.extractAsciiTables(text) : { text: text, tables: [] };
+        text = extracted.text;
         
         if (typeof marked !== 'undefined') {
             marked.setOptions({
@@ -4677,7 +4683,9 @@ class App {
                     }
                 }
             });
-            return window.Utils ? window.Utils.fixLiteralBold(marked.parse(text)) : marked.parse(text);
+            const parsed = marked.parse(text);
+            const withTables = asciiUtils ? asciiUtils.applyAsciiTables(parsed, extracted.tables) : parsed;
+            return asciiUtils ? asciiUtils.fixLiteralBold(withTables) : window.Utils ? window.Utils.fixLiteralBold(withTables) : withTables;
         }
         
         let html = text;
@@ -4718,6 +4726,9 @@ class App {
         html = html.replace(/\n/g, '<br>');
         html = html.replace(/<li>(\s*\d+\.\s+|\*\s+|-|\s*)\s*/g, '<li>');
         
+        if (asciiUtils) {
+            html = asciiUtils.applyAsciiTables(html, extracted.tables);
+        }
         return html;
     }
     
