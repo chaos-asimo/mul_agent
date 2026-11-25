@@ -1,10 +1,20 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, Smartphone, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search, ArrowLeftRight, Lightbulb, Send, X, BookOpen, Zap, BarChart3, Database, Activity, Settings, GitBranch, Gauge } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Shield, ShieldOff, Smartphone, KeyRound, RefreshCw, Ban, CheckCircle, XCircle, MessageSquare, ChevronRight, ArrowLeft as ArrowLeftIcon, Maximize2, Minimize2, ClipboardList, Search, ArrowLeftRight, Lightbulb, Send, X, BookOpen, Zap, BarChart3, Database, Activity, Settings, GitBranch, Gauge, Download, FileText, Image as ImageIcon } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { apiGet, apiPost, apiPut, apiDelete } from '../api/client'
 import ThemeSwitcher from '../components/ThemeSwitcher'
 import MarkdownContent from '../components/MarkdownContent'
+import FileViewer from '../components/FileViewer'
+import { isImageFile, isPdfFile, isTextFile } from '../utils/highlight'
+
+// 可在内嵌查看器预览的类型（与 FileViewer 支持的渲染能力保持一致）：
+// markdown / pdf / 图片 / 现代 Office(docx/xls(x)/pptx) / 文本代码。
+// 旧版 .doc/.ppt 等无法在线渲染的类型不走预览，直接提供下载。
+const OPENABLE_OFFICE = /\.(docx|xlsx?|pptx)$/i
+const isOpenableFile = (name) =>
+  /\.md|markdown$/i.test(name || '') ||
+  isPdfFile(name) || isImageFile(name) || OPENABLE_OFFICE.test(name || '') || isTextFile(name)
 
 function AdminUsers() {
   const { user, logout } = useAuthStore()
@@ -152,6 +162,7 @@ function AdminUsers() {
   const [chatLoading, setChatLoading] = useState(false)
   const [chatError, setChatError] = useState('')
   const [viewSession, setViewSession] = useState(null)  // { id, messages }
+  const [viewingFile, setViewingFile] = useState(null)   // 会话内文件在线查看器
   const [msgsLoading, setMsgsLoading] = useState(false)
   const [chatMaximized, setChatMaximized] = useState(false)
 
@@ -199,6 +210,19 @@ function AdminUsers() {
     setViewSession(null)
     setChatError('')
     setChatMaximized(false)
+    setViewingFile(null)
+  }
+
+  // 管理员查看他人会话时，附件/产物链接需带上归属 user_id 才能通过鉴权
+  const withUserId = (url) => {
+    if (!url || !chatUser || String(url).startsWith('data:')) return url
+    return url + (url.includes('?') ? '&' : '?') + `user_id=${chatUser.id}`
+  }
+  const fmtSize = (n) => {
+    if (!n && n !== 0) return ''
+    if (n < 1024) return `${n} B`
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+    return `${(n / 1024 / 1024).toFixed(1)} MB`
   }
 
   // 日志管理
@@ -1129,25 +1153,99 @@ function AdminUsers() {
                     <p className="text-xs t-text-fainter text-center py-8">该会话暂无消息</p>
                   ) : (
                     <div className="space-y-3">
-                      {viewSession.messages.map((msg, i) => (
-                        <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                          <div
-                            className={`max-w-[85%] px-3 py-2 rounded-lg text-sm ${
-                              msg.role === 'user'
-                                ? 't-bg-accent text-white'
-                                : 't-bg-bubble border t-border t-text-2'
-                            }`}
-                          >
-            <p className="text-[10px] t-text-faint mb-1">
-              {msg.role === 'user' ? '用户' : 'AI'} · {msg.timestamp || ''}
-            </p>
-                            {msg.role === 'assistant'
-                              ? <MarkdownContent content={msg.content} />
-                              : <div className="whitespace-pre-wrap break-words">{msg.content}</div>
-                            }
+                      {viewSession.messages.map((msg, i) => {
+                        const isUser = msg.role === 'user'
+                        const images = msg.images || []
+                        const fileItems = [...(msg.attachments || []), ...(msg.files || [])]
+                        return (
+                          <div key={i} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                            <div className={`max-w-[85%] flex flex-col gap-1.5 ${isUser ? 'items-end' : 'items-start'}`}>
+                              <div
+                                className={`max-w-full px-3 py-2 rounded-lg text-sm ${
+                                  isUser
+                                    ? 't-bg-accent text-white'
+                                    : 't-bg-bubble border t-border t-text-2'
+                                }`}
+                              >
+                                <p className="text-[10px] t-text-faint mb-1">
+                                  {isUser ? '用户' : 'AI'} · {msg.timestamp || ''}
+                                </p>
+                                {msg.role === 'assistant'
+                                  ? <MarkdownContent content={msg.content} urlSuffix={`user_id=${chatUser.id}`} />
+                                  : <div className="whitespace-pre-wrap break-words">{msg.content}</div>
+                                }
+                              </div>
+                              {images.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5">
+                                  {images.map((img, j) => (
+                                    <a
+                                      key={j}
+                                      href={withUserId(img.url || img.data_url)}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      title="查看原图"
+                                    >
+                                      <img
+                                        src={withUserId(img.url || img.data_url)}
+                                        alt={img.name || `图片${j + 1}`}
+                                        className="max-w-[160px] max-h-[160px] rounded-lg border t-border object-cover hover:opacity-90 transition-opacity"
+                                      />
+                                    </a>
+                                  ))}
+                                </div>
+                              )}
+                              {fileItems.length > 0 && (
+                                <div className="space-y-1.5 w-full min-w-[220px]">
+                                  {fileItems.map((f, j) => {
+                                    const name = f.name || f.original_name || '文件'
+                                    const rawUrl = withUserId(f.download_url)
+                                    if (!rawUrl) return null
+                                    const dlUrl = `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}download=1`
+                                    const openable = isOpenableFile(name)
+                                    return (
+                                      <div
+                                        key={`${j}-${name}`}
+                                        className="flex items-center gap-2 px-3 py-2 t-bg-panel border t-border rounded-lg t-hover-border-accent transition-colors"
+                                        title={f.summary ? `内容简介：${f.summary}` : name}
+                                      >
+                                        {isImageFile(name)
+                                          ? <ImageIcon className="w-3.5 h-3.5 t-text-accent shrink-0" />
+                                          : <FileText className="w-3.5 h-3.5 t-text-accent shrink-0" />}
+                                        {openable ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => setViewingFile({ filename: name, rawUrl, downloadUrl: dlUrl })}
+                                            className="text-xs t-text-2 truncate flex-1 text-left hover:underline hover:t-text-accent cursor-pointer"
+                                          >
+                                            {name}
+                                          </button>
+                                        ) : (
+                                          <a
+                                            href={dlUrl}
+                                            download={name}
+                                            className="text-xs t-text-2 truncate flex-1 text-left hover:underline hover:t-text-accent cursor-pointer"
+                                          >
+                                            {name}
+                                          </a>
+                                        )}
+                                        <span className="text-[10px] t-text-faint shrink-0">{fmtSize(f.size)}</span>
+                                        <a
+                                          href={dlUrl}
+                                          download={name}
+                                          title="下载文件"
+                                          className="t-text-faint hover:t-text-accent shrink-0"
+                                        >
+                                          <Download className="w-3.5 h-3.5" />
+                                        </a>
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   )}
                 </>
@@ -1715,6 +1813,15 @@ function AdminUsers() {
             )}
           </div>
         </div>
+      )}
+      {/* 会话内文件在线查看器（与聊天页一致的预览能力；不支持的类型走下载） */}
+      {viewingFile && (
+        <FileViewer
+          filename={viewingFile.filename}
+          rawUrl={viewingFile.rawUrl}
+          downloadUrl={viewingFile.downloadUrl}
+          onClose={() => setViewingFile(null)}
+        />
       )}
     </div>
   )

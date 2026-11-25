@@ -347,18 +347,28 @@ function applyAsciiTables(html, tables) {
   return String(html).replace(/⟦AT(\d+)⟧/g, (m, idx) => tables[parseInt(idx, 10)] || '')
 }
 
-function MarkdownContent({ content, streaming }) {
+// 管理员查看他人会话时，为正文里的站内文件链接补充归属用户参数（如 user_id=123）
+function appendUrlSuffix(html, suffix) {
+  if (!suffix) return html
+  return String(html).replace(/\b(src|href)="(\/api\/lobster-mu\/[^"]*)"/gi, (m, attr, url) => {
+    if (/([?&])user_id=/.test(url)) return m
+    return `${attr}="${url}${url.includes('?') ? '&' : '?'}${suffix}"`
+  })
+}
+
+function MarkdownContent({ content, streaming, urlSuffix }) {
   const html = useMemo(() => {
     try {
       const { text, tables } = extractAsciiTables(content || '')
       const { out, mathStore } = extractMath(text)
       let rawHtml = fixLiteralBold(sanitizeAnchors(marked.parse(normalizeInlineBreaks(out))))
       rawHtml = renderMathInHtml(rawHtml, mathStore)
-      return applyAsciiTables(rawHtml, tables)
+      rawHtml = applyAsciiTables(rawHtml, tables)
+      return appendUrlSuffix(rawHtml, urlSuffix)
     } catch {
       return content || ''
     }
-  }, [content])
+  }, [content, urlSuffix])
   const containerRef = useRef(null)
 
   // 给代码块加「收起/展开」按钮：长代码块（>6行）默认收起，显示 3 行 + 渐变遮罩 + 按钮

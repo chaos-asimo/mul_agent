@@ -7,7 +7,7 @@ import {
   Server, Activity, Loader2,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
-import { apiGet, apiPost, apiDelete, readFileContent } from '../api/client'
+import { apiGet, apiPost, apiDelete, apiUpload } from '../api/client'
 import ChatPane from '../components/ChatPane'
 import FilesTab from '../components/FilesTab'
 import ScriptsTab from '../components/ScriptsTab'
@@ -170,21 +170,43 @@ function Workbench() {
     loadSessions()
   }
 
-  // 文件：文本类直接读取，二进制走 /upload/text，单文件 10MB 上限。
-  // 兼容两类入参：浏览器 File 对象（本地选择）、{filename,content,size} 对象（从文件库复用）。
+  // 文件：统一走 /upload/text 落盘并解析文本，单文件 10MB 上限。
+  // 上传后带上 stored_name，聊天时后端据此记录附件引用，历史会话仍可打开。
+  // 兼容两类入参：浏览器 File 对象（本地选择）、{filename,content,size,stored_name}
+  // 对象（从文件库复用）。
   const addPendingFiles = async (fileList) => {
     for (const file of fileList) {
       // 已是带内容的对象（文件库复用），直接入队
       if (file && typeof file === 'object' && typeof file.content === 'string' && !(file instanceof File)) {
-        setPendingFiles((prev) => [...prev, { filename: file.filename, content: file.content, size: file.size || 0 }])
+        setPendingFiles((prev) => [...prev, {
+          filename: file.filename,
+          content: file.content,
+          size: file.size || 0,
+          stored_name: file.stored_name,
+        }])
         continue
       }
       if (file.size > 10 * 1024 * 1024) {
         alert(`${file.name} 文件过大，请上传小于10MB的文件`)
         continue
       }
-      const content = await readFileContent(file)
-      setPendingFiles((prev) => [...prev, { filename: file.name, content, size: file.size }])
+      try {
+        const fd = new FormData()
+        fd.append('file', file)
+        const res = await apiUpload('/upload/text', fd)
+        if (!res.success) {
+          alert(`${file.name} 上传失败：${res.error || '未知错误'}`)
+          continue
+        }
+        setPendingFiles((prev) => [...prev, {
+          filename: file.name,
+          content: res.content || '',
+          size: res.size ?? file.size,
+          stored_name: res.stored_name,
+        }])
+      } catch (e) {
+        alert(`${file.name} 上传失败：${e?.message || '未知错误'}`)
+      }
     }
   }
 

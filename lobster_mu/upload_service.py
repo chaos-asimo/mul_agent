@@ -9,6 +9,12 @@ from lobster_mu.paths import uploads_dir, gen_filename
 # 10MB 上传限制
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 
+# 按扩展名分类：返回用于模型的简短说明文本（文件本身已落盘，不在此做二次处理）
+_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg", ".heic"}
+_VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v", ".3gp", ".mpeg", ".mpg"}
+_AUDIO_EXT = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma"}
+_BINARY_EXT = {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".iso", ".exe", ".msi", ".apk", ".dmg"}
+
 
 def _now() -> str:
     return datetime.now().isoformat(sep=" ", timespec="seconds")
@@ -16,10 +22,9 @@ def _now() -> str:
 
 def _is_garbled(text: str) -> bool:
     """检测文本是否为乱码（PDF 提取常见问题）。
-    典型特征：
-    - 大量 U+FFFD 替换字符或连续 ? 占位符（编码损坏的常见表现）
-    - 高比例不可见控制字符
-    - 字符多样性过低（大量重复字符，无正常词汇）
+
+    只抓真正的编码损坏（U+FFFD、连续 ? 占位符、高比例不可打印字符），
+    不做容易误伤正常中文文档的「字符多样性」硬判定。
     """
     if not text or not text.strip():
         return True
@@ -32,27 +37,26 @@ def _is_garbled(text: str) -> bool:
     printable_ratio = len(chars) / len(text)
     if printable_ratio < 0.5:
         return True
-    # 连续 ? 占位符（fitz 等库把无法解码的字符转成 ? 的形态）
-    # 用正则匹配连续 2 个及以上的 ? 占比
     import re
     q_runs = re.findall(r'\?{2,}', text)
     q_count = sum(len(r) for r in q_runs)
     if q_count / max(len(text), 1) > 0.10:
         return True
-    # 字符多样性过低：去重字符数 / 总字符数 < 0.15（大量重复，无正常词汇）
-    # 排除常见空白字符后统计
-    content_chars = [c for c in chars if not c.isspace()]
-    if content_chars:
-        unique_ratio = len(set(content_chars)) / len(content_chars)
-        if unique_ratio < 0.15:
-            return True
-    # 可打印字符中，ASCII 可见字符占比过低（大量未知 Unicode）也是乱码信号
+    # CJK 正文天然字符重复率高（的/是/在/一 等高频字反复出现），
+    # 不能用 unique_ratio 这种只适用于英文的硬阈值。
+    # 只有在 CJK 占比很低（疑似 ASCII 为主但又缺字符）时才检查多样性。
+    cjk = sum(1 for c in chars if '\u4e00' <= c <= '\u9fff')
+    cjk_ratio = cjk / max(len(chars), 1)
+    if cjk_ratio < 0.2:
+        content_chars = [c for c in chars if not c.isspace()]
+        if content_chars:
+            unique_ratio = len(set(content_chars)) / len(content_chars)
+            if unique_ratio < 0.10:
+                return True
+    # ASCII 可见字符占比极低且无 CJK，意味着大概率是二进制/损坏编码
     ascii_visible = sum(1 for c in chars if c.isascii() and c.isprintable())
-    if ascii_visible / len(chars) < 0.05 and replacement_ratio < 0.05:
-        # 极少 ASCII 且非替换字符主导——可能是编码损坏，保守判定
-        cjk = sum(1 for c in chars if '\u4e00' <= c <= '\u9fff')
-        if cjk / len(chars) < 0.3:
-            return True
+    if ascii_visible / max(len(chars), 1) < 0.05 and cjk_ratio < 0.1:
+        return True
     return False
 
 
@@ -74,8 +78,11 @@ def extract_text(file_path: str, ext: str, raw: bytes = None) -> str:
             return f"[解析Word文档失败: {str(e)}]"
     if ext == '.pdf':
         try:
-            import fitz
-            doc = fitz.open(file_path)
+            try:
+                import pymupdf
+            except ImportError:
+                import fitz as pymupdf
+            doc = pymupdf.open(file_path)
             text = '\n'.join([page.get_text() for page in doc])
             # 直接提取的文本若已乱码，立即拒绝（不再尝试 OCR）
             if _is_garbled(text):
@@ -135,7 +142,17 @@ def extract_text(file_path: str, ext: str, raw: bytes = None) -> str:
             return "[需要安装 python-pptx 库来解析PowerPoint文件]"
         except Exception as e:
             return f"[解析PowerPoint文件失败: {str(e)}]"
-    return f"[不支持的文件类型 {ext}]"
+    # 以下类型无法提取文本：返回简短说明，让模型知道文件性质。
+    # 文件本身已落盘并以附件形式挂载到会话，前端按 MIME 自行渲染/下载。
+    if ext in _IMAGE_EXT:
+        return f"[已上传图片文件 {ext}：二进制图片数据，已作为附件挂载，请直接查看图片或描述图像内容]"
+    if ext in _VIDEO_EXT:
+        return f"[已上传视频文件 {ext}：二进制视频数据，已作为附件挂载，请直接播放视频或描述视频内容]"
+    if ext in _AUDIO_EXT:
+        return f"[已上传音频文件 {ext}：二进制音频数据，已作为附件挂载，请直接播放音频]"
+    if ext in _BINARY_EXT:
+        return f"[已上传二进制/压缩文件 {ext}：无法提取文本，已作为附件挂载请直接下载解压]"
+    return f"[不支持提取文本的文件类型 {ext}：已作为附件挂载]"
 
 
 def save_upload(user_id: int, filename: str, content: bytes) -> dict:
@@ -157,7 +174,9 @@ def save_upload(user_id: int, filename: str, content: bytes) -> dict:
 
 
 def save_upload_text(user_id: int, filename: str, content: bytes) -> dict:
-    """上传并返回解析文本（v2 前端 /upload/text 使用）"""
+    """上传并返回解析文本（v2 前端 /upload/text 使用）。
+
+    同时返回 stored_name/size，供会话消息记录原始文件引用（历史会话可再次打开/下载）。"""
     ext = os.path.splitext(filename or "")[1][:16].lower()
     target_dir = uploads_dir(user_id)
     unique_name = gen_filename(filename)
@@ -168,4 +187,5 @@ def save_upload_text(user_id: int, filename: str, content: bytes) -> dict:
     print(f"[DEBUG] mu文件已保存到: {file_path}")
     text_content = extract_text(file_path, ext, raw=content)
     print(f"[DEBUG] mu解析内容长度: {len(text_content)}")
-    return {"success": True, "filename": filename, "content": text_content}
+    return {"success": True, "filename": filename, "content": text_content,
+            "stored_name": unique_name, "size": len(content)}

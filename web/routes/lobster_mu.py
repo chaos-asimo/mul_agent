@@ -1181,6 +1181,15 @@ def check_user_rate(user: dict = Depends(get_mu_user)):
     return user
 
 
+def _resolve_file_owner(user: dict, user_id: int = 0) -> int:
+    """解析文件归属用户：管理员查看他人会话时可指定 user_id，普通用户仅限本人。"""
+    if user_id and user_id != user["id"]:
+        if user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="无权访问该文件")
+        return user_id
+    return user["id"]
+
+
 # ============ 聊天 ============
 
 from lobster_mu import chat_service, session_store, upload_service, memory_store, script_service
@@ -1346,6 +1355,8 @@ async def mu_files_get(file_id: int, user: dict = Depends(check_user_rate)):
     return {"success": True, "file": {
         "id": f["id"], "filename": f["filename"], "size": f["file_size"],
         "content": f["content"], "created_at": f["created_at"],
+        # 会话复用需要原始文件名引用（生成的存储名），用于历史消息附件链接
+        "stored_name": os.path.basename(f.get("stored_path") or ""),
     }}
 
 
@@ -1390,18 +1401,21 @@ def _pdf_embed_html(request: Request, path: str, display_name: str):
                     headers={"Cache-Control": "private, max-age=60"})
 
 
-def _pdf_preview_response(path: str, filename: str, info: int, page: int, dpi: int):
-    """PDF 服务端渲染预览：info=1 → 页数/大小；page=N → 第 N 页 PNG。"""
+async def _pdf_preview_response(path: str, filename: str, info: int, page: int, dpi: int):
+    """PDF 服务端渲染预览：info=1 → 页数/大小；page=N → 第 N 页 PNG。
+
+    PyMuPDF 渲染是 CPU 密集操作，统一下沉到线程池，避免阻塞事件循环。"""
+    import asyncio
     from fastapi.responses import JSONResponse
     from lobster_mu import script_service
     if not (filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=415, detail="仅支持 PDF 预览")
     if info:
-        pages = script_service.pdf_page_count(path)
+        pages = await asyncio.to_thread(script_service.pdf_page_count, path)
         if pages <= 0:
             raise HTTPException(status_code=422, detail="PDF 无法解析")
         return JSONResponse({"pages": pages, "size": os.path.getsize(path)})
-    png = script_service.render_pdf_page_png(path, page, dpi)
+    png = await asyncio.to_thread(script_service.render_pdf_page_png, path, page, dpi)
     if png is None:
         raise HTTPException(status_code=404, detail="页码超出范围或 PDF 无法解析")
     return Response(content=png, media_type="image/png",
@@ -1410,19 +1424,20 @@ def _pdf_preview_response(path: str, filename: str, info: int, page: int, dpi: i
 
 @router.get("/files/{file_id}/raw")
 async def mu_files_raw(request: Request, file_id: int, download: int = 0, info: int = 0, page: int = 0,
-                       dpi: int = 110, user: dict = Depends(check_user_rate)):
+                       dpi: int = 110, user_id: int = 0, user: dict = Depends(check_user_rate)):
     """流式返回原始文件：inline 用于预览（如 PDF 内嵌），download=1 触发下载。
 
     PDF 还支持服务端渲染预览：?info=1 取页数，?page=N 取该页 PNG；
-    iframe 内嵌访问时直接返回逐页图片的 HTML（不依赖浏览器 PDF 插件）。"""
+    iframe 内嵌访问时直接返回逐页图片的 HTML（不依赖浏览器 PDF 插件）。
+    管理员查看他人会话时可传 user_id 指定归属用户。"""
     import mimetypes
     from fastapi.responses import FileResponse, JSONResponse
     from lobster_mu import file_store
-    f = file_store.get(user["id"], file_id)
+    f = file_store.get(_resolve_file_owner(user, user_id), file_id)
     if not f or not f.get("stored_path") or not os.path.exists(f["stored_path"]):
         raise HTTPException(status_code=404, detail="文件不存在")
     if info or page:
-        return _pdf_preview_response(f["stored_path"], f["filename"], info, page, dpi)
+        return await _pdf_preview_response(f["stored_path"], f["filename"], info, page, dpi)
     media_type, _ = mimetypes.guess_type(f["filename"])
     if not download and media_type == "application/pdf" and _is_embed_request(request):
         return _pdf_embed_html(request, f["stored_path"], f["filename"])
@@ -1430,6 +1445,39 @@ async def mu_files_raw(request: Request, file_id: int, download: int = 0, info: 
         f["stored_path"],
         media_type=media_type or "application/octet-stream",
         filename=f["filename"],
+        content_disposition_type="attachment" if download else "inline",
+    )
+
+
+@router.get("/chat/attachment/{stored_name}")
+async def mu_chat_attachment(request: Request, stored_name: str, download: int = 0,
+                             info: int = 0, page: int = 0, dpi: int = 110,
+                             user_id: int = 0,
+                             user: dict = Depends(check_user_rate)):
+    """会话内用户上传原始文件/图片的读取端点（仅限归属用户 uploads 目录）。
+
+    历史会话需要能再次打开上传的文件、内联展示上传的图片，因此消息里只记录
+    存储名，读取时按 user_id 定位并做目录穿越校验。管理员查看他人会话时可传
+    user_id 指定归属用户。"""
+    import mimetypes
+    from fastapi.responses import FileResponse
+    from lobster_mu.paths import uploads_dir
+    owner_id = _resolve_file_owner(user, user_id)
+    root = os.path.abspath(uploads_dir(owner_id))
+    name = os.path.basename(stored_name or "")
+    path = os.path.abspath(os.path.join(root, name))
+    if not name or not path.startswith(root + os.sep) or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if info or page:
+        return await _pdf_preview_response(path, name, info, page, dpi)
+    media_type, _ = mimetypes.guess_type(name)
+    if not download and media_type == "application/pdf" and _is_embed_request(request):
+        return _pdf_embed_html(request, path, name)
+    display_name = os.path.basename(request.query_params.get("filename") or name) or name
+    return FileResponse(
+        path,
+        media_type=media_type or "application/octet-stream",
+        filename=display_name,
         content_disposition_type="attachment" if download else "inline",
     )
 
@@ -1633,10 +1681,11 @@ async def mu_script_install_dep_async(body: DependencyInstallRequest, user: dict
 
 @router.get("/script/files/download/{file_name}")
 async def mu_script_file_download(request: Request, file_name: str, download: int = 0, info: int = 0,
-                                  page: int = 0, dpi: int = 110, user: dict = Depends(get_mu_user)):
+                                  page: int = 0, dpi: int = 110, user_id: int = 0,
+                                  user: dict = Depends(get_mu_user)):
     from fastapi.responses import FileResponse
     try:
-        path = script_service.get_generated_file_path(user["id"], file_name)
+        path = script_service.get_generated_file_path(_resolve_file_owner(user, user_id), file_name)
     except ValueError:
         raise HTTPException(status_code=403, detail="无权访问该文件")
     if not os.path.isfile(path):

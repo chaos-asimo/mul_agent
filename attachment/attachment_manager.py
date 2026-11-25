@@ -116,8 +116,11 @@ class AttachmentManager:
     def _extract_pdf(self, filepath: str) -> str:
         """Extract text from PDF document"""
         try:
-            import fitz  # PyMuPDF
-            doc = fitz.open(filepath)
+            try:
+                import pymupdf
+            except ImportError:
+                import fitz as pymupdf
+            doc = pymupdf.open(filepath)
             text_parts = []
             for page in doc:
                 text = page.get_text()

@@ -111,11 +111,14 @@ class KnowledgeBase:
                     text_content = f"[解析Word文档失败: {str(e)}]"
             elif ext == '.pdf':
                 try:
-                    import fitz
-                    doc = fitz.open(file_path)
+                    try:
+                        import pymupdf
+                    except ImportError:
+                        import fitz as pymupdf
+                    doc = pymupdf.open(file_path)
                     text_content = '\n'.join([page.get_text() for page in doc])
                 except ImportError:
-                    text_content = f"[需要安装 PyMuPDF(fitz) 库来解析PDF文档]"
+                    text_content = f"[需要安装 PyMuPDF 库来解析PDF文档]"
                 except Exception as e:
                     text_content = f"[解析PDF文档失败: {str(e)}]"
             elif ext in ['.xls', '.xlsx']:

@@ -1515,7 +1515,10 @@ def delete_generated_file(user_id: int, file_name: str) -> bool:
 
 
 def get_generated_file_path(user_id: int, file_name: str) -> str:
-    """解析用户产物文件完整路径：必须落在 files_dir(user_id) 内，否则抛 ValueError"""
+    """解析用户产物文件完整路径：必须落在 files_dir(user_id) 内，否则抛 ValueError。
+
+    只做目录安全检查，不提前检查文件是否存在——调用方（端点）统一判断 404，
+    这样与 /chat/attachment、/files/{id}/raw 的行为保持一致。"""
     work_dir = os.path.abspath(files_dir(user_id))
     safe_name = os.path.basename(file_name or "")
     if not safe_name or safe_name in ('.', '..'):
@@ -1524,6 +1527,4 @@ def get_generated_file_path(user_id: int, file_name: str) -> str:
     resolved = os.path.abspath(os.path.join(work_dir, safe_name))
     if resolved != work_dir and not resolved.startswith(work_dir + os.sep):
         raise ValueError(f"路径越权访问: {file_name}")
-    if not os.path.isfile(resolved):
-        raise ValueError(f"文件不存在: {file_name}")
     return resolved

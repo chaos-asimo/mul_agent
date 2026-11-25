@@ -8,6 +8,9 @@ import FileViewer from './FileViewer'
 import { parseAssistantContent } from '../utils/parseContent'
 import { exportMarkdown, exportWord, exportImage } from '../utils/export'
 
+// 会话内用户上传原始文件/图片的读取端点（后端按 user_id 校验归属）
+const ATTACHMENT_URL = '/api/lobster-mu/chat/attachment/'
+
 // 思考 + 执行过程合并为一个状态条：流式期间只显示一行当前阶段（不再堆叠多个进度框），
 // 点击可展开查看思考内容与每一步执行明细；结束后自动折叠。
 function ActivityBlock({ thinking, events, streaming, elapsed, liveStatus, onOpenFile }) {
@@ -214,6 +217,27 @@ function KnowledgeSources({ sources }) {
   )
 }
 
+// 模型回答结束后给出的 2-3 条启发式追问：仅展示在最后一条助手消息下方，
+// 点击任意一条即可作为新消息直接发送给模型（复用 sendMessage 的覆盖文本入参）。
+function SuggestedQuestions({ questions, onSuggest, disabled }) {
+  if (!questions || questions.length === 0) return null
+  return (
+    <div className="mt-2 flex flex-wrap gap-2 max-w-[80%]">
+      {questions.map((q, i) => (
+        <button
+          key={i}
+          onClick={() => !disabled && onSuggest && onSuggest(q)}
+          disabled={disabled}
+          title="点击发送此问题"
+          className="px-3 py-1.5 rounded-full t-bg-accent-soft t-border-accent t-text-accent text-xs border hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed text-left"
+        >
+          {q}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // 是否可在内嵌查看器直接打开（与 FileViewer 支持的渲染类型保持一致）：
 // markdown / pdf / 图片 / Office(doc(x)/xls(x)/ppt(x)) / 文本代码
 const isOpenableFile = (name) =>
@@ -223,13 +247,13 @@ const isOpenableFile = (name) =>
 // 本轮后台生成的产物文件：文件名点击可在线打开（不可打开的类型改为下载），
 // 右侧下载图标始终保留下载功能；与「脚本」Tab 的产物文件同源。
 // 点击文件名通过 onOpenFile 交给 ChatPane 根层渲染查看器（与 HITL 弹窗同级）。
-function GeneratedFiles({ files, onOpenFile }) {
+function GeneratedFiles({ files, onOpenFile, label = '生成的文件' }) {
   if (!files || files.length === 0) return null
   return (
     <div className="mt-1.5 space-y-1.5 max-w-[78%]">
       <p className="text-[11px] t-text-faint flex items-center gap-1">
         <Package className="w-3 h-3" />
-        生成的文件（{files.length}）
+        {label}（{files.length}）
       </p>
       {files.map((f) => {
         const rawUrl = f.download_url
@@ -356,10 +380,11 @@ function AssistantContent({ content, streaming }) {
   )
 }
 
-function MessageBubble({ msg, onOpenFile, elapsedSec, liveStatus }) {
+function MessageBubble({ msg, onOpenFile, elapsedSec, liveStatus, onSuggest, isLast, suggestDisabled }) {
   const isUser = msg.role === 'user'
   const isError = msg.role === 'error'
   const images = msg.images || []
+  const attachments = msg.attachments || []
   const bubbleRef = useRef(null)
   const [showExportMenu, setShowExportMenu] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -401,12 +426,19 @@ function MessageBubble({ msg, onOpenFile, elapsedSec, liveStatus }) {
         {images.length > 0 && (
           <div className={`flex flex-wrap gap-2 mb-2 ${isUser ? 'justify-end' : ''}`}>
             {images.map((img, i) => (
-              <img
+              <a
                 key={i}
-                src={img.data_url || img.url}
-                alt={img.name || `图片${i + 1}`}
-                className="max-w-[200px] max-h-[200px] rounded-lg border t-border object-cover"
-              />
+                href={img.url || img.data_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="点击查看原图"
+              >
+                <img
+                  src={img.data_url || img.url}
+                  alt={img.name || `图片${i + 1}`}
+                  className="max-w-[200px] max-h-[200px] rounded-lg border t-border object-cover hover:opacity-90 transition-opacity"
+                />
+              </a>
             ))}
           </div>
         )}
@@ -438,11 +470,17 @@ function MessageBubble({ msg, onOpenFile, elapsedSec, liveStatus }) {
             )}
           </div>
         )}
+        {isUser && attachments.length > 0 && (
+          <GeneratedFiles files={attachments} onOpenFile={onOpenFile} label="附件" />
+        )}
         {!isUser && !isError && (
           <GeneratedFiles files={msg.files} onOpenFile={onOpenFile} />
         )}
         {!isUser && !isError && (
           <KnowledgeSources sources={msg.knowledge_sources} />
+        )}
+        {!isUser && !isError && isLast && !msg.streaming && (
+          <SuggestedQuestions questions={msg.suggestions} onSuggest={onSuggest} disabled={suggestDisabled} />
         )}
         <div className={`flex items-center gap-2 mt-1 px-1 text-[10px] t-text-faint ${isUser ? 'flex-row-reverse' : ''}`}>
           {isUser || isError ? (
@@ -939,8 +977,8 @@ function ChatPane({
     [addImageFiles]
   )
 
-  const sendMessage = async () => {
-    const message = inputValue.trim()
+  const sendMessage = async (overrideText) => {
+    const message = (typeof overrideText === 'string' ? overrideText : inputValue).trim()
     const curEntry = entryForView()
     if ((!message && pendingFiles.length === 0 && pendingImages.length === 0) || (curEntry && !curEntry.done)) return
 
@@ -984,6 +1022,15 @@ function ChatPane({
         role: 'user',
         content: displayMessage,
         images: pendingImages.length > 0 ? pendingImages : undefined,
+        attachments: pendingFiles.length > 0
+          ? pendingFiles
+              .filter((f) => f.stored_name)
+              .map((f) => ({
+                name: f.filename,
+                size: f.size,
+                download_url: `${ATTACHMENT_URL}${encodeURIComponent(f.stored_name)}?filename=${encodeURIComponent(f.filename)}`,
+              }))
+          : undefined,
         timestamp: new Date().toISOString(),
       },
     ])
@@ -997,7 +1044,7 @@ function ChatPane({
           model_name: selectedModel || undefined,
           files:
             pendingFiles.length > 0
-              ? pendingFiles.map(({ filename, content }) => ({ filename, content }))
+              ? pendingFiles.map(({ filename, content, stored_name }) => ({ filename, content, stored_name }))
               : undefined,
           images: pendingImages.length > 0 ? pendingImages : undefined,
         },
@@ -1130,6 +1177,9 @@ function ChatPane({
               if (data.files && data.files.length > 0) {
                 meta.files = data.files
               }
+              if (data.suggestions && data.suggestions.length > 0) {
+                meta.suggestions = data.suggestions
+              }
               if (entry.thinking) {
                 meta.thinking = entry.thinking
               }
@@ -1218,7 +1268,18 @@ function ChatPane({
             <p className="text-sm">输入消息发送，或在右侧「文件」面板上传附件</p>
           </div>
         ) : (
-          renderedMessages.map((msg, index) => <MessageBubble key={index} msg={msg} onOpenFile={setViewingFile} elapsedSec={elapsedSec} liveStatus={streamStatus} />)
+          renderedMessages.map((msg, index) => (
+            <MessageBubble
+              key={index}
+              msg={msg}
+              onOpenFile={setViewingFile}
+              elapsedSec={elapsedSec}
+              liveStatus={streamStatus}
+              onSuggest={sendMessage}
+              isLast={index === renderedMessages.length - 1}
+              suggestDisabled={isSending}
+            />
+          ))
         )}
         {isSending && !renderedMessages.some((m) => m.role === 'assistant' && m.streaming) && (
           <div className="flex justify-start">

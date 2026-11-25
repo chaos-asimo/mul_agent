@@ -372,9 +372,13 @@ _SESSION_MIGRATION_COLUMNS = [
 ]
 
 # 助手消息关联的本轮产物文件（[{name,size,summary,download_url}]），
-# 让生成的文件在对话里可直接下载，且重开历史会话仍可见
+# 让生成的文件在对话里可直接下载，且重开历史会话仍可见。
+# 用户消息的 images_json/attachments_json 同理：重开历史会话时图片仍可内联展示、
+# 上传的原始文件仍可点击打开/下载。
 _MSG_MIGRATION_COLUMNS = [
     ("files_json", "TEXT"),
+    ("images_json", "TEXT"),
+    ("attachments_json", "TEXT"),
 ]
 
 _MCP_SERVERS_MIGRATION_COLUMNS = [

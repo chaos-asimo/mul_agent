@@ -1429,11 +1429,14 @@ async def upload_files(files: List[UploadFile] = File(...)):
                         text_content = f"[解析Word文档失败: {str(e)}]"
                 elif file_ext.lower() == '.pdf':
                     try:
-                        import fitz
-                        doc = fitz.open(file_path)
+                        try:
+                            import pymupdf
+                        except ImportError:
+                            import fitz as pymupdf
+                        doc = pymupdf.open(file_path)
                         text_content = '\n'.join([page.get_text() for page in doc])
                     except ImportError:
-                        text_content = f"[需要安装 PyMuPDF(fitz) 库来解析PDF文档]"
+                        text_content = f"[需要安装 PyMuPDF 库来解析PDF文档]"
                     except Exception as e:
                         text_content = f"[解析PDF文档失败: {str(e)}]"
                 elif file_ext.lower() in ['.xls', '.xlsx']:
@@ -1528,9 +1531,12 @@ async def upload_text_file(file: UploadFile = File(...)):
             elif file_ext == '.pdf':
                 print(f"[DEBUG] 进入PDF解析分支")
                 try:
-                    import fitz  # PyMuPDF（优先使用）
-                    print(f"[DEBUG] fitz导入成功")
-                    doc = fitz.open(file_path)
+                    try:
+                        import pymupdf
+                    except ImportError:
+                        import fitz as pymupdf
+                    print(f"[DEBUG] pymupdf导入成功")
+                    doc = pymupdf.open(file_path)
                     text_content = '\n'.join([page.get_text() for page in doc])
                     print(f"[DEBUG] PyMuPDF提取文本长度: {len(text_content)}")
                     
@@ -1616,9 +1622,12 @@ async def upload_text_file(file: UploadFile = File(...)):
                             try:
                                 import pytesseract
                                 from PIL import Image
-                                import fitz
+                                try:
+                                    import pymupdf
+                                except ImportError:
+                                    import fitz as pymupdf
                                 
-                                doc = fitz.open(file_path)
+                                doc = pymupdf.open(file_path)
                                 ocr_text = ""
                                 for page in doc:
                                     pix = page.get_pixmap()
@@ -1631,11 +1640,14 @@ async def upload_text_file(file: UploadFile = File(...)):
                                 print("[DEBUG] 未安装pytesseract，尝试PaddleOCR...")
                                 try:
                                     from paddleocr import PaddleOCR
-                                    import fitz
+                                    try:
+                                        import pymupdf
+                                    except ImportError:
+                                        import fitz as pymupdf
                                     import numpy as np
                                     
                                     ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False)
-                                    doc = fitz.open(file_path)
+                                    doc = pymupdf.open(file_path)
                                     ocr_text = ""
                                     for page in doc:
                                         pix = page.get_pixmap()

@@ -998,6 +998,57 @@ def _sem(user_id: int) -> threading.BoundedSemaphore:
         return _sse_semaphores[user_id]
 
 
+def _parse_suggestions(text: str) -> List[str]:
+    """从模型输出中稳健解析建议问题数组（容忍代码围栏/前后杂文本）。"""
+    if not text:
+        return []
+    s = text.strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
+        s = re.sub(r"\s*```$", "", s)
+    m = re.search(r"\[.*\]", s, flags=re.DOTALL)
+    if m:
+        s = m.group(0)
+    try:
+        arr = json.loads(s)
+    except Exception:
+        return []
+    out: List[str] = []
+    if isinstance(arr, list):
+        for q in arr:
+            if isinstance(q, str):
+                q = q.strip().strip('"').strip()
+                if q:
+                    out.append(q[:60])
+    return out[:3]
+
+
+def _gen_followup_suggestions(adapter, user_msg: str, assistant_resp: str) -> List[str]:
+    """回答完成后，用一次轻量二次调用生成 2-3 条相关启发式追问。
+
+    任何异常都返回空列表，绝不影响主流程。"""
+    try:
+        if not assistant_resp or len(assistant_resp.strip()) < 8:
+            return []
+        sys_p = (
+            "你是启发式追问生成器。根据用户的提问与助手的回答，生成 2 到 3 个"
+            "用户接下来最可能想问的、与上下文强相关的简短问题。"
+            "要求：每条不超过 30 字、具体可执行、能自然延伸当前话题；"
+            "只输出 JSON 数组字符串，例如 [\"问题一\",\"问题二\",\"问题三\"]，不要输出任何其他内容。"
+        )
+        usr_p = (
+            f"用户提问：{(user_msg or '').strip()[:400]}\n\n"
+            f"助手回答：{assistant_resp.strip()[:1200]}"
+        )
+        messages = adapter.create_prompt(sys_p, usr_p, [])
+        resp = adapter.chat(messages)
+        content = resp.get("content", "") if isinstance(resp, dict) else (
+            getattr(resp, "content", "") or str(resp))
+        return _parse_suggestions(content)
+    except Exception:
+        return []
+
+
 # ============ 三层配额：全局闸 / 每用户闸 / 会话锁 ============
 # 全局聊天并发上限：单进程内所有用户共享，防止长任务打满线程池
 _GLOBAL_CHAT_MAX = max(1, int(os.environ.get("MU_GLOBAL_CHAT_MAX", "8")))
@@ -1205,6 +1256,82 @@ def _warmup_knowledge() -> None:
         pass
 
 
+# 会话内用户上传原始文件的读取端点（见 web/routes/lobster_mu.py）
+_ATTACHMENT_URL = "/api/lobster-mu/chat/attachment/"
+
+
+def _persist_user_images(user_id: int, images: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """把本轮用户上传的图片落盘到用户目录，返回可内联展示的引用列表。
+
+    历史消息只存引用（url/size），重开会话时仍能直接显示图片。"""
+    if not images:
+        return []
+    import base64
+    import mimetypes
+    from urllib.parse import quote
+    from lobster_mu.paths import uploads_dir, gen_filename
+    from lobster_mu.upload_service import MAX_UPLOAD_SIZE
+    saved = []
+    for idx, img in enumerate(images):
+        if not isinstance(img, dict):
+            continue
+        header, sep, b64 = (img.get("data_url") or "").partition(",")
+        if not sep or not header.startswith("data:") or "base64" not in header:
+            continue
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            continue
+        if not raw or len(raw) > MAX_UPLOAD_SIZE:
+            continue
+        name = (img.get("name") or f"image_{idx + 1}").strip()
+        if not os.path.splitext(name)[1]:
+            mime = header[5:].split(";")[0]
+            name += mimetypes.guess_extension(mime) or ".png"
+        stored = gen_filename(name)
+        try:
+            with open(os.path.join(uploads_dir(user_id), stored), "wb") as f:
+                f.write(raw)
+        except Exception:
+            continue
+        saved.append({
+            "name": name,
+            "size": len(raw),
+            "url": _ATTACHMENT_URL + quote(stored),
+        })
+    return saved
+
+
+def _persist_user_attachments(user_id: int, files: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """整理本轮用户上传的原始文件引用（文件已随 /upload/text 落盘），返回可下载列表。"""
+    if not files:
+        return []
+    from urllib.parse import quote
+    from lobster_mu.paths import uploads_dir
+    root = os.path.abspath(uploads_dir(user_id))
+    saved = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        stored = os.path.basename((item.get("stored_name") or "").strip())
+        if not stored:
+            continue
+        path = os.path.abspath(os.path.join(root, stored))
+        if not path.startswith(root + os.sep) or not os.path.isfile(path):
+            continue
+        name = (item.get("filename") or stored).strip() or stored
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        saved.append({
+            "name": name,
+            "size": size,
+            "download_url": f"{_ATTACHMENT_URL}{quote(stored)}?filename={quote(name)}",
+        })
+    return saved
+
+
 def chat_stream_response(user_id: int, request: ChatStreamRequest,
                          ctx: Optional[Dict[str, Any]] = None) -> StreamingResponse:
     """多用户流式聊天入口"""
@@ -1242,7 +1369,17 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
         parts.append(f"🖼️ 附带 {len(request.images)} 张图片")
     display_message = "\n\n".join(parts)
 
-    session_store.append_message(user_id, session_id, "user", display_message)
+    # 持久化上传的图片/原始文件：历史会话重开时图片仍可内联显示、文件仍可打开
+    try:
+        saved_images = _persist_user_images(user_id, request.images)
+        saved_attachments = _persist_user_attachments(user_id, request.files)
+    except Exception as _e:
+        print(f"[WARN] 用户上传附件持久化失败: {_e}")
+        saved_images, saved_attachments = [], []
+
+    session_store.append_message(user_id, session_id, "user", display_message,
+                                 images=saved_images or None,
+                                 attachments=saved_attachments or None)
     generation_type = detect_generation_type(request.message)
     # PPT 意图：纯文本对话才生效（文件/图片消息不触发），走文本分支 + [PPT_GEN] 标记机制
     ppt_intent = generation_type == "ppt" and not request.files and not has_images
@@ -1768,6 +1905,10 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
                                                      token_stats=token_stats)
                         done_event = {'success': True, 'content': '', 'session_id': session_id, 'done': True,
                                       'model_name': adapter.model_name, 'token_stats': token_stats}
+                        # ReAct 路径独立 return，需自行生成启发式追问（失败/为空则省略）
+                        _sugg = _gen_followup_suggestions(adapter, request.message, _react_saved)
+                        if _sugg:
+                            done_event['suggestions'] = _sugg
                         yield "data: " + json.dumps(done_event) + "\n\n"
                         return  # finally 会释放三层配额
                 except Exception as e:
@@ -2428,6 +2569,10 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
             done_event = {'success': True, 'content': '', 'session_id': session_id, 'done': True, 'model_name': adapter.model_name, 'token_stats': token_stats}
             if knowledge_sources:
                 done_event['knowledge_sources'] = knowledge_sources
+            # 生成 2-3 条启发式追问（轻量二次调用，失败/为空则省略，不阻塞主流程）
+            _sugg = _gen_followup_suggestions(adapter, request.message, full_response)
+            if _sugg:
+                done_event['suggestions'] = _sugg
             yield f"data: {json.dumps(done_event)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'success': False, 'error': str(e), 'session_id': session_id})}\n\n"

@@ -299,6 +299,7 @@ function AdminMonitor() {
               <StatTile label="今日 Token 消耗" value={fmtTokens(today.tokens)} sub={`7 日 ${fmtTokens(models.total_tokens)}`} icon={Braces} tone="info" />
               <StatTile label="今日活跃会话" value={fmtInt(counts.active_sessions_today)} sub={`累计 ${fmtInt(counts.total_sessions)}`} icon={MessageSquare} tone="ok" />
               <StatTile label="平台用户" value={fmtInt(counts.users)} sub="已注册账号" icon={Users} tone="accent" />
+              <StatTile label="会话总数" value={fmtInt(counts.total_sessions)} sub={`当日 ${fmtInt(counts.active_sessions_today)}`} icon={MessageSquare} tone="info" />
             </div>
 
             <div className="monitor-workspace">

@@ -58,7 +58,7 @@ function FilesTab({
         try {
           const detail = await apiGet(`/files/${r.file_id}`)
           if (detail.success && detail.file) {
-            onAddFiles([{ filename: detail.file.filename, content: detail.file.content, size: detail.file.size }])
+            onAddFiles([{ filename: detail.file.filename, content: detail.file.content, size: detail.file.size, stored_name: detail.file.stored_name }])
           }
         } catch (e) { /* 列表仍会刷新，内容不阻塞 */ }
       }
@@ -75,7 +75,7 @@ function FilesTab({
     try {
       const detail = await apiGet(`/files/${file.id}`)
       if (detail.success && detail.file) {
-        onAddFiles([{ filename: detail.file.filename, content: detail.file.content, size: detail.file.size }])
+        onAddFiles([{ filename: detail.file.filename, content: detail.file.content, size: detail.file.size, stored_name: detail.file.stored_name }])
       }
     } catch (e) {
       setError('加入会话失败：' + (e?.message || '未知错误'))

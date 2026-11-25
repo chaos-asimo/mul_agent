@@ -11,12 +11,15 @@ import OfficePreview from './OfficePreview'
 
 // 可在浏览器原生渲染的现代 Office 格式
 const NATIVE_OFFICE = /\.(docx|xlsx?|pptx)$/i
+const VIDEO_FILE = /\.(mp4|mov|avi|mkv|webm|flv|wmv|m4v|3gp|mpeg|mpg)$/i
+const AUDIO_FILE = /\.(mp3|wav|ogg|flac|aac|m4a|wma)$/i
 
 /**
  * 文件内容查看器（通用，「我的文件」与「脚本产物」共用）：
  * - 入参可传 file={{id, filename}}，或显式 filename/rawUrl/downloadUrl/contentUrl
  * - markdown → Markdown 渲染；文本/代码 → 语法高亮
  * - pdf → 浏览器原生内嵌预览；office(docx/xlsx/pptx) → 前端原生渲染
+ * - video/audio → 浏览器原生标签播放；image → <img> 渲染
  * - 旧版 .doc/.ppt → 提取文本（需 contentUrl）；其它 → 下载
  */
 export default function FileViewer({ file, filename, rawUrl, downloadUrl, contentUrl, onClose, textOnly = false }) {
@@ -131,6 +134,30 @@ export default function FileViewer({ file, filename, rawUrl, downloadUrl, conten
         </div>
       )
     }
+    if (kind === 'video') {
+      return (
+        <div className="flex-1 min-h-0 flex items-center justify-center bg-black rounded-lg overflow-hidden">
+          <video
+            src={baseRaw}
+            controls
+            className="max-w-full max-h-full"
+            preload="metadata"
+          >
+            您的浏览器不支持 HTML5 视频播放，请下载后观看。
+          </video>
+        </div>
+      )
+    }
+    if (kind === 'audio') {
+      return (
+        <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-4 t-bg-card border t-border rounded-lg p-6">
+          <p className="text-xs t-text-faint">音频文件：{name}</p>
+          <audio src={baseRaw} controls preload="metadata">
+            您的浏览器不支持 HTML5 音频播放，请下载后收听。
+          </audio>
+        </div>
+      )
+    }
     if (kind === 'office-native') {
       if (error && error !== '__no_text__') {
         return (
@@ -181,6 +208,8 @@ function pickKind(name) {
   if (/\.md|markdown$/i.test(name)) return 'markdown'
   if (isPdfFile(name)) return 'pdf'
   if (isImageFile(name)) return 'image'
+  if (VIDEO_FILE.test(name)) return 'video'
+  if (AUDIO_FILE.test(name)) return 'audio'
   if (NATIVE_OFFICE.test(name)) return 'office-native'
   if (isOfficeFile(name)) return 'office-text'
   if (isTextFile(name)) return 'code'

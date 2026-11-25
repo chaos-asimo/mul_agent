@@ -24,7 +24,8 @@ def _parse_token_stats(raw):
 
 
 def _parse_files(raw):
-    """数据库中 files_json 为 JSON 字符串，需解析为 list（本轮产物文件）"""
+    """数据库中 files_json/images_json/attachments_json 为 JSON 字符串，需解析为 list
+    （本轮产物文件 / 用户上传图片 / 用户上传附件）"""
     if not raw:
         return []
     if isinstance(raw, list):
@@ -56,7 +57,8 @@ def _cache_get(user_id: int, session_id: str) -> list:
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT role, content, model_name, token_stats, files_json, created_at FROM mu_chat_messages"
+            "SELECT role, content, model_name, token_stats, files_json, images_json,"
+            " attachments_json, created_at FROM mu_chat_messages"
             " WHERE session_id = ? AND user_id = ? ORDER BY id DESC LIMIT ?",
             (session_id, user_id, _CACHE_MSGS),
         ).fetchall()
@@ -65,6 +67,8 @@ def _cache_get(user_id: int, session_id: str) -> list:
     msgs = deque(
         [{"role": r["role"], "content": r["content"], "model_name": r["model_name"],
           "token_stats": _parse_token_stats(r["token_stats"]), "files": _parse_files(r["files_json"]),
+          "images": _parse_files(r["images_json"]),
+          "attachments": _parse_files(r["attachments_json"]),
           "timestamp": r["created_at"]}
          for r in reversed(rows)],
         maxlen=_CACHE_MSGS,
@@ -134,16 +138,23 @@ def get_or_create_session(user_id: int, session_id: str = None, title: str = "")
 
 
 def append_message(user_id: int, session_id: str, role: str, content: str,
-                   model_name: str = None, token_stats: dict = None):
-    """写穿透：INSERT 落库 + 追加缓存；自动裁剪旧消息"""
+                   model_name: str = None, token_stats: dict = None,
+                   images: list = None, attachments: list = None):
+    """写穿透：INSERT 落库 + 追加缓存；自动裁剪旧消息。
+
+    images/attachments 仅供用户消息使用：保存上传图片与原始文件的引用，
+    使重开历史会话时仍能内联展示图片、点击打开文件。"""
     now = _now()
     conn = get_conn()
     try:
         conn.execute(
-            "INSERT INTO mu_chat_messages (session_id, user_id, role, content, model_name, token_stats, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO mu_chat_messages (session_id, user_id, role, content, model_name,"
+            " token_stats, images_json, attachments_json, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (session_id, user_id, role, content, model_name,
-             __import__("json").dumps(token_stats, ensure_ascii=False) if token_stats else None, now),
+             __import__("json").dumps(token_stats, ensure_ascii=False) if token_stats else None,
+             json.dumps(images, ensure_ascii=False) if images else None,
+             json.dumps(attachments, ensure_ascii=False) if attachments else None, now),
         )
         # 第一条用户消息时，用问题简述更新会话标题
         if role == "user":
@@ -175,6 +186,7 @@ def append_message(user_id: int, session_id: str, role: str, content: str,
     _cache_append(user_id, session_id, {
         "role": role, "content": content, "model_name": model_name,
         "token_stats": token_stats, "timestamp": now,
+        "images": images or [], "attachments": attachments or [],
     })
 
 
