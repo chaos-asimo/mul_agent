@@ -850,7 +850,7 @@ body {
   position: relative;
   z-index: 1;
 }
-.monitor-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.monitor-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
 .monitor-stat {
   position: relative;
   min-width: 0;

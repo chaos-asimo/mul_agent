@@ -121,11 +121,10 @@ def extract_text(file_path: str, ext: str, raw: bytes = None) -> str:
             return f"[解析PDF文档失败: {str(e)}]"
     if ext in ['.xls', '.xlsx']:
         try:
-            import pandas as pd
-            df = pd.read_excel(file_path)
-            return df.to_string()
+            from utils.excel_reader import read_excel_text
+            return read_excel_text(file_path)
         except ImportError:
-            return "[需要安装 pandas 和 openpyxl 库来解析Excel文件]"
+            return "[需要安装 openpyxl 库解析 .xlsx（旧版 .xls 需 xlrd）]"
         except Exception as e:
             return f"[解析Excel文件失败: {str(e)}]"
     if ext in ['.ppt', '.pptx']:

@@ -11,9 +11,105 @@ import { exportMarkdown, exportWord, exportImage } from '../utils/export'
 // 会话内用户上传原始文件/图片的读取端点（后端按 user_id 校验归属）
 const ATTACHMENT_URL = '/api/lobster-mu/chat/attachment/'
 
+// ---- 应景的等待提示语：根据用户提问关键词挑选，让等待不那么枯燥 ----
+// 每条都是"正在 + 动作 + …"的口语化句式，保持一行，避免状态条过长
+const THINKING_HINTS = [
+  // 编程 / 代码
+  { keys: ['代码', '编程', '写个', '脚本', '函数', 'bug', '报错', 'python', 'java', 'javascript', '前端', '后端', 'api'],
+    pool: [
+      '正在构思代码…',
+      '正在搭积木般组合代码…',
+      '正在让代码跑起来…',
+      '正在推敲逻辑…',
+      '正在翻遍文档找线索…',
+      '正在逐行梳理依赖…',
+    ] },
+  // 搜索 / 知识
+  { keys: ['什么', '怎么', '如何', '为什么', '原理', '介绍', '解释', '区别', '对比', '谁', '哪里', '最新', '搜索', '查', '有没有'],
+    pool: [
+      '正在翻书查资料…',
+      '正在联网搜线索…',
+      '正在把知识点串起来…',
+      '正在拨开迷雾…',
+      '正在从知识库翻找…',
+      '正在思考更深一层…',
+      '正在比对多种说法…',
+    ] },
+  // 数据 / Excel / 表格 / 图表
+  { keys: ['excel', '表格', '数据', '图表', '统计', '分析', '报表', '透视', '汇总', '对齐'],
+    pool: [
+      '正在整理数据…',
+      '正在对齐表头…',
+      '正在把数字排整齐…',
+      '正在盘算数字…',
+      '正在做数据清洗…',
+    ] },
+  // 文件 / 文档
+  { keys: ['文件', '文档', 'pdf', 'word', 'ppt', '写', '生成', '报告', '总结', '邮件', '合同', '方案'],
+    pool: [
+      '正在起草文稿…',
+      '正在把文字润色…',
+      '正在组织章节…',
+      '正在排版定稿…',
+      '正在让文字变流畅…',
+    ] },
+  // 图片 / 设计
+  { keys: ['图片', '画', '设计', 'ui', '海报', '头像', '封面', '生成图'],
+    pool: [
+      '正在构思画面…',
+      '正在让画笔就绪…',
+      '正在调色…',
+      '正在想象成品…',
+    ] },
+  // 时间 / 今日 / 日程
+  { keys: ['几点', '今天', '明天', '日期', '时间', '星期', '几号'],
+    pool: [
+      '正在核对日历…',
+      '正在查一下时间…',
+      '正在翻日历…',
+    ] },
+  // 计算 / 数学
+  { keys: ['计算', '算', '数学', '公式', '求和', '平均', '百分比', '方程'],
+    pool: [
+      '正在拨算盘…',
+      '正在演算式子…',
+      '正在让数字跑一遍…',
+      '正在草稿上验算…',
+    ] },
+  // 通用兜底（必须在最后，匹配不到上面意图时使用）
+  { keys: [],
+    pool: [
+      '正在静静思考…',
+      '正在认真琢磨…',
+      '正在把想法捋顺…',
+      '正在搜索脑中的知识…',
+      '正在让齿轮转起来…',
+      '正在琢磨最佳答案…',
+      '正在酝酿回复…',
+      '正在脑内走一遍流程…',
+      '正在翻江倒海地想…',
+      '正在思考中…',
+    ] },
+]
+
+// 每条 session 用一个简单的轮询（取模）让同一会话内连续等待时文案有变化
+function pickThinkingHint(query, seed = 0) {
+  const q = (query || '').toLowerCase()
+  let group = THINKING_HINTS[THINKING_HINTS.length - 1] // 兜底组
+  for (const g of THINKING_HINTS) {
+    if (g.keys.length === 0) continue
+    if (g.keys.some((k) => q.includes(k))) {
+      group = g
+      break
+    }
+  }
+  const list = group.pool
+  return list[Math.abs(seed) % list.length]
+}
+
 // 思考 + 执行过程合并为一个状态条：流式期间只显示一行当前阶段（不再堆叠多个进度框），
 // 点击可展开查看思考内容与每一步执行明细；结束后自动折叠。
-function ActivityBlock({ thinking, events, streaming, elapsed, liveStatus, onOpenFile }) {
+function ActivityBlock({ thinking, events, streaming, elapsed, liveStatus, userQuery, onOpenFile }) {
   const [open, setOpen] = useState(false)
   const [codeOpen, setCodeOpen] = useState(false)
   useEffect(() => {
@@ -40,8 +136,7 @@ function ActivityBlock({ thinking, events, streaming, elapsed, liveStatus, onOpe
   if (streaming) {
     if (running) status = running.text || RUNNING_TEXT[running.stage] || '处理中…'
     else if (liveStatus) status = liveStatus
-    else if (hasThinking) status = '思考中…'
-    else status = '正在生成回答…'
+    else status = pickThinkingHint(userQuery || '', elapsed)
   }
 
   const header = streaming
@@ -380,7 +475,7 @@ function AssistantContent({ content, streaming }) {
   )
 }
 
-function MessageBubble({ msg, onOpenFile, elapsedSec, liveStatus, onSuggest, isLast, suggestDisabled }) {
+function MessageBubble({ msg, onOpenFile, elapsedSec, liveStatus, userQuery, onSuggest, isLast, suggestDisabled }) {
   const isUser = msg.role === 'user'
   const isError = msg.role === 'error'
   const images = msg.images || []
@@ -449,6 +544,7 @@ function MessageBubble({ msg, onOpenFile, elapsedSec, liveStatus, onSuggest, isL
             streaming={msg.streaming}
             elapsed={msg.streaming ? elapsedSec : 0}
             liveStatus={msg.streaming ? liveStatus : ''}
+            userQuery={userQuery}
             onOpenFile={onOpenFile}
           />
         )}
@@ -560,9 +656,10 @@ function MessageBubble({ msg, onOpenFile, elapsedSec, liveStatus, onSuggest, isL
 }
 
 // 流式执行中的状态指示器：解析状态文本，显示对应图标 + 动画 + 已耗时
-function StreamingIndicator({ status, elapsed }) {
+function StreamingIndicator({ status, elapsed, userQuery }) {
   const elapsedLabel = elapsed > 0 ? ` · ${elapsed}s` : ''
   if (!status) {
+    const hint = pickThinkingHint(userQuery || '', elapsed)
     return (
       <div className="flex items-center gap-2.5">
         <div className="typing-indicator">
@@ -570,7 +667,7 @@ function StreamingIndicator({ status, elapsed }) {
           <span></span>
           <span></span>
         </div>
-        {elapsed >= 3 && <span className="text-xs t-text-faint">正在连接模型{elapsedLabel}</span>}
+        <span className="text-xs t-text-faint">{hint}{elapsedLabel}</span>
       </div>
     )
   }
@@ -632,6 +729,7 @@ function ChatPane({
   const [streamStatus, setStreamStatus] = useState('') // 后台运行状态文本（思考中、执行工具…）
   const [sendStartTs, setSendStartTs] = useState(0) // 本轮发送起始时间，用于显示"已思考 Ns"
   const [elapsedSec, setElapsedSec] = useState(0)
+  const [currentUserQuery, setCurrentUserQuery] = useState('') // 当前正在回答的用户消息（用于选应景等待文案）
   const messagesEndRef = useRef(null)
   const scrollContainerRef = useRef(null)
   const fileInputRef = useRef(null)
@@ -982,6 +1080,9 @@ function ChatPane({
     const curEntry = entryForView()
     if ((!message && pendingFiles.length === 0 && pendingImages.length === 0) || (curEntry && !curEntry.done)) return
 
+    // 记住当前正在处理的用户消息，用于挑选应景的等待提示语
+    setCurrentUserQuery(message || (pendingFiles.length > 0 ? `上传了 ${pendingFiles.length} 个文件` : ''))
+
     // 本会话的独立流式任务：切换会话/其他会话发送互不影响
     const entry = {
       sid: sessionId || '__pending__',
@@ -1275,6 +1376,7 @@ function ChatPane({
               onOpenFile={setViewingFile}
               elapsedSec={elapsedSec}
               liveStatus={streamStatus}
+              userQuery={currentUserQuery}
               onSuggest={sendMessage}
               isLast={index === renderedMessages.length - 1}
               suggestDisabled={isSending}
@@ -1284,7 +1386,7 @@ function ChatPane({
         {isSending && !renderedMessages.some((m) => m.role === 'assistant' && m.streaming) && (
           <div className="flex justify-start">
             <div className="px-4 py-3 rounded-xl t-bg-bubble border t-border rounded-bl-none flex items-center gap-3 min-w-[200px]">
-              <StreamingIndicator status={streamStatus} elapsed={elapsedSec} />
+              <StreamingIndicator status={streamStatus} elapsed={elapsedSec} userQuery={currentUserQuery} />
             </div>
           </div>
         )}

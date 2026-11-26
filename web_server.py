@@ -430,11 +430,12 @@ async def request_timing(request, call_next):
     response = await call_next(request)
     _elapsed_ms = (_tm.perf_counter() - _start) * 1000
     _path = request.url.path
+    _ip = get_client_ip(request)
     # 只 WARN 慢请求（> 500ms），INFO 其余。生产服务器可 grep "slow" 快速定位。
     if _elapsed_ms > 500:
-        logger.warning("SLOW_REQUEST %s %s -> %d (%.0fms)", request.method, _path, response.status_code, _elapsed_ms)
+        logger.warning("SLOW_REQUEST %s %s %s -> %d (%.0fms)", _ip, request.method, _path, response.status_code, _elapsed_ms)
     elif _path.startswith("/api/") and _path not in API_LOG_EXCLUDED_PATHS:
-        logger.info("REQ %s %s -> %d (%.0fms)", request.method, _path, response.status_code, _elapsed_ms)
+        logger.info("REQ %s %s %s -> %d (%.0fms)", _ip, request.method, _path, response.status_code, _elapsed_ms)
     return response
 
 # ---- 接口访问日志中间件（记录 /api/lobster-mu 请求，仅管理员可查） ----
@@ -465,8 +466,8 @@ class ApiAccessLogMiddleware(BaseHTTPMiddleware):
         # 慢请求同时打到主日志，便于与 handler 内 [perf] 分段计时对照：
         # 若此处很大但 handler_total 很小 => 耗时在 handler 之前（事件循环阻塞/锁等待）。
         if dur_ms > 3000:
-            logger.warning("[perf] MW %s %s total=%dms (handler 内分段请见 [perf] 日志)",
-                           request.method, path, dur_ms)
+            logger.warning("[perf] MW %s %s %s total=%dms (handler 内分段请见 [perf] 日志)",
+                           get_client_ip(request), request.method, path, dur_ms)
         return response
 
     def _safe_log(self, request, path: str, status: int, duration_ms: int):

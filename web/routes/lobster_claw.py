@@ -1441,11 +1441,10 @@ async def upload_files(files: List[UploadFile] = File(...)):
                         text_content = f"[解析PDF文档失败: {str(e)}]"
                 elif file_ext.lower() in ['.xls', '.xlsx']:
                     try:
-                        import pandas as pd
-                        df = pd.read_excel(file_path)
-                        text_content = df.to_string()
+                        from utils.excel_reader import read_excel_text
+                        text_content = read_excel_text(file_path)
                     except ImportError:
-                        text_content = f"[需要安装 pandas 和 openpyxl 库来解析Excel文件]"
+                        text_content = f"[需要安装 openpyxl 库解析 .xlsx（旧版 .xls 需 xlrd）]"
                     except Exception as e:
                         text_content = f"[解析Excel文件失败: {str(e)}]"
                 elif file_ext.lower() in ['.ppt', '.pptx']:
@@ -1678,11 +1677,10 @@ async def upload_text_file(file: UploadFile = File(...)):
                     text_content = f"[解析PDF文档失败: {str(e)}]"
             elif file_ext in ['.xls', '.xlsx']:
                 try:
-                    import pandas as pd
-                    df = pd.read_excel(file_path)
-                    text_content = df.to_string()
+                    from utils.excel_reader import read_excel_text
+                    text_content = read_excel_text(file_path)
                 except ImportError:
-                    text_content = f"[需要安装 pandas 和 openpyxl 库来解析Excel文件]"
+                    text_content = f"[需要安装 openpyxl 库解析 .xlsx（旧版 .xls 需 xlrd）]"
                 except Exception as e:
                     text_content = f"[解析Excel文件失败: {str(e)}]"
             elif file_ext in ['.ppt', '.pptx']:

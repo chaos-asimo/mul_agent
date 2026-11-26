@@ -5,6 +5,7 @@ import {
   Users, MessageSquare, Zap, Activity, Database, Server, Clock,
   TrendingUp, Timer, Bot, ArrowUpRight, ArrowDownRight,
   Radio, ShieldCheck, Braces, Gauge as GaugeIcon,
+  Archive, Upload,
 } from 'lucide-react'
 import { apiGet } from '../api/client'
 import ThemeSwitcher from '../components/ThemeSwitcher'
@@ -300,6 +301,8 @@ function AdminMonitor() {
               <StatTile label="今日活跃会话" value={fmtInt(counts.active_sessions_today)} sub={`累计 ${fmtInt(counts.total_sessions)}`} icon={MessageSquare} tone="ok" />
               <StatTile label="平台用户" value={fmtInt(counts.users)} sub="已注册账号" icon={Users} tone="accent" />
               <StatTile label="会话总数" value={fmtInt(counts.total_sessions)} sub={`当日 ${fmtInt(counts.active_sessions_today)}`} icon={MessageSquare} tone="info" />
+              <StatTile label="今日生成产物" value={fmtInt(counts.artifacts_today)} sub={`累计 ${fmtInt(counts.artifacts_total)}`} icon={Archive} tone="ok" />
+              <StatTile label="今日上传文件" value={fmtInt(counts.uploads_today)} sub={`累计 ${fmtInt(counts.uploads_total)}`} icon={Upload} tone="accent" />
             </div>
 
             <div className="monitor-workspace">

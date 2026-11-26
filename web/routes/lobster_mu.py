@@ -1692,7 +1692,7 @@ async def mu_script_file_download(request: Request, file_name: str, download: in
         raise HTTPException(status_code=404, detail="文件不存在")
     # PDF 服务端渲染预览（info=1 取页数，page=N 取该页 PNG）
     if info or page:
-        return _pdf_preview_response(path, file_name, info, page, dpi)
+        return await _pdf_preview_response(path, file_name, info, page, dpi)
     # iframe 内嵌预览时返回逐页图片的 HTML，避免原生 PDF 插件渲染空白
     if not download and file_name.lower().endswith(".pdf") and _is_embed_request(request):
         return _pdf_embed_html(request, path, file_name)
@@ -2953,8 +2953,53 @@ async def admin_monitor(admin: dict = Depends(require_admin)):
             key=lambda x: -x["calls"]
         )[:5]
 
+        # 上传统计：user 消息里 images_json + attachments_json 的文件条目数
+        upload_rows = conn.execute(
+            "SELECT created_at, images_json, attachments_json FROM mu_chat_messages "
+            "WHERE role = 'user' AND (images_json IS NOT NULL AND images_json != '[]'"
+            "OR attachments_json IS NOT NULL AND attachments_json != '[]')"
+        ).fetchall()
+        upload_total = 0
+        upload_today = 0
+        today_date = (_mdate.now()).strftime("%Y-%m-%d")
+        for ur in upload_rows:
+            n = 0
+            for col in ("images_json", "attachments_json"):
+                raw = ur[col]
+                if not raw:
+                    continue
+                try:
+                    arr = _j2.loads(raw)
+                    n += len(arr) if isinstance(arr, list) else 0
+                except Exception:
+                    pass
+            if n <= 0:
+                continue
+            upload_total += n
+            if (ur["created_at"] or "")[:10] == today_date:
+                upload_today += n
+
     finally:
         conn.close()
+
+    # ---------- 产物统计（文件系统）----------
+    artifacts_root = _os.path.join(_os.path.dirname(db.DB_PATH), "..",
+                                   "web", "static", "lobster-claw-files")
+    artifacts_total = 0
+    artifacts_today = 0
+    if _os.path.isdir(artifacts_root):
+        for dirpath, _, filenames in _os.walk(artifacts_root):
+            for fname in filenames:
+                if fname.startswith("."):
+                    continue
+                fpath = _os.path.join(dirpath, fname)
+                try:
+                    st = _os.stat(fpath)
+                except OSError:
+                    continue
+                artifacts_total += 1
+                if (_mdate.fromtimestamp(st.st_mtime)).strftime("%Y-%m-%d") == today_date:
+                    artifacts_today += 1
 
     models_data = {
         "total_calls": total_calls,
@@ -2972,6 +3017,10 @@ async def admin_monitor(admin: dict = Depends(require_admin)):
             "users": users_count,
             "active_sessions_today": active_sessions_today,
             "total_sessions": total_sessions,
+            "artifacts_today": artifacts_today,
+            "artifacts_total": artifacts_total,
+            "uploads_today": upload_today,
+            "uploads_total": upload_total,
         },
         "db": {
             "db_mb": db_mb,

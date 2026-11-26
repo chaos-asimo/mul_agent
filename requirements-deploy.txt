@@ -30,6 +30,9 @@ olefile==0.47
 lxml==6.1.1
 fpdf2>=2.7
 beautifulsoup4>=4.12
+# Excel 文本提取（utils/excel_reader.py）：openpyxl 读 .xlsx/.xlsm，xlrd 读旧版 .xls
+openpyxl>=3.1
+xlrd>=2.0
 
 # ===== HTTP / Network =====
 requests==2.34.2
