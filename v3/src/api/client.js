@@ -156,6 +156,18 @@ export async function readFileContent(file) {
   return ''
 }
 
+/**
+ * 上传文件并返回完整解析结果（含 stored_name / content）。
+ * 压缩包（zip/tar/tgz/gz）在后端自动解压，前端只当作一个附件，content 已含内部文件完整文本。
+ */
+export async function uploadFileForPending(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const result = await apiUpload('/upload/text', formData)
+  if (!result.success) throw new Error(result.error || '上传失败')
+  return result
+}
+
 export function formatSize(size) {
   if (size == null) return ''
   if (size > 1024 * 1024) return (size / 1024 / 1024).toFixed(2) + ' MB'

@@ -472,6 +472,69 @@ def _tool_script_list(user_id: int) -> str:
     return result
 
 
+# ============ 生图工具（按 user_id 隔离存储到个人产物目录） ============
+
+def _copy_image_to_user(image_url: str, user_id: int):
+    """把适配器生成的本地图片（/uploads/images/...）复制到该用户产物目录，实现用户隔离。
+
+    返回 {"name": 存储名, "size": 字节数} 或 None。"""
+    try:
+        if not image_url or not image_url.startswith("/uploads/"):
+            return None
+        src = os.path.join(BASE_DIR, image_url.lstrip("/"))
+        if not os.path.isfile(src):
+            return None
+        import shutil
+        from lobster_mu.paths import files_dir, gen_filename
+        name = gen_filename("image.png")
+        dst = os.path.join(files_dir(user_id), name)
+        shutil.copy2(src, dst)
+        return {"name": name, "size": os.path.getsize(dst)}
+    except Exception:
+        return None
+
+
+def _tool_generate_image(prompt: str, size: str, n, user_id: int) -> str:
+    """调用已配置的文生图模型生成图片，并归档到该用户产物目录（用户隔离）。"""
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return "❌ 生图失败：缺少图片描述（prompt）"
+    try:
+        from models.model_manager import ModelManager
+        models = [m for m in ModelManager().get_all()
+                  if m.api_key and m.enabled and m.model_type == "image"]
+    except Exception as e:
+        return f"❌ 生图失败：无法读取模型配置（{e}）"
+    if not models:
+        return "❌ 未配置文生图模型，请先在模型配置中添加并启用生图模型"
+
+    try:
+        from engine.agent_worker import create_image_adapter
+        adapter = create_image_adapter(models[0])
+        if not adapter:
+            return "❌ 生图失败：无法创建生图适配器"
+        try:
+            n_val = max(1, int(n or 1))
+        except (TypeError, ValueError):
+            n_val = 1
+        resp = adapter.generate(prompt=prompt, n=n_val, size=size or "1024x1024")
+    except Exception as e:
+        return f"❌ 生图失败：{e}"
+
+    if not getattr(resp, "success", False):
+        return f"❌ 图片生成失败: {getattr(resp, 'error', '未知错误')}"
+
+    image_url = getattr(resp, "image_url", "") or ""
+    saved = _copy_image_to_user(image_url, user_id)
+    if saved:
+        dl = f"/api/lobster-mu/script/files/download/{saved['name']}"
+        return (f"✅ 图片已生成！\n\n![生成的图片]({dl})\n\n"
+                f"📄 文件名: {saved['name']}\n📥 下载链接: {dl}")
+    if image_url:
+        return f"✅ 图片已生成！\n\n![生成的图片]({image_url})"
+    return "❌ 图片生成成功，但未获取到图片地址"
+
+
 # ============ 工具调度入口 ============
 
 def _op_detail(tool: str, tool_call: dict) -> str:
@@ -487,6 +550,8 @@ def _op_detail(tool: str, tool_call: dict) -> str:
             return str(tool_call.get("query", ""))[:200]
         if tool in ("generate_pdf", "script_create"):
             return str(tool_call.get("content", tool_call.get("code", "")))[:100]
+        if tool == "generate_image":
+            return str(tool_call.get("prompt", tool_call.get("message", "")))[:100]
         if tool == "script_execute":
             script_id = tool_call.get("script_id")
             return f"script_id={script_id}" if script_id else str(tool_call.get("code", ""))[:100]
@@ -533,6 +598,13 @@ def execute_tool_call(tool_call: dict, user_id: int, status_cb=None) -> str:
         result = _tool_script_execute(tool_call.get("script_id"), tool_call.get("code", ""), user_id, status_cb=status_cb)
     elif tool == "script_list":
         result = _tool_script_list(user_id)
+    elif tool == "generate_image":
+        result = _tool_generate_image(
+            tool_call.get("prompt", tool_call.get("message", "")),
+            tool_call.get("size", "1024x1024"),
+            tool_call.get("n", 1),
+            user_id,
+        )
     elif tool == "use_skill":
         from lobster_mu import skill_store
         res = skill_store.execute(user_id, tool_call.get("skill_id", ""),

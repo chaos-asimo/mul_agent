@@ -7,7 +7,7 @@ import {
   Server, Activity, Loader2,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
-import { apiGet, apiPost, apiDelete, apiUpload } from '../api/client'
+import { apiGet, apiPost, apiDelete, apiUpload, uploadFileForPending } from '../api/client'
 import ChatPane from '../components/ChatPane'
 import FilesTab from '../components/FilesTab'
 import ScriptsTab from '../components/ScriptsTab'
@@ -191,13 +191,8 @@ function Workbench() {
         continue
       }
       try {
-        const fd = new FormData()
-        fd.append('file', file)
-        const res = await apiUpload('/upload/text', fd)
-        if (!res.success) {
-          alert(`${file.name} 上传失败：${res.error || '未知错误'}`)
-          continue
-        }
+        const res = await uploadFileForPending(file)
+        // 压缩包在后台解压，前端只呈现压缩包本身一个附件（content 已含内部文件完整文本）
         setPendingFiles((prev) => [...prev, {
           filename: file.name,
           content: res.content || '',

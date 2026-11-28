@@ -5,6 +5,7 @@ import FileViewer from './FileViewer'
 
 const SUPPORTED_TEXT = 'txt / md / json / py / js / html / css / xml / csv'
 const SUPPORTED_BINARY = 'pdf / doc(x) / xls(x) / ppt(x)'
+const SUPPORTED_ARCHIVE = 'zip / tar / tgz / gz'
 
 function fmtTime(ts) {
   if (!ts) return ''
@@ -54,6 +55,7 @@ function FilesTab({
       const failed = (res.results || []).filter((r) => !r.success)
       if (failed.length) setError(failed.map((f) => `${f.filename}: ${f.error || '失败'}`).join('；'))
       // 把新上传的文件加入待发送（取完整内容），实现「上传即可用」
+      // 压缩包在后台解压，作为一个附件入队（content 已含内部文件完整文本）
       for (const r of ok) {
         try {
           const detail = await apiGet(`/files/${r.file_id}`)
@@ -100,7 +102,7 @@ function FilesTab({
         <p className="text-xs t-text-faint leading-relaxed mb-2">
           选择要随下一条消息发送的文件（单文件 ≤ 10MB）。
           <br />
-          文本类（{SUPPORTED_TEXT}）直接读取；二进制类（{SUPPORTED_BINARY}）自动提取文本。
+          文本类（{SUPPORTED_TEXT}）直接读取；二进制类（{SUPPORTED_BINARY}）自动提取文本；压缩包（{SUPPORTED_ARCHIVE}）。
         </p>
         <label className="flex flex-col items-center justify-center gap-2 py-5 border-2 border-dashed t-border-strong rounded-xl cursor-pointer t-hover-border-accent t-hover-bg t-hover-text-accent transition-colors t-text-faint">
           <UploadCloud className="w-8 h-8" />

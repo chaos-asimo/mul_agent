@@ -15,6 +15,9 @@ _VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v", "
 _AUDIO_EXT = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma"}
 _BINARY_EXT = {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".iso", ".exe", ".msi", ".apk", ".dmg"}
 
+# 可自动解压的压缩格式（archive_service 处理；.rar/.7z 不在内）
+_ARCHIVE_EXT = {".zip", ".tar", ".tgz", ".gz"}
+
 
 def _now() -> str:
     return datetime.now().isoformat(sep=" ", timespec="seconds")
@@ -155,14 +158,40 @@ def extract_text(file_path: str, ext: str, raw: bytes = None) -> str:
 
 
 def save_upload(user_id: int, filename: str, content: bytes) -> dict:
-    """保存上传文件到用户目录并提取文本，返回文件信息"""
-    ext = os.path.splitext(filename or "")[1][:16]
+    """保存上传文件到用户目录并提取文本，返回文件信息。
+
+    压缩包（.zip/.tar/.tgz/.gz）会在后台自动解压：path 指向压缩包本身，
+    content 为所有内部文件拼接后的完整文本（对前端只呈现为一个附件）。"""
+    ext = os.path.splitext(filename or "")[1][:16].lower()
     target_dir = uploads_dir(user_id)
     unique_name = gen_filename(filename)
     file_path = os.path.join(target_dir, unique_name)
     with open(file_path, 'wb') as f:
         f.write(content)
-    text_content = extract_text(file_path, ext.lower(), raw=content)
+
+    # 压缩包分支：延迟导入避免循环（archive_service 依赖本模块 extract_text）
+    if ext in _ARCHIVE_EXT:
+        from lobster_mu import archive_service
+        result = archive_service.process_archive_from_path(user_id, filename, content, file_path)
+        if result.get("success"):
+            return {
+                "filename": filename,
+                "path": file_path,
+                "size": len(content),
+                "content": archive_service.compose_content(filename, result),
+                "timestamp": _now(),
+            }
+        # 解压失败：回退为普通二进制文件提示
+        text_content = extract_text(file_path, ext, raw=content)
+        return {
+            "filename": filename,
+            "path": file_path,
+            "size": len(content),
+            "content": text_content,
+            "timestamp": _now(),
+        }
+
+    text_content = extract_text(file_path, ext, raw=content)
     return {
         "filename": filename,
         "path": file_path,
@@ -184,6 +213,20 @@ def save_upload_text(user_id: int, filename: str, content: bytes) -> dict:
         f.write(content)
     print(f"[DEBUG] mu上传文件: {filename}, 大小: {len(content)} bytes, 扩展名: {ext}")
     print(f"[DEBUG] mu文件已保存到: {file_path}")
+
+    # 压缩包分支：后台解压，content 为内部文件拼接后的完整文本（前端只呈现压缩包本身）
+    if ext in _ARCHIVE_EXT:
+        from lobster_mu import archive_service
+        result = archive_service.process_archive_from_path(user_id, filename, content, file_path, unique_name)
+        if result.get("success"):
+            return {"success": True, "filename": filename,
+                    "content": archive_service.compose_content(filename, result),
+                    "stored_name": unique_name, "size": len(content)}
+        # 解压失败：回退普通提示
+        text_content = extract_text(file_path, ext, raw=content)
+        return {"success": True, "filename": filename, "content": text_content,
+                "stored_name": unique_name, "size": len(content)}
+
     text_content = extract_text(file_path, ext, raw=content)
     print(f"[DEBUG] mu解析内容长度: {len(text_content)}")
     return {"success": True, "filename": filename, "content": text_content,

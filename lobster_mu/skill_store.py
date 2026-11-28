@@ -403,6 +403,42 @@ def execute(user_id: int, skill_id: str, params: Dict[str, Any] = None,
                     resp = client.get(url, params=params.get("data") or {})
             return {"success": True, "result": resp.text[:10000]}
 
+        if executor == "image":
+            # 技能调用文生图模型：图片按 user_id 归档到个人产物目录。
+            # 只要技能定义了提示模板，就始终以模板为准：
+            #   - 用户原始需求(_material，含附件)作为权威输入；
+            #   - 模型自编的 prompt 仅作为补充，避免用户的额外信息被模型摘要丢失。
+            # 无模板时直接使用模型 prompt / 用户需求。
+            from lobster_mu.tools import _tool_generate_image
+            hint = (params.get("prompt") or params.get("content") or "").strip()
+            material = (params.get("_material") or "").strip()
+            size = params.get("size") or "1024x1024"
+            n = params.get("n") or 1
+            tpl = cfg.get("prompt_template") or cfg.get("skillmd_body") or ""
+            if tpl:
+                try:
+                    filled = _fill_template(tpl, params)
+                    build = ("你是文生图提示词工程师。请依据下面的技能说明与用户需求，"
+                             "输出一段可直接用于文生图的最终提示词；只输出提示词本身，"
+                             "不要解释、不要 markdown、不要引号。\n\n"
+                             f"【技能说明】\n{filled}\n\n"
+                             f"【用户需求】\n{material or hint}")
+                    if material and hint:
+                        build += f"\n\n【补充信息】\n{hint}"
+                    image_prompt = (_call_llm(build) or "").strip()
+                except Exception:
+                    image_prompt = material or hint
+            else:
+                image_prompt = hint or material
+            if not image_prompt:
+                return {"success": False,
+                        "error": "生图技能缺少用户描述（用户消息为空且未提供 prompt）"}
+            result = _tool_generate_image(image_prompt, size, n, user_id)
+            success = not result.startswith("❌")
+            return {"success": success,
+                    "result": result if success else "",
+                    "error": None if success else result}
+
         return {"success": False, "error": f"不支持的执行器: {executor}"}
     except Exception as e:
         return {"success": False, "error": f"执行失败: {e}"}

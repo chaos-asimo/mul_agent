@@ -10,6 +10,7 @@ const EXECUTORS = [
   { value: 'script', label: 'Python 脚本' },
   { value: 'search', label: '联网搜索' },
   { value: 'api', label: 'HTTP API' },
+  { value: 'image', label: '文生图' },
 ]
 
 function emptyForm() {
@@ -387,14 +388,26 @@ function SkillsTab() {
           <select className={inputCls} value={form.executor} onChange={(e) => setForm({ ...form, executor: e.target.value })}>
             {EXECUTORS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          {form.executor === 'llm' && (
-            <textarea className={inputCls + ' min-h-[72px] font-mono'} placeholder="提示模板，可用 {占位符}，如：请总结：{content}" value={form.prompt_template} onChange={(e) => setForm({ ...form, prompt_template: e.target.value })} />
+          {(form.executor === 'llm' || form.executor === 'image') && (
+            <textarea
+              className={inputCls + ' min-h-[72px] font-mono'}
+              placeholder={form.executor === 'image'
+                ? '生图提示模板（可选）：先由大模型据此把用户需求改写成最终生图提示词，再调用生图模型；留空则直接使用 prompt 参数'
+                : '提示模板，可用 {占位符}，如：请总结：{content}'}
+              value={form.prompt_template}
+              onChange={(e) => setForm({ ...form, prompt_template: e.target.value })}
+            />
           )}
           {form.executor === 'script' && (
             <textarea className={inputCls + ' min-h-[90px] font-mono'} placeholder="Python 脚本代码（在沙箱中执行）" value={form.script} onChange={(e) => setForm({ ...form, script: e.target.value })} />
           )}
           {form.executor === 'api' && (
             <input className={inputCls} placeholder="API endpoint URL" value={form.api_endpoint} onChange={(e) => setForm({ ...form, api_endpoint: e.target.value })} />
+          )}
+          {form.executor === 'image' && (
+            <p className="text-[10px] t-text-faint leading-relaxed">
+              调用已启用的文生图模型，图片存到该用户个人目录。上方提示模板用于「先构造提示词再生图」；留空则由模型直接传 prompt。参数可留空，或填 <code>{'[{"name":"size","default":"1024x1024"}]'}</code> 控制尺寸。
+            </p>
           )}
           <textarea className={inputCls + ' min-h-[56px] font-mono'} placeholder='参数定义 JSON 数组，如 [{"name":"content","required":true}]' value={form.parameters} onChange={(e) => setForm({ ...form, parameters: e.target.value })} />
           <div className="flex items-center gap-2">

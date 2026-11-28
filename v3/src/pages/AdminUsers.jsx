@@ -698,6 +698,10 @@ function AdminUsers() {
               <Gauge className="w-3.5 h-3.5" />
               运行监控
             </Link>
+            <Link to="/admin/database" className={btnGhost}>
+              <Database className="w-3.5 h-3.5" />
+              数据库
+            </Link>
             <button onClick={() => { setRankingMaximized(true); setShowRanking(true) }} className={btnGhost}>
               <BarChart3 className="w-3.5 h-3.5" />
               用户排行

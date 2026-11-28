@@ -1984,6 +1984,42 @@ def mu_skill_execute(skill_id: str, body: dict, user: dict = Depends(check_user_
 
 # ---- 管理员：公共技能管理 ----
 
+# ============ 管理员：SQLite 数据库查看器 ============
+
+@router.get("/admin/db/list")
+async def admin_db_list(admin: dict = Depends(require_admin)):
+    """列出项目内所有 SQLite 数据库文件。"""
+    from lobster_mu import db_admin
+    try:
+        return {"success": True, "dbs": db_admin.list_databases()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/admin/db/schema")
+async def admin_db_schema(db: str, admin: dict = Depends(require_admin)):
+    """读取指定数据库的表/视图结构。"""
+    from lobster_mu import db_admin
+    try:
+        return db_admin.get_schema(db)
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/admin/db/query")
+async def admin_db_query(body: dict = Body(...), admin: dict = Depends(require_admin)):
+    """执行单条 SQL（默认只读，写操作需 allow_write=true）。"""
+    from lobster_mu import db_admin
+    return db_admin.run_query(
+        (body or {}).get("db") or "",
+        (body or {}).get("sql") or "",
+        (body or {}).get("max_rows") or 200,
+        bool((body or {}).get("allow_write")),
+    )
+
+
 @router.get("/admin/skill/list")
 async def admin_skill_list(admin: dict = Depends(require_admin)):
     from lobster_mu import skill_store

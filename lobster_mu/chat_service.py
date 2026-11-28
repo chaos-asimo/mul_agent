@@ -66,6 +66,52 @@ AGENT_CALL_PATTERN = re.compile(r"\[AGENT_CALL\](.*?)\[/AGENT_CALL\]", re.DOTALL
 PPT_GEN_PATTERN = re.compile(r"\[PPT_GEN\](.*?)\[/PPT_GEN\]", re.DOTALL)
 SKILL_CALL_PATTERN = re.compile(r"\[SKILL_CALL\](.*?)\[/SKILL_CALL\]", re.DOTALL)
 
+
+def _route_image_skill(user_id: int, message: str):
+    """通用生图技能路由：把用户启用的 image 技能（名称+描述）交给模型，
+    严格依据技能自身说明判断应由哪个技能处理；服务端不绑定任何具体技能。
+    返回匹配的技能 id，或 None（不命中则走普通流程）。"""
+    msg = (message or "").strip()
+    if not msg:
+        return None
+    try:
+        from lobster_mu import skill_store
+        items = []
+        for s in skill_store.list_enabled(user_id):
+            cfg = s.get("config") or {}
+            if (cfg.get("executor") or s.get("executor") or "").lower() != "image":
+                continue
+            sid = s.get("skill_id") or s.get("id")
+            if not sid:
+                continue
+            items.append({
+                "id": sid,
+                "name": s.get("name") or "",
+                "desc": (cfg.get("description") or "")[:600],
+            })
+        if not items:
+            return None
+        adapter = get_default_llm_adapter()
+        if not adapter:
+            return None
+        opts = "\n".join(f"- {x['id']} ｜ 名称：{x['name']} ｜ 说明：{x['desc']}" for x in items)
+        sys = "你是严格的技能路由器，只输出一个技能 id 或 NONE，不要任何解释。"
+        user = (
+            "下面列出可用技能的说明。请严格依据每个技能自身的说明，判断用户请求是否明确属于"
+            "其中某个技能的用途：若是，只输出该技能 id；否则只输出 NONE。\n\n"
+            f"【用户请求】\n{msg}\n\n【可用技能】\n{opts}\n"
+        )
+        messages = adapter.create_prompt(sys, user, [])
+        resp = adapter.chat(messages)
+        text = (resp.get("content") if isinstance(resp, dict) else getattr(resp, "content", "")) or ""
+        text = text.strip()
+        for x in items:
+            if x["id"] in text:
+                return x["id"]
+        return None
+    except Exception:
+        return None
+
 # 正在执行生成任务的会话集合（跨连接的服务端状态）。
 # 客户端刷新/断开后后台线程仍继续执行，会话列表据此显示"执行中"标识。
 _running_sessions: set = set()
@@ -1381,6 +1427,73 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
                                  images=saved_images or None,
                                  attachments=saved_attachments or None)
     generation_type = detect_generation_type(request.message)
+
+    # 通用生图技能路由：由模型严格按各技能「自身说明」判断该由哪个 image 技能处理，
+    # 命中则服务端直接执行该技能（套用模板），不依赖主模型是否输出 [SKILL_CALL]。
+    # 服务端不绑定任何具体技能；仅在疑似生图请求时触发路由，避免每条消息都判定。
+    _auto_skill_id = None
+    if not request.files and not has_images:
+        _maybe_image = (generation_type == "image") or bool(re.search(
+            r"生成|做|画|绘制|制作|设计|来一?张|出一?张|搞一?张", request.message or ""))
+        if _maybe_image:
+            _auto_skill_id = _route_image_skill(user_id, request.message)
+    if _auto_skill_id:
+        def _image_skill_stream():
+            import queue as _q
+            import threading as _t
+
+            def _sse(obj):
+                return "data: " + json.dumps(obj) + "\n\n"
+
+            try:
+                yield _sse({'success': True, 'session_id': session_id,
+                            'content': '🧩 正在调用技能生成海报（使用技能模板）...\n'})
+                from lobster_mu import skill_store
+                holder = {}
+                pq = _q.Queue()
+
+                def _work():
+                    try:
+                        holder['res'] = skill_store.execute(
+                            user_id, _auto_skill_id,
+                            {"_material": "用户需求: " + (request.message or "")},
+                            lambda t: pq.put(str(t)),
+                        )
+                    except Exception as e:
+                        holder['res'] = {'success': False, 'error': str(e)}
+
+                th = _t.Thread(target=_work, daemon=True)
+                th.start()
+                # 生成期间每 2s 发一次心跳状态，避免长连接被判定为空闲
+                while th.is_alive():
+                    yield _sse({'success': True, 'session_id': session_id,
+                                'type': 'status', 'text': '🎨 正在生成图片...'})
+                    try:
+                        pq.get(timeout=2.0)
+                    except _q.Empty:
+                        pass
+                while not pq.empty():
+                    yield _sse({'success': True, 'content': pq.get_nowait(), 'session_id': session_id})
+                res = holder.get('res') or {'success': False, 'error': '技能未返回结果'}
+                if res.get('success'):
+                    content = res.get('result') or '图片生成完成'
+                    session_store.append_message(user_id, session_id, 'assistant', content)
+                    yield _sse({'success': True, 'content': content, 'session_id': session_id})
+                else:
+                    err = res.get('error') or '生成失败'
+                    content = f'❌ 海报生成失败：{err}'
+                    session_store.append_message(user_id, session_id, 'assistant', content)
+                    yield _sse({'success': False, 'error': err, 'session_id': session_id})
+                yield _sse({'success': True, 'content': '', 'session_id': session_id, 'done': True})
+            except Exception as e:
+                err = f'❌ 海报生成异常：{e}'
+                try:
+                    session_store.append_message(user_id, session_id, 'assistant', err)
+                except Exception:
+                    pass
+                yield "data: " + json.dumps({'success': False, 'error': err}) + "\n\n"
+
+        return StreamingResponse(_image_skill_stream(), media_type="text/event-stream")
     # PPT 意图：纯文本对话才生效（文件/图片消息不触发），走文本分支 + [PPT_GEN] 标记机制
     ppt_intent = generation_type == "ppt" and not request.files and not has_images
 
@@ -1655,7 +1768,7 @@ def chat_stream_response(user_id: int, request: ChatStreamRequest,
                 tool_name = tool_call.get("tool")
                 tool_desc = {"exec": "执行命令", "read_file": "读取文件", "list_dir": "列出目录", "search": "网页搜索",
                              "script_create": "创建脚本", "script_execute": "执行脚本", "script_list": "列出脚本",
-                             "generate_pdf": "生成PDF"}.get(tool_name, tool_name)
+                             "generate_pdf": "生成PDF", "generate_image": "生成图片"}.get(tool_name, tool_name)
                 # 用户未指定时间时，剔除查询词里模型自行添加的日期/年份
                 if tool_name in ("search", "web_search") and tool_call.get("query"):
                     tool_call["query"] = _clean_search_query(
